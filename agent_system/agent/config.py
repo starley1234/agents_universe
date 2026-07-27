@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .mcp import MCPServerConfig, configs_from_dict
+from .tools.messaging import MessagingConfig
 from .tools.shell import SandboxConfig
 
 
@@ -78,6 +79,11 @@ class Config:
     rag_chunk_overlap: int = 150        # перекрытие между фрагментами
     rag_top_k: int = 6                  # сколько фрагментов подтягивать
 
+    # --- связь с внешним миром (навык "messaging"): email/Telegram/MAX ---
+    # Ключи/пароли не хранятся в JSON-конфиге — только в переменных
+    # окружения (см. .env.example), как и остальные секреты в системе.
+    messaging: MessagingConfig = field(default_factory=MessagingConfig)
+
     # ------------------------------------------------------------------
     @staticmethod
     def _env_default(provider: str) -> tuple[str | None, str | None]:
@@ -128,10 +134,14 @@ class Config:
 
         sandbox_data = data.pop("sandbox", {}) or {}
         mcp_data = data.pop("mcp", {}) or {}
+        messaging_data = data.pop("messaging", {}) or {}
         profile_name = data.pop("profile", None)
-        cfg = cls(**{k: v for k, v in data.items() if v is not None})
+        cfg = cls(**{k: v for k, v in data.items()
+                    if v is not None and not k.startswith("_")})
+
         cfg.sandbox = SandboxConfig(**sandbox_data)
         cfg.mcp = configs_from_dict(mcp_data.get("servers", mcp_data))
+        cfg.messaging = MessagingConfig.from_dict(messaging_data)
 
         # профиль — база; всё, что задано явно ниже, его перекрывает
         prof = overrides.pop("profile", None) or os.getenv("AGENT_PROFILE") \
@@ -158,6 +168,24 @@ class Config:
                                            cfg.embedding_provider)
         cfg.embedding_model = os.getenv("AGENT_EMBEDDING_MODEL",
                                         cfg.embedding_model)
+
+        # секреты каналов связи — ТОЛЬКО из окружения, никогда из JSON-файла
+        cfg.messaging.email.smtp_host = os.getenv(
+            "SMTP_HOST", cfg.messaging.email.smtp_host)
+        cfg.messaging.email.smtp_user = os.getenv(
+            "SMTP_USER", cfg.messaging.email.smtp_user)
+        cfg.messaging.email.smtp_password = os.getenv(
+            "SMTP_PASSWORD", cfg.messaging.email.smtp_password)
+        cfg.messaging.email.imap_host = os.getenv(
+            "IMAP_HOST", cfg.messaging.email.imap_host)
+        cfg.messaging.email.imap_user = os.getenv(
+            "IMAP_USER", cfg.messaging.email.imap_user)
+        cfg.messaging.email.imap_password = os.getenv(
+            "IMAP_PASSWORD", cfg.messaging.email.imap_password)
+        cfg.messaging.telegram.bot_token = os.getenv(
+            "TELEGRAM_BOT_TOKEN", cfg.messaging.telegram.bot_token)
+        cfg.messaging.max.bot_token = os.getenv(
+            "MAX_BOT_TOKEN", cfg.messaging.max.bot_token)
 
         # переопределения из CLI
         for k, v in overrides.items():
@@ -225,6 +253,15 @@ class Config:
         d = asdict(self)
         d["mcp"] = [m["name"] for m in d.get("mcp", [])]
         if d.get("api_key"):
-
             d["api_key"] = "***"          # не светим ключ в логах
+        # секреты каналов связи — тоже не светим
+        msg = d.get("messaging") or {}
+        for section, fields in (("email", ("smtp_password", "imap_password")),
+                                ("telegram", ("bot_token",)),
+                                ("max", ("bot_token",))):
+            sec = msg.get(section) or {}
+            for f in fields:
+                if sec.get(f):
+                    sec[f] = "***"
         return d
+

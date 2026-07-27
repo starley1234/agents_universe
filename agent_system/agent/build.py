@@ -14,6 +14,8 @@ from .skills import pg_ontology
 from .mcp import MCPPool
 from .store import Store
 from .tools import memory as memory_tools
+from .tools import messaging as messaging_tools
+from .tools import office_docs as office_docs_tools
 from .tools import present as present_tools
 from .tools import files as files_tools
 from .tools import shell as shell_tools
@@ -25,15 +27,17 @@ SKILLS: dict[str, Callable] = {
     "files": lambda ws, cfg, confirm: files_tools.build(ws),
     "shell": lambda ws, cfg, confirm: shell_tools.build(ws, cfg.sandbox, confirm),
     "cad": lambda ws, cfg, confirm: cad_openscad.build(ws),
-    # memory, pdf, docparse и pg_ontology подключаются отдельно: им нужен
-    # Store и/или отдельный драйвер модели (vision/эмбеддинги), а не
-    # просто Workspace.
+    "office": lambda ws, cfg, confirm: office_docs_tools.build(ws),
+    # memory, pdf, docparse, pg_ontology и messaging подключаются отдельно:
+    # им нужен Store и/или отдельный драйвер модели (vision/эмбеддинги),
+    # либо своя конфигурация каналов связи, а не просто Workspace.
 }
 
 
 def known_skills() -> list[str]:
     return sorted([*SKILLS, "memory", "present", "mcp", "pdf", "docparse",
-                  "pg_ontology"])
+                  "pg_ontology", "messaging"])
+
 
 
 def build_agent(
@@ -51,7 +55,8 @@ def build_agent(
     ws = Workspace(cfg.workspace)
 
     registry = ToolRegistry()
-    extra = {"memory", "present", "mcp", "pdf", "docparse", "pg_ontology"}
+    extra = {"memory", "present", "mcp", "pdf", "docparse", "pg_ontology",
+            "messaging"}
     unknown = [s for s in cfg.skills if s not in SKILLS and s not in extra]
     if unknown:
         raise ValueError(
@@ -59,9 +64,11 @@ def build_agent(
             f"Доступны: {', '.join(known_skills())}"
         )
     for name in cfg.skills:
-        if name in ("memory", "present", "mcp", "pdf", "docparse", "pg_ontology"):
+        if name in ("memory", "present", "mcp", "pdf", "docparse",
+                    "pg_ontology", "messaging"):
             continue
         registry.extend(SKILLS[name](ws, cfg, confirm))
+
 
     # Память и онтология требуют базы, поэтому подключаются отдельно.
     if "memory" in cfg.skills:
@@ -120,6 +127,15 @@ def build_agent(
         )
         registry.extend(pg_ontology.build(cfg.pg_dsn or "", embedder,
                                           dim=cfg.pg_vector_dim))
+
+    # Связь с внешним миром: email (SMTP/IMAP), Telegram, MAX. Инструмент
+    # появляется только для НАСТРОЕННОГО канала (есть токен/пароль) — агент
+    # не должен видеть возможность, которой не может воспользоваться.
+    # Отправка — необратимое действие, поэтому передаём тот же confirm,
+    # что и run_command: без оператора (confirm=None) и без явного
+    # messaging.confirm_sends=False отправка будет отклонена.
+    if "messaging" in cfg.skills:
+        registry.extend(messaging_tools.build(ws, cfg.messaging, confirm))
 
     return Agent(
         llm=llm,

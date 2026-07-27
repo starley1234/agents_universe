@@ -186,6 +186,8 @@ python3 -m agent -c examples/config.anthropic.json "задача"
 | `pdf` | `pdf_info`, `pdf_classify`, `pdf_extract_page`, `pdf_extract` |
 | `docparse` | `doc_info`, `doc_classify`, `doc_extract`, `extract_entities` |
 | `pg_ontology` | `pg_upsert_entity`, `pg_link`, `pg_neighbours`, `pg_subgraph`, `pg_semantic_search`, `pg_stats` |
+| `office` | `docx_*`, `xlsx_*`, `pptx_*` — создание Word/Excel/PowerPoint |
+| `messaging` | `email_*`, `telegram_*`, `max_*` — связь с внешним миром |
 
 ### Набор `cad`
 
@@ -268,6 +270,79 @@ python3 -m agent -c examples/config.anthropic.json "задача"
 семантике, но работает всегда. Требует `pip install "psycopg[binary]"`
 и расширение `vector` на стороне сервера.
 
+### Набор `office`
+
+Создание документов Word/Excel/PowerPoint — симметрично `docparse`
+(тот ЧИТАЕТ офисные форматы, этот их СОЗДАЁТ). Никакой модели внутри:
+все операции детерминированные, как в `cad_openscad`. Текстовое
+содержимое передаётся упрощённым markdown (заголовки `#`/`##`, абзацы,
+списки, таблицы `| a | b |`, `**жирный**`/`*курсив*`) — модели пишут
+markdown естественно и без ошибок разметки, а разбором и версткой в
+docx/pptx занимается код:
+
+- `docx_create`/`docx_append`/`docx_add_table`/`docx_add_image` — Word;
+- `xlsx_create`/`xlsx_write_rows`/`xlsx_add_chart` — Excel, включая
+  диаграммы (bar/line/pie) по уже записанным данным;
+- `pptx_create`/`pptx_add_slide`/`pptx_add_table_slide`/
+  `pptx_add_image_slide` — PowerPoint, с заметками докладчика.
+
+```json
+"skills": ["office"]
+```
+
+Результат `pdf_extract`/`doc_extract` можно почти напрямую передать
+сюда, чтобы собрать итоговый отчёт по распознанным документам. Требует
+`pip install python-docx openpyxl python-pptx`.
+
+### Набор `messaging`
+
+Связь с внешним миром: email (SMTP для отправки, IMAP для чтения),
+Telegram Bot API, MAX Bot API ([dev.max.ru](https://dev.max.ru/docs-api)).
+Только стандартная библиотека Python — `smtplib`/`imaplib`/`urllib`,
+без внешних зависимостей.
+
+**Инструмент появляется только для НАСТРОЕННОГО канала**: агент не
+должен видеть возможность, которой не может воспользоваться. Канал
+считается настроенным, если заданы его секреты (см. `.env.example`):
+
+```bash
+TELEGRAM_BOT_TOKEN=...
+MAX_BOT_TOKEN=...
+SMTP_HOST=... SMTP_USER=... SMTP_PASSWORD=...
+IMAP_HOST=... IMAP_USER=... IMAP_PASSWORD=...
+```
+
+Остальные параметры (порт, TLS-режим, лимит частоты) — в JSON-конфиге,
+секция `messaging` (см. `examples/config.messaging.json`):
+
+```json
+"skills": ["messaging"],
+"messaging": {
+  "email": {"smtp_port": 587, "smtp_starttls": true, "from_addr": "bot@example.com"},
+  "telegram": {"rate_limit": 1.0},
+  "confirm_sends": true
+}
+```
+
+**Отправка — необратимое действие** (письмо ушло, сообщение увидели —
+не отозвать), поэтому `email_send`/`telegram_send_message`/
+`telegram_send_file`/`max_send_message` помечены `dangerous=True` и по
+умолчанию (`confirm_sends: true`) спрашивают подтверждения оператора
+перед реальной отправкой — так же, как `run_command` для опасных
+команд. Автономный прогон без оператора должен явно поставить
+`confirm_sends: false`, беря ответственность на себя.
+
+Типичный сценарий «входящее фото/документ → анализ → отчёт»: получить
+вложение (`email_read`, либо забрать файл, присланный через
+`telegram_get_updates`/`max_get_updates`, отдельным HTTP/webhook-
+обработчиком) → сохранить в workspace → распознать (`pdf_extract`/
+`doc_extract`, `extract_entities`) → собрать отчёт (`office`) →
+отправить обратно (`telegram_send_file`/`max_send_message`/
+`email_send`). Приём вложений по Long Polling затронут только частично
+(текст входящих сообщений виден через `*_get_updates`); постоянный
+приём файлов от пользователей эффективнее делать через Webhook —
+это отдельная задача поверх HTTP API (`agent/server.py`).
+
 ### Свой набор навыков
 
 Модуль с функцией `build(ws) -> list[Tool]` и одна строка в
@@ -315,7 +390,7 @@ curl -X POST http://127.0.0.1:8080/run \
 **тест обязан уметь падать**.
 
 ```
-make test        # 366 проверок (ядро + память + автономия + MCP + pdf + docparse + pg_ontology)
+make test        # 459 проверок (ядро + память + автономия + MCP + pdf + docparse + pg_ontology + office + messaging)
 make test-e2e    # 14 проверок на реальных сокетах
 ```
 
@@ -361,7 +436,14 @@ make test-e2e    # 14 проверок на реальных сокетах
 Набор `pg_ontology` проверен на НАСТОЯЩЕМ Postgres+pgvector — временный
 кластер поднимается через `pgserver` прямо в тесте и уничтожается после
 (25 проверок): семантический поиск, обход графа, повторная индексация
-фрагментов.
+фрагментов. Набор `office` проверен на реальных python-docx/openpyxl/
+python-pptx (50 проверок): вложенные списки, точность данных в таблицах
+и диаграммах, заметки докладчика. Набор `messaging` проверен на
+НАСТОЯЩИХ сокетах (43 проверки): SMTP-сервер aiosmtpd принимает письмо
+и получателей проверяют по факту доставки, самодельный IMAP-сервер
+(`tests/fake_imap_server.py`, как `fake_mcp_server.py` для MCP) отвечает
+настоящим протоколом IMAP4, HTTP-заглушка обслуживает и Telegram, и MAX
+Bot API — включая отказ оператора ДО того, как ушёл сетевой запрос.
 
 ---
 

@@ -12,8 +12,17 @@ pymupdf
 python-docx
 openpyxl
 
+# --- навык "office": создание Word/Excel/PowerPoint ---
+# (python-docx/openpyxl общие с docparse, добавляется только python-pptx)
+python-pptx
+
 # --- навык "pg_ontology": онтология в PostgreSQL + pgvector ---
 psycopg[binary]
+
+# --- навык "messaging": email/Telegram/MAX ---
+# Ничего дополнительного не требуется — только стандартная библиотека
+# (smtplib, imaplib, urllib). Ниже — только для ТЕСТОВ этого навыка:
+aiosmtpd
 
 # --- тесты навыка pg_ontology: временный embedded Postgres ---
 # (не нужен для работы агента, только чтобы прогнать tests/test_pg_ontology.py
