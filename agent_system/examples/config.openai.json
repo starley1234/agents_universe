@@ -1,0 +1,19 @@
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "workspace": "./workspace",
+  "max_steps": 30,
+  "temperature": 0.0,
+  "skills": [
+    "files",
+    "shell"
+  ],
+  "sandbox": {
+    "mode": "auto",
+    "image": "agent-sandbox:latest",
+    "timeout": 120,
+    "memory": "1g",
+    "cpus": "2",
+    "network": false
+  }
+}

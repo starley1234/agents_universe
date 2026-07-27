@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Агент</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1a1d26; --line:#2a2f3d; --txt:#e6e8ee;
+    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --tool:#c9a227;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
+       background:var(--bg);color:var(--txt);height:100vh;display:flex;flex-direction:column}
+  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  header b{font-weight:600}
+  .pill{font-size:12px;color:var(--dim);background:#232733;padding:3px 9px;border-radius:99px}
+  select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
+        border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  button{cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--acc)}
+  button:disabled{opacity:.5;cursor:default}
+  #log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+  .msg{max-width:min(900px,92%);padding:10px 13px;border-radius:8px;white-space:pre-wrap;
+       word-break:break-word}
+  .me{align-self:flex-end;background:#243a5c;border:1px solid #2f4a72}
+  .bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
+  .tool{align-self:flex-start;background:#221f14;border:1px solid #3d3418;
+        color:var(--tool);font-size:12.5px;max-width:min(900px,92%)}
+  .tool summary{cursor:pointer;outline:none}
+  .tool pre{margin:8px 0 0;color:var(--dim);font-size:12px;max-height:320px;
+            overflow:auto;white-space:pre-wrap}
+  .err{align-self:flex-start;background:#2a1618;border:1px solid #52252a;color:var(--err)}
+  .sys{align-self:center;color:var(--dim);font-size:12px}
+  footer{padding:12px 16px;background:var(--panel);border-top:1px solid var(--line);
+         display:flex;gap:10px}
+  #task{flex:1;resize:none;min-height:44px;max-height:180px}
+  .spin{display:inline-block;animation:s 1s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <b>Агент</b>
+  <select id="profile" title="Роль агента"></select>
+  <input id="ws" placeholder="рабочая папка" size="18">
+  <input id="token" type="password" placeholder="токен (если задан)" size="16">
+  <span class="pill" id="status">—</span>
+  <span style="flex:1"></span>
+  <button id="clear">Очистить</button>
+</header>
+
+<div id="log"></div>
+
+<footer>
+  <textarea id="task" placeholder="Задача агенту…  (Ctrl+Enter — отправить)"></textarea>
+  <button id="send">Запустить</button>
+  <button id="stop" disabled>Стоп</button>
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const log = $('#log');
+let controller = null;
+
+function add(cls, text){
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+function addTool(name, args){
+  const d = document.createElement('details');
+  d.className = 'msg tool';
+  const s = document.createElement('summary');
+  s.textContent = '→ ' + name + ' ' + JSON.stringify(args).slice(0, 120);
+  d.appendChild(s);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+function headers(){
+  const h = {'Content-Type': 'application/json'};
+  const t = $('#token').value.trim();
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+
+async function loadInfo(){
+  try{
+    const r = await fetch('/info', {headers: headers()});
+    if (r.status === 401){ $('#status').textContent = 'нужен токен'; return; }
+    const d = await r.json();
+    $('#status').textContent = d.config.provider + '/' + d.config.model
+                             + ' · ' + d.config.sandbox.mode;
+    if (!$('#ws').value) $('#ws').value = d.config.workspace;
+    const sel = $('#profile');
+    sel.innerHTML = '';
+    (d.profiles || []).forEach(p => {
+      const o = document.createElement('option');
+      o.value = p; o.textContent = p;
+      if (p === d.config.profile) o.selected = true;
+      sel.appendChild(o);
+    });
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = '(по конфигу)';
+    sel.insertBefore(o, sel.firstChild);
+    if (!d.config.profile) o.selected = true;
+  }catch(e){ $('#status').textContent = 'нет связи'; }
+}
+
+async function run(){
+  const task = $('#task').value.trim();
+  if (!task || controller) return;
+  add('me', task);
+  $('#task').value = '';
+  $('#send').disabled = true;
+  $('#stop').disabled = false;
+  const busy = add('sys', '⏳ работает…');
+  controller = new AbortController();
+
+  const body = {task};
+  if ($('#ws').value.trim()) body.workspace = $('#ws').value.trim();
+  if ($('#profile').value) body.profile = $('#profile').value;
+
+  try{
+    const r = await fetch('/run/stream', {
+      method:'POST', headers: headers(), body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!r.ok){ busy.remove(); add('err', 'HTTP ' + r.status + ': ' + await r.text()); return; }
+
+    const rd = r.body.getReader(); const dec = new TextDecoder();
+    let buf = '', pending = null;
+    while (true){
+      const {done, value} = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const ln of lines){
+        if (!ln.trim()) continue;
+        let e; try{ e = JSON.parse(ln); }catch{ continue; }
+        if (e.event === 'tool_start')      pending = addTool(e.name, e.args || {});
+        else if (e.event === 'tool_end' && pending){
+          const pre = document.createElement('pre');
+          pre.textContent = e.result || '';
+          pending.appendChild(pre); pending = null;
+        }
+        else if (e.event === 'thought' && e.text) add('sys', '… ' + e.text);
+        else if (e.event === 'done'){ busy.remove(); add('bot', e.answer || '(пусто)'); }
+        else if (e.event === 'error')  add('err', e.message || 'ошибка');
+        else if (e.event === 'limit')  add('err', 'исчерпан лимит шагов');
+      }
+    }
+    busy.remove();
+  }catch(e){
+    busy.remove();
+    add(e.name === 'AbortError' ? 'sys' : 'err',
+        e.name === 'AbortError' ? 'остановлено' : String(e));
+  }finally{
+    controller = null;
+    $('#send').disabled = false;
+    $('#stop').disabled = true;
+    $('#task').focus();
+  }
+}
+
+$('#send').onclick = run;
+$('#stop').onclick = () => controller && controller.abort();
+$('#clear').onclick = () => log.innerHTML = '';
+$('#task').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) run();
+});
+$('#token').addEventListener('change', loadInfo);
+loadInfo();
+$('#task').focus();
+</script>
+</body>
+</html>

@@ -1,0 +1,139 @@
+"""Загрузка конфигурации: файл JSON + переменные окружения.
+
+Приоритет: аргументы CLI > переменные окружения > файл > умолчания.
+Ключи в файле не храним — только в окружении, чтобы конфиг можно было
+класть в git.
+"""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any
+
+from .mcp import MCPServerConfig, configs_from_dict
+from .tools.shell import SandboxConfig
+
+
+@dataclass
+class Config:
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    base_url: str | None = None
+    api_key: str | None = None
+    temperature: float = 0.0
+    workspace: str = "./workspace"
+    max_steps: int = 30
+    # memory включена по умолчанию: без неё агент не помнит прошлые
+    # запуски и, что хуже, склонен это выдумывать.
+    skills: list[str] = field(
+        default_factory=lambda: ["files", "shell", "memory", "present"])
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    system_prompt: str | None = None
+    profile: str | None = None          # роль агента: coder | cad | research | ...
+    # --- экономия токенов ---
+    tool_result_limit: int = 4000       # обрезка результата инструмента, символов
+    keep_last_results: int = 3          # полностью хранить только N последних
+    # --- постоянное состояние и автономный режим ---
+    db: str = "agent.db"                # SQLite: память, онтология, план
+    max_hours: float = 1.0              # бюджет времени автономного прогона
+    max_iterations: int = 50
+    # --- внешние MCP-серверы: поиск, страницы, картинки, речь ---
+    mcp: list[MCPServerConfig] = field(default_factory=list)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _env_default(provider: str) -> tuple[str | None, str | None]:
+        """Разумные умолчания base_url/ключа под провайдера."""
+        p = provider.lower()
+        if p in ("anthropic", "claude"):
+            return "https://api.anthropic.com/v1", os.getenv("ANTHROPIC_API_KEY")
+        if p == "ollama":
+            return os.getenv("OLLAMA_HOST", "http://localhost:11434"), None
+        return (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                os.getenv("OPENAI_API_KEY"))
+
+    @staticmethod
+    def profiles_dir() -> Path:
+        return Path(__file__).resolve().parent / "profiles"
+
+    @classmethod
+    def list_profiles(cls) -> list[str]:
+        d = cls.profiles_dir()
+        return sorted(p.stem for p in d.glob("*.json")) if d.exists() else []
+
+    def apply_profile(self, name: str) -> None:
+        """Профиль задаёт роль: набор навыков, промпт и лимит шагов.
+
+        Профиль не перебивает то, что задано явно в конфиге или CLI —
+        поэтому применяется ДО пользовательских переопределений.
+        """
+        f = self.profiles_dir() / f"{name}.json"
+        if not f.exists():
+            raise FileNotFoundError(
+                f"Профиль {name!r} не найден. Доступны: "
+                f"{', '.join(self.list_profiles()) or '—'}"
+            )
+        data = json.loads(f.read_text(encoding="utf-8"))
+        for key in ("skills", "max_steps", "system_prompt"):
+            if key in data:
+                setattr(self, key, data[key])
+        self.profile = name
+
+    @classmethod
+    def load(cls, path: str | None = None, **overrides: Any) -> "Config":
+        data: dict[str, Any] = {}
+        if path:
+            p = Path(path).expanduser()
+            if not p.exists():
+                raise FileNotFoundError(f"Конфиг {path} не найден")
+            data = json.loads(p.read_text(encoding="utf-8"))
+
+        sandbox_data = data.pop("sandbox", {}) or {}
+        mcp_data = data.pop("mcp", {}) or {}
+        profile_name = data.pop("profile", None)
+        cfg = cls(**{k: v for k, v in data.items() if v is not None})
+        cfg.sandbox = SandboxConfig(**sandbox_data)
+        cfg.mcp = configs_from_dict(mcp_data.get("servers", mcp_data))
+
+        # профиль — база; всё, что задано явно ниже, его перекрывает
+        prof = overrides.pop("profile", None) or os.getenv("AGENT_PROFILE") \
+            or profile_name
+        if prof:
+            explicit = {k for k, v in data.items() if v is not None}
+            saved = {k: getattr(cfg, k) for k in
+                     ("skills", "max_steps", "system_prompt") if k in explicit}
+            cfg.apply_profile(prof)
+            for k, v in saved.items():
+                setattr(cfg, k, v)
+
+        # окружение
+        cfg.provider = os.getenv("AGENT_PROVIDER", cfg.provider)
+        cfg.model = os.getenv("AGENT_MODEL", cfg.model)
+        if os.getenv("AGENT_WORKSPACE"):
+            cfg.workspace = os.environ["AGENT_WORKSPACE"]
+        if os.getenv("AGENT_SANDBOX"):
+            cfg.sandbox.mode = os.environ["AGENT_SANDBOX"]
+
+        # переопределения из CLI
+        for k, v in overrides.items():
+            if v is None:
+                continue
+            if k == "sandbox_mode":
+                cfg.sandbox.mode = v
+            elif hasattr(cfg, k):
+                setattr(cfg, k, v)
+
+        # подставляем умолчания провайдера, если не заданы явно
+        url, key = cls._env_default(cfg.provider)
+        cfg.base_url = cfg.base_url or url
+        cfg.api_key = cfg.api_key or key
+        return cfg
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["mcp"] = [m["name"] for m in d.get("mcp", [])]
+        if d.get("api_key"):
+            d["api_key"] = "***"          # не светим ключ в логах
+        return d
