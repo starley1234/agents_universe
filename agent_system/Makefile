@@ -5,14 +5,14 @@
 TESTS := $(sort $(filter-out tests/test_e2e.py,$(wildcard tests/test_*.py)))
 
 help:
-	@echo "make test          — все тесты (~837 проверок, ~40 с)"
+	@echo "make test          — все тесты (~949 проверок, ~40 с)"
 	@echo "make test-e2e      — сквозной тест на настоящих сокетах"
 	@echo "make check         — самопроверка окружения (модель не трогает)"
 	@echo "make smoke         — дымовой тест ЖИВОЙ модели: тянет ли инструменты"
 	@echo "make do TASK=...   — простой режим: роль выбирается сама"
 	@echo "make auto GOAL=... — автономный прогон (HOURS=1, USD=0)"
 	@echo "make runs          — история прогонов"
-	@echo "make serve         — веб-интерфейс на 127.0.0.1:8080"
+	@echo "make serve         — веб-интерфейс (PORT=8081 сменить порт)"
 	@echo "make build-sandbox — образ песочницы (для sandbox=docker)"
 	@echo "make build         — образ агента"
 	@echo "make install       — команда 'agent' в ~/.local/bin"
@@ -54,7 +54,7 @@ runs:
 	@python3 -m agent --runs
 
 serve:
-	@python3 -m agent.server
+	@python3 -m agent.server $(if $(PORT),--port $(PORT),) $(if $(HOST),--host $(HOST),)
 
 build-sandbox:
 	docker build -f docker/Dockerfile.sandbox -t agent-sandbox:latest .

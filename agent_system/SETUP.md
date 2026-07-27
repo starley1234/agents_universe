@@ -157,7 +157,34 @@ export AGENT_TG_TOKEN=...       # Telegram
 export AGENT_MAX_TOKEN=...      # MAX
 ```
 
-Удобно держать в `~/.agentrc` и подключать `source ~/.agentrc`.
+### Файл `.env`
+
+Проще всего положить `.env` рядом с `Makefile` — он читается
+автоматически, при каждом запуске:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+```
+AGENT_PROVIDER=llamacpp
+AGENT_MODEL=qwen3-coder-30b-a3b-instruct
+AGENT_PORT=8020            # чтобы не писать make serve PORT=8020
+OPENAI_API_KEY=sk-...
+```
+
+Формат простой: `КЛЮЧ=значение`, решётка — комментарий, кавычки вокруг
+значения снимаются, `export` в начале не мешает.
+
+**Приоритет:** аргумент командной строки → переменная окружения →
+`.env` → умолчание. То есть `AGENT_PORT=9000 make serve` перебьёт файл,
+а `make serve PORT=8081` перебьёт и то и другое.
+
+Файл читается из **текущей папки**, поэтому команды запускайте из
+корня проекта. `.env` в `.gitignore` — секреты в репозиторий не уйдут.
+
+Альтернатива — `~/.agentrc` с `source ~/.agentrc` перед запуском.
 
 ---
 

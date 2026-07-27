@@ -44,6 +44,39 @@ PLANNER = """Ты планировщик. Задача:
 одна строка, начинается с глагола, результат должен быть проверяем.
 Не пиши преамбулу и нумерацию, только строки пунктов."""
 
+DECOMPOSE = """Ты планировщик. Разбей задачу на пункты и назначь
+исполнителей.
+
+ЗАДАЧА: {goal}
+
+{known}
+
+ДОСТУПНЫЕ ИСПОЛНИТЕЛИ:
+{profiles}
+
+Ответь ТОЛЬКО валидным JSON без пояснений:
+{{"шаги": [
+  {{"что": "действие с проверяемым результатом",
+    "кто": "имя исполнителя из списка",
+    "после": [номера шагов, без которых этот не сделать],
+    "проверка": "чем подтвердится, что шаг выполнен"}}
+]}}
+
+Правила:
+- 3-7 шагов. Меньше трёх — задача не разбита, больше семи — дробление
+  ради дробления.
+- «что» начинается с глагола и даёт ПРОВЕРЯЕМЫЙ результат: не «изучить
+  вопрос», а «замерить время поиска на 100 тысячах записей».
+- «после» — номера шагов в ЭТОМ списке (нумерация с 1). Ставь только
+  настоящие зависимости: шаг не сделать, пока не готов другой. Лишние
+  зависимости растягивают работу без нужды.
+- Колец быть не должно: шаг не может зависеть сам от себя ни прямо,
+  ни через цепочку.
+- «кто» — ровно одно имя из списка выше. Не подходит никто — пиши
+  пустую строку, исполнителя подберут автоматически.
+- «проверка» — как убедиться, что сделано: какой файл появится, какое
+  число получится, что покажет тест."""
+
 WORKER = """ЦЕЛЬ ПРОГОНА: {goal}
 
 ТЕКУЩИЙ ПУНКТ ПЛАНА: #{task_id} {task}
@@ -88,6 +121,22 @@ learned — только новое и конкретное, что стоит �
 stuck — true, если прогресса нет и нужно менять подход."""
 
 
+def _json_block(text: str) -> dict[str, Any] | None:
+    """Достать JSON из ответа, даже если модель обернула его в текст.
+
+    Тот же защитный разбор, что в рефлексии и у арбитра: модели любят
+    добавить «Вот план:» перед объектом и пояснение после.
+    """
+    i, j = text.find("{"), text.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        data = json.loads(text[i:j + 1])
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 @dataclass
 class AutoResult:
     run_id: int
@@ -111,6 +160,8 @@ class AutoRunner:
         max_usd: float = 0.0,
         route_tasks: bool = False,
         known_profiles: list[str] | None = None,
+        decompose: bool = False,
+        profile_hints: dict[str, str] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.make_agent = agent_factory
@@ -128,6 +179,10 @@ class AutoRunner:
         self.route_tasks = route_tasks
         self.known_profiles = known_profiles or []
         self.last_profile: str | None = None
+        # Декомпозиция: план с исполнителями и зависимостями вместо
+        # плоского списка строк.
+        self.decompose = decompose
+        self.profile_hints = profile_hints or {}
 
     def _agent_for(self, profile: str | None) -> Agent:
         """Агент под профиль. Фабрика может его не принимать — тогда
@@ -157,6 +212,16 @@ class AutoRunner:
         if facts:
             known = "Уже известно из прошлых прогонов:\n" + \
                     "\n".join(f"- {f['text']}" for f in facts)
+
+        if self.decompose:
+            if self._plan_structured(goal, known):
+                return
+            # Разбор не удался — не выдумываем структуру, работаем
+            # плоским списком. Молча получить план из одного пункта
+            # хуже, чем честно откатиться к простому планированию.
+            self._emit("warn", message=(
+                "структурный план не разобран — планирую списком"))
+
         agent = self.make_agent()
         res = agent.run(PLANNER.format(goal=goal, known=known))
         titles = [ln.strip(" -•*0123456789.\t")
@@ -166,6 +231,59 @@ class AutoRunner:
             titles = [goal]
         self.store.add_tasks(self.run_id, titles)
         self._emit("plan", items=titles)
+
+    def _plan_structured(self, goal: str, known: str) -> bool:
+        """План с исполнителями и зависимостями. False — не получилось."""
+        profiles = "\n".join(
+            f"- {n}: {d}" for n, d in (self.profile_hints or {}).items()
+        ) or "- (список не задан, оставляй «кто» пустым)"
+        agent = self.make_agent()
+        res = agent.run(DECOMPOSE.format(goal=goal, known=known,
+                                         profiles=profiles))
+        data = _json_block(res.answer)
+        if not data:
+            return False
+        raw = data.get("шаги") or data.get("steps") or []
+        if not isinstance(raw, list) or len(raw) < 2:
+            return False
+
+        steps: list[dict[str, Any]] = []
+        for item in raw[:7]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("что") or item.get("title") or "").strip()
+            if len(title) < 8:
+                continue
+            who = str(item.get("кто") or item.get("profile") or "").strip()
+            if who and self.known_profiles and who not in self.known_profiles:
+                who = ""            # придуманный исполнитель — не исполнитель
+            needs = item.get("после") or item.get("needs") or []
+            needs = [n for n in needs if isinstance(n, int)] \
+                if isinstance(needs, list) else []
+            steps.append({"title": title, "profile": who, "needs": needs,
+                          "check": str(item.get("проверка")
+                                       or item.get("check") or "")})
+        if len(steps) < 2:
+            return False
+
+        ids = self.store.add_steps(self.run_id, steps)
+        # Кольцо в зависимостях сделало бы план невыполнимым целиком.
+        # Лучше снять зависимости и работать по порядку, чем встать.
+        if self.store.deadlocked(self.run_id) and \
+                not self.store.next_ready_task(self.run_id):
+            for tid in ids:
+                self.store.db.execute("UPDATE task SET needs='' WHERE id=?",
+                                      (tid,))
+            self.store.db.commit()
+            self._emit("warn", message=(
+                "в зависимостях кольцо — сняты, работаем по порядку"))
+
+        rows = self.store.tasks(self.run_id)
+        self._emit("plan", items=[t["title"] for t in rows],
+                   steps=[{"id": t["id"], "title": t["title"],
+                           "profile": t["profile"], "needs": t["needs"],
+                           "check": t["check_hint"]} for t in rows])
+        return True
 
     def _replan(self, reason: str) -> bool:
         """Переделать план оставшейся работы.
@@ -205,6 +323,21 @@ class AutoRunner:
         return True
 
     def _context(self, task: dict[str, Any], warn: str) -> str:
+        extra = ""
+        if task.get("check_hint"):
+            extra = ("ЧЕМ ПОДТВЕРДИТЬ ВЫПОЛНЕНИЕ: "
+                     f"{task['check_hint']}\n")
+        # Результаты пунктов, от которых этот зависит: без них
+        # исполнитель заново добывает уже добытое.
+        deps = [d for d in (task.get("needs") or "").split(",")
+                if d.strip().isdigit()]
+        if deps:
+            by_id = {t["id"]: t for t in self.store.tasks(self.run_id)}
+            got = [by_id[int(d)] for d in deps if int(d) in by_id]
+            lines = [f"- {t['title']}: {(t['result'] or '(без результата)')[:200]}"
+                     for t in got if t["status"] == "done"]
+            if lines:
+                extra += "ГОТОВО В ПРЕДЫДУЩИХ ПУНКТАХ:\n" + "\n".join(lines) + "\n"
         facts = self.store.recall(task["title"], limit=6)
         memory = ("Из памяти:\n" + "\n".join(f"- {f['text']}" for f in facts)
                   if facts else "")
@@ -215,7 +348,7 @@ class AutoRunner:
         return WORKER.format(
             goal=self.store.get_run(self.run_id)["goal"],
             task_id=task["id"], task=task["title"],
-            memory=memory, recent=recent, warning=warn)
+            memory=memory, recent=recent, warning=extra + warn)
 
     def _reflect(self, task: dict[str, Any], summary: str) -> bool:
         """Возвращает True, если модель сигналит о застое."""
@@ -275,12 +408,28 @@ class AutoRunner:
                     self._emit("budget", spent=spent_all, limit=self.max_usd)
                     stop = "budget"
                     break
-            task = self.store.next_task(self.run_id)
+            # По готовности зависимостей, а не по номеру: иначе «собрать
+            # отчёт» берётся раньше «посчитать данные».
+            task = (self.store.next_ready_task(self.run_id)
+                    if self.decompose else self.store.next_task(self.run_id))
             if not task:
-                # Незакрытый вопрос — не «done»: работа упёрлась в человека.
+                rows = self.store.tasks(self.run_id)
+                stuck_deps = (self.store.deadlocked(self.run_id)
+                              if self.decompose else [])
+                if stuck_deps:
+                    # Пункты остались открытыми, но выполнить их нельзя.
+                    # Оставить их молча «открытыми» — значит не объяснить
+                    # человеку, почему план не доделан.
+                    for t in stuck_deps:
+                        self.store.set_task(
+                            t["id"], "skipped",
+                            "не выполнен: провалена или зациклена зависимость")
+                    self._emit("deadlock",
+                               items=[t["title"] for t in stuck_deps])
+                    stop = "deadlock"
+                    break
                 stop = "blocked" if any(
-                    t["status"] == "blocked"
-                    for t in self.store.tasks(self.run_id)) else "done"
+                    t["status"] == "blocked" for t in rows) else "done"
                 break
 
             it += 1
@@ -302,14 +451,19 @@ class AutoRunner:
             # Пункт плана может уйти СВОЕМУ агенту: чертёж — конструктору,
             # письмо — делопроизводителю. Профиль выбирается по тексту
             # пункта, а не по общей цели: внутри одной цели темы разные.
-            who = None
-            if self.route_tasks:
+            who, why = None, ""
+            assigned = (task.get("profile") or "").strip()
+            if assigned and assigned in self.known_profiles:
+                # Планировщик видел задачу целиком, диспетчер — одну
+                # строку. Назначение плана точнее, поэтому оно главнее.
+                who, why = assigned, "назначен планом"
+            elif self.route_tasks:
                 pick = choose_profile(task["title"], self.known_profiles)
-                who = pick.profile
-                if who and who != self.last_profile:
-                    self._emit("handoff", profile=who, task=task["title"],
-                               reason=pick.reason)
-                    self.last_profile = who
+                who, why = pick.profile, pick.reason
+            if who and who != self.last_profile:
+                self._emit("handoff", profile=who, task=task["title"],
+                           reason=why)
+                self.last_profile = who
             agent = self._agent_for(who)
             calls: list[str] = []
 
@@ -355,8 +509,22 @@ class AutoRunner:
             # если агент не закрыл пункт сам — закрываем по факту работы
             fresh = [t for t in self.store.tasks(self.run_id)
                      if t["id"] == task["id"]][0]
-            if fresh["status"] == "doing":
+            kids = self.store.children(task["id"])
+            if fresh["status"] == "doing" and kids:
+                # Агент разбил пункт на подшаги — работа не сделана, она
+                # только распланирована. Закрыть его сейчас значило бы
+                # объявить выполненным то, к чему ещё не приступали.
+                self.store.set_task(task["id"], "open",
+                                    f"разбит на {len(kids)} подшагов")
+                self._emit("split", task=task["title"],
+                           items=[k["title"] for k in kids])
+            elif fresh["status"] == "doing":
                 self.store.set_task(task["id"], "done", res.answer[:500])
+
+            # Родитель закрывается сам, когда все его подшаги завершены.
+            for parent in self.store.close_finished_parents(self.run_id):
+                self._emit("parent_done", task=parent["title"],
+                           result=parent["result"])
 
             if self._reflect(task, res.answer):
                 stuck_streak += 1
@@ -397,6 +565,12 @@ class AutoRunner:
             ask_block = "\n\nЖДУТ ОТВЕТА ЧЕЛОВЕКА:\n" + "\n".join(
                 f"  #{t['id']} {t['title']}\n     {t['result']}"
                 for t in blocked)
+        skipped = [t for t in allt if t["status"] == "skipped"]
+        dead_block = ""
+        if skipped:
+            dead_block = ("\n\nНЕ ВЫПОЛНЕНЫ (зависимость провалена "
+                          "или зациклена):\n" + "\n".join(
+                              f"  #{t['id']} {t['title']}" for t in skipped))
         summary = (
             f"Прогон #{self.run_id}: {stop}\n"
             f"Итераций: {it}, время: {elapsed/60:.1f} мин\n"
@@ -413,7 +587,7 @@ class AutoRunner:
                f"${self.max_usd:.2f}. План не доделан — продолжить можно "
                f"командой --resume {self.run_id} с большим --max-usd."
                if stop == "budget" else "")
-            + ask_block
+            + ask_block + dead_block
         )
         self._emit("finish", summary=summary, stopped_by=stop)
         return AutoResult(self.run_id, it, stop, summary, elapsed, tok, spent)

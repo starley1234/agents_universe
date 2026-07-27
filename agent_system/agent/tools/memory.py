@@ -107,6 +107,42 @@ def build(store: Store, run_id_getter) -> list[Tool]:
         ids = store.add_tasks(rid(), titles)
         return f"В план добавлено пунктов: {len(ids)}"
 
+    def plan_split(task_id: int, steps: str) -> str:
+        """Разбить свой пункт на подшаги.
+
+        Нужно, когда пункт оказался крупнее, чем виделось планировщику.
+        Без этого у исполнителя было два выхода: тянуть неподъёмное
+        целиком или провалить пункт — оба плохие.
+        """
+        titles = [x.strip(" -•*\t") for x in steps.splitlines() if x.strip()]
+        titles = [t for t in titles if len(t) > 5]
+        if len(titles) < 2:
+            raise ToolError(
+                "Разбивать имеет смысл минимум на 2 подшага, по одному "
+                "на строку. Один подшаг — это тот же пункт другими словами.")
+        if len(titles) > 6:
+            titles = titles[:6]
+
+        rows = {t["id"]: t for t in store.tasks(rid())}
+        cur = rows.get(task_id)
+        if cur is None:
+            raise ToolError(f"Пункта #{task_id} нет в этом прогоне")
+        if cur["parent_id"]:
+            # Иначе дерево растёт вглубь, а прогон уходит в дробление
+            # вместо работы. Два уровня покрывают реальные задачи.
+            raise ToolError(
+                f"Пункт #{task_id} сам является подшагом. Глубже двух "
+                "уровней дробить нельзя — выполняй или закрывай через "
+                "plan_fail.")
+        if store.children(task_id):
+            raise ToolError(f"Пункт #{task_id} уже разбит на подшаги")
+
+        ids = store.add_tasks(rid(), titles, parent=task_id)
+        return (f"Пункт #{task_id} разбит на {len(ids)} подшагов:\n"
+                + "\n".join(f"  #{i} {t}" for i, t in zip(ids, titles))
+                + "\nОни выполняются по очереди; сам пункт закроется, "
+                  "когда закончатся подшаги. Работай над первым.")
+
     def plan_show() -> str:
         rows = store.tasks(rid())
         if not rows:
@@ -115,7 +151,13 @@ def build(store: Store, run_id_getter) -> list[Tool]:
                 "failed": "[!]", "skipped": "[-]", "blocked": "[?]"}
         out = []
         for t in rows:
-            line = f"{mark.get(t['status'], '[ ]')} #{t['id']} {t['title']}"
+            # Подшаги показываем с отступом: иначе непонятно, почему
+            # пунктов вдруг стало вдвое больше.
+            pad = "    " if t["parent_id"] else ""
+            line = (f"{pad}{mark.get(t['status'], '[ ]')} #{t['id']} "
+                    f"{t['title']}")
+            if t["profile"]:
+                line += f" [{t['profile']}]"
             if t["result"]:
                 line += f"  → {t['result'][:120]}"
             out.append(line)
@@ -225,6 +267,18 @@ def build(store: Store, run_id_getter) -> list[Tool]:
               "properties": {"items": {"type": "string"}},
               "required": ["items"]},
              plan_add),
+        Tool("plan_split",
+             "Разбить свой пункт плана на 2-6 подшагов, если он оказался "
+             "слишком крупным. Подшаги выполняются по очереди, сам пункт "
+             "закроется автоматически. Лучше разбить, чем провалить.",
+             {"type": "object",
+              "properties": {
+                  "task_id": {"type": "integer",
+                              "description": "Номер разбиваемого пункта"},
+                  "steps": {"type": "string",
+                            "description": "Подшаги, по одному на строку"}},
+              "required": ["task_id", "steps"]},
+             plan_split),
         Tool("plan_show",
              "Показать текущий план и прогресс.",
              {"type": "object", "properties": {}, "required": []},

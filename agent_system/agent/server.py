@@ -17,8 +17,10 @@ Authorization: Bearer <token>. Без него сервер слушает то�
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -300,6 +302,22 @@ class Handler(BaseHTTPRequestHandler):
             emit("error", {"message": f"{type(exc).__name__}: {exc}"})
 
 
+def _who_holds(port: int) -> str:
+    """Кто занял порт. Без этого совет «остановите старый» бесполезен:
+    непонятно, какой именно процесс останавливать."""
+    for cmd in (["ss", "-lptn", f"sport = :{port}"],
+                ["lsof", "-i", f":{port}", "-sTCP:LISTEN"]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        lines = [ln for ln in (r.stdout or "").splitlines()[1:] if ln.strip()]
+        if lines:
+            return "Занят процессом:\n  " + "\n  ".join(lines[:3])
+    return "Кто занял — определить не удалось (нет ss и lsof)."
+
+
 def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8080,
           token: str | None = None) -> None:
     Handler.cfg = cfg
@@ -321,7 +339,35 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8080,
             "Отказ: сервер открыт наружу без токена. Задайте AGENT_API_TOKEN "
             "или слушайте 127.0.0.1."
         )
-    srv = ThreadingHTTPServer((host, port), Handler)
+    # allow_reuse_address: без него порт держится в TIME_WAIT около
+    # минуты после Ctrl+C, и перезапуск падает «Address already in use»,
+    # хотя сервер уже остановлен. Наблюдалось на живом сервере.
+    ThreadingHTTPServer.allow_reuse_address = True
+    try:
+        srv = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise SystemExit(f"Не поднять сервер на {host}:{port}: {exc}")
+        # Трейсбек здесь бесполезен: причина не в коде, а в занятом
+        # порте. Говорим, кто занял и что делать.
+        who = _who_holds(port)
+        # Совет зависит от того, КТО занял порт. Раньше писали «сервер
+        # уже запущен» всегда — а у человека порт держал apache2, и
+        # совет открыть http://... вёл на чужой сайт.
+        ours = "agent" in who or "python" in who.lower()
+        advice = ["  · другой порт:      make serve PORT=8081",
+                  "                      python3 -m agent.server --port 8081",
+                  "  · чтобы не указывать каждый раз, впишите в .env:",
+                  "                      AGENT_PORT=8081"]
+        if ours:
+            advice.insert(0, f"  · это похоже на уже запущенный агент — "
+                             f"откройте http://{host}:{port}/")
+            advice.append("  · остановить старый: pkill -f 'agent.server'")
+        else:
+            advice.insert(0, "  · порт держит ЧУЖАЯ программа (см. выше) — "
+                             "её лучше не трогать")
+        raise SystemExit(f"Порт {port} уже занят.\n{who}\n"
+                         "Что делать:\n" + "\n".join(advice))
     print(f"Веб-интерфейс и API: http://{host}:{port}/  "
           f"(токен: {'да' if Handler.token else 'нет, только localhost'})")
     print(f"модель: {cfg.provider}/{cfg.model} · песочница: {cfg.sandbox.mode}")
@@ -335,6 +381,11 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8080,
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    from .config import load_dotenv
+    # ДО разбора аргументов: их умолчания берутся из окружения, поэтому
+    # .env, прочитанный позже, на них уже не повлияет. Именно так
+    # AGENT_PORT из файла молча игнорировался.
+    load_dotenv()
     ap = argparse.ArgumentParser(prog="agent-server", description="HTTP API агента")
     ap.add_argument("-c", "--config")
     ap.add_argument("--host", default=os.getenv("AGENT_HOST", "127.0.0.1"))

@@ -129,7 +129,8 @@ def cmd_chat(cfg: Config, verbose: bool, color: bool) -> int:
 
 def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
              resume: int | None, verbose: bool, color: bool,
-             max_usd: float = 0.0, route: bool = False) -> int:
+             max_usd: float = 0.0, route: bool = False,
+             decompose: bool = False) -> int:
     """Автономный прогон: часы работы без человека."""
     tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
     store = Store(cfg.db)
@@ -148,8 +149,24 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
             print(tint(C_OK, f"\n▶ продолжаем прогон #{data['run_id']}"))
         elif kind == "plan":
             print(tint(C_OK, "\nПлан:"))
-            for i, t in enumerate(data["items"], 1):
-                print(f"  {i}. {t}")
+            steps = data.get("steps")
+            if steps:
+                # Со структурой показываем, кто делает и чего ждёт:
+                # иначе непонятно, почему пункт не берётся в работу.
+                by_id = {s["id"]: i for i, s in enumerate(steps, 1)}
+                for i, s in enumerate(steps, 1):
+                    who = f" [{s['profile']}]" if s.get("profile") else ""
+                    deps = [str(by_id.get(int(d), d))
+                            for d in (s.get("needs") or "").split(",")
+                            if d.strip().isdigit()]
+                    after = f" ← после {', '.join(deps)}" if deps else ""
+                    print(f"  {i}. {s['title']}{tint(C_ACC, who)}"
+                          + tint(C_DIM, after))
+                    if s.get("check"):
+                        print(tint(C_DIM, f"     проверка: {s['check']}"))
+            else:
+                for i, t in enumerate(data["items"], 1):
+                    print(f"  {i}. {t}")
         elif kind == "iteration":
             print(tint(C_ACC, f"\n── итерация {data['n']} · {data['left']//60} мин "
                               f"· #{data['task_id']} {data['task']}"))
@@ -157,6 +174,18 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
             c = data.get("cost", 0)
             print(tint(C_DIM, f"  расход: {data['tokens']:,} токенов"
                               + (f", ${c:.4f}" if c else "")))
+        elif kind == "split":
+            print(tint(C_ACC, f"\n⑂ пункт разбит на подшаги: {data['task']}"))
+            for t in data.get("items", []):
+                print(tint(C_DIM, f"     · {t}"))
+        elif kind == "parent_done":
+            print(tint(C_OK, f"\n✓ пункт закрыт целиком: {data['task']}"
+                             f" ({data.get('result', '')})"))
+        elif kind == "deadlock":
+            print(tint(C_ERR, "\n⛔ невыполнимые пункты (зависимость "
+                              "провалена или зациклена):"))
+            for t in data.get("items", []):
+                print(tint(C_ERR, f"   · {t}"))
         elif kind == "handoff":
             print(tint(C_ACC, f"\n→ передано агенту «{data['profile']}» "
                               f"({data['reason']})"))
@@ -194,8 +223,10 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
 
     runner = AutoRunner(factory, store, max_hours=hours,
                         max_iterations=iters, max_usd=max_usd,
-                        route_tasks=route,
+                        route_tasks=route or decompose,
                         known_profiles=Config.list_profiles(),
+                        decompose=decompose,
+                        profile_hints=Config.profile_hints(),
                         on_event=on_event)
 
     # run_id появляется внутри runner — прокидываем его инструментам памяти
@@ -278,8 +309,10 @@ def cmd_do(cfg: Config, task: str, verbose: bool, color: bool,
     if pick.autonomous:
         # В простом режиме передача между агентами включена: длинная
         # задача почти всегда состоит из разнородных пунктов.
+        # В простом режиме декомпозиция включена: длинная задача почти
+        # всегда состоит из разнородных шагов с зависимостями.
         return cmd_auto(cfg, task, hours, iters, None, verbose, color,
-                        max_usd, route=True)
+                        max_usd, route=True, decompose=True)
     return cmd_run(cfg, task, verbose, color)
 
 
@@ -562,6 +595,10 @@ def cmd_check(cfg: Config) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # .env читаем до разбора аргументов: часть умолчаний берётся из
+    # окружения, и после разбора файл на них уже не влияет.
+    from .config import load_dotenv
+    load_dotenv()
     ap = argparse.ArgumentParser(
         prog="agent", description="Универсальный агент с инструментами")
     ap.add_argument("task", nargs="*", help="задача; без неё — интерактив")
@@ -613,6 +650,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="в --debate: модель_a,модель_b,арбитр")
     ap.add_argument("--route", action="store_true",
                     help="в --auto: каждый пункт плана своему агенту")
+    ap.add_argument("--decompose", action="store_true",
+                    help="в --auto: разбить задачу на шаги с исполнителями "
+                         "и порядком выполнения")
     args = ap.parse_args(argv)
 
     overrides: dict[str, Any] = {
@@ -680,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.resume, args.verbose, color,
                         args.max_usd if args.max_usd is not None
                         else cfg.max_usd,
-                        args.route)
+                        args.route, args.decompose)
     try:
         if args.task:
             return cmd_run(cfg, " ".join(args.task), args.verbose, color)

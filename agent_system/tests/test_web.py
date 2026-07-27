@@ -346,6 +346,246 @@ def test_server_auth() -> None:
             srv.stop()
 
 
+def test_port_busy() -> None:
+    section("Занятый порт: понятная причина, а не трейсбек")
+    from agent.server import serve, _who_holds
+    from agent.config import Config
+
+    port = free_port()
+    with tempfile.TemporaryDirectory() as td:
+        cfg = Config(provider="ollama", model="m", workspace=td)
+        cfg.db = str(Path(td) / "a.db")
+        srv = Server(cfg)          # держит СВОЙ порт
+        try:
+            # Пробуем занять уже занятый порт этого же сервера.
+            try:
+                serve(cfg, "127.0.0.1", srv.port)
+                check("занятый порт отвергнут", False, "сервер поднялся")
+            except SystemExit as exc:
+                msg = str(exc)
+                check("занятый порт отвергнут", True)
+                check("названа причина, а не трейсбек",
+                      "уже занят" in msg, msg[:80])
+                check("сказано, как сменить порт",
+                      "--port" in msg, msg[:200])
+                check("сказано, что сервер мог быть уже запущен",
+                      "уже запущен" in msg, msg[:200])
+                check("показан занявший процесс",
+                      "python" in msg.lower() or "определить не удалось" in msg,
+                      msg[:300])
+        finally:
+            srv.stop()
+
+    # Свободный порт после освобождения снова доступен: allow_reuse_address
+    # избавляет от «Address already in use» на минуту после Ctrl+C.
+    check("кто занял свободный порт — честный ответ",
+          "не удалось" in _who_holds(port) or "Занят" in _who_holds(port),
+          _who_holds(port)[:60])
+
+
+def test_dotenv() -> None:
+    section(".env читается, приоритеты соблюдены")
+    import os
+    from agent.config import Config, load_dotenv
+
+    saved = {k: os.environ.get(k) for k in
+             ("AGENT_PORT", "AGENT_HOST", "AGENT_MODEL", "AGENT_PROVIDER")}
+    for k in saved:
+        os.environ.pop(k, None)
+    cwd = os.getcwd()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            Path(".env").write_text(
+                "# комментарий\n"
+                "AGENT_PORT=8020\n"
+                "AGENT_HOST=127.0.0.1\n"
+                'AGENT_MODEL="qwen3-coder-30b"\n'
+                "export AGENT_PROVIDER=llamacpp\n"
+                "  \n"
+                "мусор без равно\n",
+                encoding="utf-8")
+            n = load_dotenv()
+            check("ключи прочитаны", n == 4, str(n))
+            check("значение подхвачено",
+                  os.environ.get("AGENT_PORT") == "8020",
+                  str(os.environ.get("AGENT_PORT")))
+            check("кавычки сняты",
+                  os.environ.get("AGENT_MODEL") == "qwen3-coder-30b",
+                  repr(os.environ.get("AGENT_MODEL")))
+            check("export в начале строки не мешает",
+                  os.environ.get("AGENT_PROVIDER") == "llamacpp")
+            check("строка без = пропущена",
+                  "мусор без равно" not in str(os.environ))
+
+            # Настоящее окружение сильнее файла: иначе
+            # `AGENT_PORT=9000 make serve` не сработал бы.
+            os.environ["AGENT_PORT"] = "9999"
+            load_dotenv()
+            check("окружение сильнее .env",
+                  os.environ["AGENT_PORT"] == "9999",
+                  os.environ["AGENT_PORT"])
+            load_dotenv(override=True)
+            check("override=True перебивает окружение",
+                  os.environ["AGENT_PORT"] == "8020",
+                  os.environ["AGENT_PORT"])
+
+            cfg = Config.load(None)
+            check("Config берёт модель из .env",
+                  cfg.model == "qwen3-coder-30b" and cfg.provider == "llamacpp",
+                  f"{cfg.provider}/{cfg.model}")
+
+        with tempfile.TemporaryDirectory() as td2:
+            os.chdir(td2)
+            check("без файла .env — ноль ключей и без ошибки",
+                  load_dotenv() == 0)
+    finally:
+        os.chdir(cwd)
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_dotenv_reaches_server() -> None:
+    section(".env доходит до сервера, флаг сильнее файла")
+    import os
+    import agent.server as S
+
+    saved = {k: os.environ.get(k) for k in ("AGENT_PORT", "AGENT_HOST")}
+    for k in saved:
+        os.environ.pop(k, None)
+    cwd = os.getcwd()
+    real_serve = S.serve
+    seen: dict = {}
+    S.serve = lambda cfg, host="127.0.0.1", port=8080, token=None: \
+        seen.update(host=host, port=port)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            os.chdir(td)
+            Path(".env").write_text("AGENT_PORT=8020\nAGENT_HOST=127.0.0.1\n",
+                                    encoding="utf-8")
+            S.main([])
+            # Раньше argparse брал умолчание из os.getenv ДО чтения .env,
+            # и порт из файла молча игнорировался.
+            check("порт взят из .env", seen.get("port") == 8020,
+                  str(seen.get("port")))
+            S.main(["--port", "8021"])
+            check("флаг сильнее .env", seen.get("port") == 8021,
+                  str(seen.get("port")))
+            os.environ["AGENT_PORT"] = "8022"
+            S.main([])
+            check("окружение сильнее .env", seen.get("port") == 8022,
+                  str(seen.get("port")))
+            os.environ.pop("AGENT_PORT")
+        with tempfile.TemporaryDirectory() as td2:
+            os.chdir(td2)
+            S.main([])
+            check("без .env — умолчание 8080", seen.get("port") == 8080,
+                  str(seen.get("port")))
+    finally:
+        S.serve = real_serve
+        os.chdir(cwd)
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_env_vs_config_file() -> None:
+    section("Приоритет: явный конфиг сильнее .env и окружения")
+    import json as _json
+    import os
+    from agent.config import Config
+
+    saved = {k: os.environ.get(k) for k in ("AGENT_PROVIDER", "AGENT_MODEL")}
+    try:
+        os.environ["AGENT_PROVIDER"] = "llamacpp"
+        os.environ["AGENT_MODEL"] = "из-окружения"
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "c.json"
+            f.write_text(_json.dumps({"provider": "ollama",
+                                      "model": "из-файла"}),
+                         encoding="utf-8")
+            # Раньше окружение перебивало файл: человек указывал
+            # `-c cad.json`, а работала модель из .env. Конфиг-файл
+            # тогда ничего не гарантирует.
+            cfg = Config.load(str(f))
+            check("модель из файла, а не из окружения",
+                  cfg.model == "из-файла", cfg.model)
+            check("провайдер из файла", cfg.provider == "ollama",
+                  cfg.provider)
+
+            cfg2 = Config.load(str(f), model="из-флага")
+            check("флаг сильнее файла", cfg2.model == "из-флага", cfg2.model)
+
+            # Без файла окружение по-прежнему работает как умолчание.
+            cfg3 = Config.load(None)
+            check("без файла окружение действует",
+                  cfg3.model == "из-окружения", cfg3.model)
+
+            # Частичный файл: чего в нём нет — берётся из окружения.
+            f2 = Path(td) / "part.json"
+            f2.write_text(_json.dumps({"model": "только-модель"}),
+                          encoding="utf-8")
+            cfg4 = Config.load(str(f2))
+            check("незаданное в файле берётся из окружения",
+                  cfg4.model == "только-модель"
+                  and cfg4.provider == "llamacpp",
+                  f"{cfg4.provider}/{cfg4.model}")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_busy_port_advice() -> None:
+    section("Занятый порт: совет зависит от того, кто занял")
+    import agent.server as S
+    from agent.config import Config
+
+    real = S._who_holds
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Config(provider="ollama", model="m", workspace=td)
+            cfg.db = str(Path(td) / "a.db")
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+            # Чужая программа: советовать «откройте в браузере» нельзя,
+            # это уведёт на посторонний сайт.
+            S._who_holds = lambda p: 'users:(("apache2",pid=4170888,fd=4))'
+            try:
+                S.serve(cfg, "127.0.0.1", port)
+                check("занятый порт отвергнут", False, "поднялся")
+            except SystemExit as exc:
+                msg = str(exc)
+                check("про чужую программу сказано прямо",
+                      "ЧУЖАЯ программа" in msg, msg[:120])
+                check("не советуем открывать чужой сайт",
+                      "откройте http" not in msg, msg[:200])
+                check("предложен .env", "AGENT_PORT" in msg, msg[:250])
+
+            # Свой процесс: наоборот, стоит предложить открыть.
+            S._who_holds = lambda p: 'users:(("python3",pid=1,fd=3)) agent'
+            try:
+                S.serve(cfg, "127.0.0.1", port)
+            except SystemExit as exc:
+                msg = str(exc)
+                check("про свой агент сказано, что можно открыть",
+                      "уже запущенный агент" in msg, msg[:150])
+                check("предложено остановить старый",
+                      "pkill" in msg, msg[:250])
+            s.close()
+    finally:
+        S._who_holds = real
+
+
 def test_page_has_parts() -> None:
     section("Страница: нужные части на месте")
     f = Path(__file__).resolve().parents[1] / "agent" / "web" / "index.html"
@@ -377,6 +617,11 @@ def main() -> int:
     test_server_plan()
     test_server_dispatch()
     test_server_auth()
+    test_port_busy()
+    test_dotenv()
+    test_dotenv_reaches_server()
+    test_env_vs_config_file()
+    test_busy_port_advice()
     test_page_has_parts()
     print("\n" + "=" * 60)
     print(f"пройдено: {PASS} · провалено: {FAIL}")

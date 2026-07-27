@@ -17,6 +17,49 @@ from .skills.comms import CommsConfig
 from .tools.shell import SandboxConfig
 
 
+def load_dotenv(path: str | os.PathLike[str] | None = None,
+                override: bool = False) -> int:
+    """Загрузить .env в окружение. Возвращает число прочитанных ключей.
+
+    Файл .env лежал в проекте с примером и был описан в документации, но
+    его никто не читал: код брал только os.getenv. Человек прописывал
+    AGENT_PORT и получал прежний порт — молча, без единого намёка.
+
+    Формат нарочно простой: KEY=VALUE, решётка — комментарий, кавычки
+    вокруг значения снимаются. Ни подстановок, ни многострочных
+    значений: у переменных окружения их тоже нет, а сложный разбор
+    потянул бы зависимость.
+
+    override=False: настоящее окружение сильнее файла. Иначе
+    `AGENT_PORT=9000 make serve` не сработал бы — файл бы его перебил.
+    """
+    f = Path(path) if path else Path.cwd() / ".env"
+    if not f.is_file():
+        return 0
+    n = 0
+    try:
+        text = f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].lstrip()
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if not sep or not key or not key.replace("_", "").isalnum():
+            continue
+        value = value.split(" #", 1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if override or key not in os.environ:
+            os.environ[key] = value
+            n += 1
+    return n
+
+
 @dataclass
 class Config:
     provider: str = "openai"
@@ -81,6 +124,24 @@ class Config:
         return Path(__file__).resolve().parent / "profiles"
 
     @classmethod
+    def profile_hints(cls) -> dict[str, str]:
+        """Профиль -> описание. Планировщику нужно знать, кому поручать.
+
+        Без описаний модель назначает исполнителей по созвучию имени и
+        путает `docs` (разбор входящих) с `office` (создание бумаг).
+        """
+        out: dict[str, str] = {}
+        for name in cls.list_profiles():
+            try:
+                data = json.loads(
+                    (cls.profiles_dir() / f"{name}.json").read_text(
+                        encoding="utf-8"))
+                out[name] = str(data.get("description") or name)
+            except (OSError, json.JSONDecodeError):
+                out[name] = name
+        return out
+
+    @classmethod
     def list_profiles(cls) -> list[str]:
         d = cls.profiles_dir()
         return sorted(p.stem for p in d.glob("*.json")) if d.exists() else []
@@ -105,6 +166,8 @@ class Config:
 
     @classmethod
     def load(cls, path: str | None = None, **overrides: Any) -> "Config":
+        # .env читаем ДО всего: из него берутся и ключи, и умолчания.
+        load_dotenv()
         data: dict[str, Any] = {}
         if path:
             p = Path(path).expanduser()
@@ -155,12 +218,18 @@ class Config:
             for k, v in saved.items():
                 setattr(cfg, k, v)
 
-        # окружение
-        cfg.provider = os.getenv("AGENT_PROVIDER", cfg.provider)
-        cfg.model = os.getenv("AGENT_MODEL", cfg.model)
-        if os.getenv("AGENT_WORKSPACE"):
+        # Окружение — умолчание для того, что НЕ задано явно в файле.
+        # Раньше оно перебивало файл: человек указывал `-c cad.json` с
+        # ollama, а работала модель из .env. Явное указание должно быть
+        # сильнее фонового — иначе конфиг-файл ничего не гарантирует.
+        in_file = {k for k, v in data.items() if v is not None}
+        if "provider" not in in_file:
+            cfg.provider = os.getenv("AGENT_PROVIDER", cfg.provider)
+        if "model" not in in_file:
+            cfg.model = os.getenv("AGENT_MODEL", cfg.model)
+        if os.getenv("AGENT_WORKSPACE") and "workspace" not in in_file:
             cfg.workspace = os.environ["AGENT_WORKSPACE"]
-        if os.getenv("AGENT_SANDBOX"):
+        if os.getenv("AGENT_SANDBOX") and not sandbox_data:
             cfg.sandbox.mode = os.environ["AGENT_SANDBOX"]
 
         # переопределения из CLI

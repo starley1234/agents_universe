@@ -55,7 +55,14 @@ CREATE TABLE IF NOT EXISTS task(
   -- в работу больше не берётся, виден в итоге прогона.
   status TEXT DEFAULT 'open',        -- open|doing|done|failed|skipped|blocked
   result TEXT, created REAL, updated REAL,
-  ord INTEGER DEFAULT 0
+  ord INTEGER DEFAULT 0,
+  -- Декомпозиция: кто делает пункт, от каких пунктов он зависит и чем
+  -- подтверждается выполнение. Без этого план был плоским списком, а
+  -- порядок — просто нумерацией: пункт «собрать отчёт» брался в работу
+  -- раньше «посчитать данные», и агент писал отчёт ни о чём.
+  profile TEXT DEFAULT '',           -- назначенный исполнитель
+  needs TEXT DEFAULT '',             -- номера пунктов через запятую
+  check_hint TEXT DEFAULT ''         -- чем подтверждается выполнение
 );
 
 CREATE TABLE IF NOT EXISTS fact(
@@ -163,7 +170,26 @@ class Store:
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    #: Колонки, добавленные после первых версий. CREATE TABLE IF NOT
+    #: EXISTS их не создаст: таблица уже есть. Без миграции старая база
+    #: пользователя падала бы с «no such column» на первом же прогоне.
+    _ADDED = {
+        "task": [("profile", "TEXT DEFAULT ''"),
+                 ("needs", "TEXT DEFAULT ''"),
+                 ("check_hint", "TEXT DEFAULT ''")],
+    }
+
+    def _migrate(self) -> None:
+        for table, columns in self._ADDED.items():
+            have = {r[1] for r in self.db.execute(
+                f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in have:
+                    self.db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def close(self) -> None:
         self.db.close()
@@ -220,6 +246,157 @@ class Store:
         self.db.commit()
         return ids
 
+    def add_steps(self, run_id: int, steps: list[dict[str, Any]],
+                  parent: int | None = None) -> list[int]:
+        """Добавить пункты плана с исполнителем и зависимостями.
+
+        steps: [{"title", "profile", "needs": [номера в ЭТОМ списке],
+                 "check"}]. Номера в needs — позиции внутри списка (1,2,3),
+        а не id в базе: модель не знает будущих id. Переводим здесь.
+        """
+        base = self.db.execute(
+            "SELECT COALESCE(MAX(ord),0) FROM task WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
+        ids: list[int] = []
+        for i, st in enumerate(steps, 1):
+            title = str(st.get("title") or "").strip()
+            if not title:
+                continue
+            cur = self.db.execute(
+                "INSERT INTO task(run_id,parent_id,title,created,updated,"
+                "ord,profile,check_hint) VALUES(?,?,?,?,?,?,?,?)",
+                (run_id, parent, title, self._now(), self._now(),
+                 base + i, str(st.get("profile") or "")[:40],
+                 str(st.get("check") or "")[:300]))
+            ids.append(int(cur.lastrowid))
+        # Зависимости проставляем ВТОРЫМ проходом: пункт может зависеть
+        # от следующего по списку, а его id ещё не существовал.
+        for i, st in enumerate(steps[:len(ids)]):
+            needs = st.get("needs") or []
+            real = [str(ids[n - 1]) for n in needs
+                    if isinstance(n, int) and 1 <= n <= len(ids)
+                    and ids[n - 1] != ids[i]]      # сам от себя не зависит
+            if real:
+                self.db.execute("UPDATE task SET needs=? WHERE id=?",
+                                (",".join(real), ids[i]))
+        self.db.commit()
+        return ids
+
+    def _blockers(self, task: dict[str, Any],
+                  by_id: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+        """Незакрытые пункты, от которых зависит этот."""
+        out = []
+        for raw in (task.get("needs") or "").split(","):
+            raw = raw.strip()
+            if not raw.isdigit():
+                continue
+            dep = by_id.get(int(raw))
+            if dep and dep["status"] not in ("done", "skipped"):
+                out.append(dep)
+        return out
+
+    def children(self, task_id: int) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM task WHERE parent_id=? ORDER BY ord", (task_id,))]
+
+    def next_ready_task(self, run_id: int) -> dict[str, Any] | None:
+        """Первый пункт, у которого выполнены зависимости.
+
+        Без этого «собрать отчёт» бралось раньше «посчитать данные»
+        просто потому, что стояло выше по номеру.
+
+        Пункт с подшагами сам в работу НЕ берётся: работают его дети.
+        Иначе агент делал бы работу дважды — сначала крупный пункт
+        целиком, потом его же по частям.
+        """
+        rows = self.tasks(run_id)
+        by_id = {t["id"]: t for t in rows}
+        kids: dict[int, list[dict[str, Any]]] = {}
+        for t in rows:
+            if t["parent_id"]:
+                kids.setdefault(t["parent_id"], []).append(t)
+
+        def has_open_kids(t: dict[str, Any]) -> bool:
+            return any(k["status"] in ("open", "doing")
+                       for k in kids.get(t["id"], []))
+
+        doing = [t for t in rows
+                 if t["status"] == "doing" and not has_open_kids(t)]
+        if doing:
+            return doing[0]
+        for t in rows:
+            if t["status"] != "open" or has_open_kids(t):
+                continue
+            if not self._blockers(t, by_id):
+                return t
+        return None
+
+    def close_finished_parents(self, run_id: int) -> list[dict[str, Any]]:
+        """Закрыть пункты, все подшаги которых завершены.
+
+        Родитель — это не работа, а заголовок: своей работы у него нет,
+        и держать его «в работе» после того, как дети сделаны, значит
+        показывать человеку план, который никогда не закончится.
+        """
+        closed = []
+        for t in self.tasks(run_id):
+            if t["status"] not in ("open", "doing"):
+                continue
+            kids = self.children(t["id"])
+            if not kids or any(k["status"] in ("open", "doing")
+                               for k in kids):
+                continue
+            done = [k for k in kids if k["status"] == "done"]
+            failed = [k for k in kids if k["status"] == "failed"]
+            status = "done" if done and not failed else "failed"
+            note = f"подшагов: {len(done)} из {len(kids)}"
+            if failed:
+                note += "; не вышло: " + "; ".join(
+                    k["title"][:60] for k in failed[:3])
+            self.set_task(t["id"], status, note)
+            t["status"], t["result"] = status, note
+            closed.append(t)
+        return closed
+
+    def deadlocked(self, run_id: int) -> list[dict[str, Any]]:
+        """Открытые пункты, которые НИКОГДА не станут готовы.
+
+        Либо зависят от проваленного, либо образуют кольцо. Молча
+        оставить их «открытыми» нельзя: прогон закончится словами
+        «план не доделан» без объяснения причины.
+        """
+        rows = self.tasks(run_id)
+        by_id = {t["id"]: t for t in rows}
+        openish = {t["id"] for t in rows if t["status"] in ("open", "doing")}
+        stuck = []
+        for t in rows:
+            if t["status"] not in ("open", "doing"):
+                continue
+            for dep in self._blockers(t, by_id):
+                if dep["status"] in ("failed", "blocked"):
+                    stuck.append(t)
+                    break
+            else:
+                # кольцо: идём по цепочке зависимостей и ищем возврат
+                seen, cur = set(), t
+                while True:
+                    deps = [d for d in self._blockers(cur, by_id)
+                            if d["id"] in openish]
+                    if not deps:
+                        break
+                    nxt = deps[0]
+                    if nxt["id"] in seen or nxt["id"] == t["id"]:
+                        stuck.append(t)
+                        break
+                    seen.add(nxt["id"])
+                    cur = nxt
+        return stuck
+
+    def set_task_profile(self, task_id: int, profile: str) -> None:
+        self.db.execute("UPDATE task SET profile=? WHERE id=?",
+                        (profile[:40], task_id))
+        self.db.commit()
+
     def next_task(self, run_id: int) -> dict[str, Any] | None:
         r = self.db.execute(
             "SELECT * FROM task WHERE run_id=? AND status IN ('open','doing') "
@@ -245,8 +422,30 @@ class Store:
         return cur.rowcount
 
     def tasks(self, run_id: int) -> list[dict[str, Any]]:
-        return [dict(r) for r in self.db.execute(
+        """Пункты прогона: подшаги идут сразу за своим родителем.
+
+        Порядок по ord ставил подшаги в конец списка — план читался
+        как «сначала всё крупное, потом непонятно чьи мелочи».
+        """
+        rows = [dict(r) for r in self.db.execute(
             "SELECT * FROM task WHERE run_id=? ORDER BY ord", (run_id,))]
+        kids: dict[int, list[dict[str, Any]]] = {}
+        for t in rows:
+            if t["parent_id"]:
+                kids.setdefault(t["parent_id"], []).append(t)
+        if not kids:
+            return rows
+        out: list[dict[str, Any]] = []
+        for t in rows:
+            if t["parent_id"]:
+                continue
+            out.append(t)
+            out.extend(kids.get(t["id"], []))
+        # Осиротевшие подшаги (родителя убрали при перепланировании)
+        # не теряем: иначе они исчезнут из плана молча.
+        seen = {t["id"] for t in out}
+        out.extend(t for t in rows if t["id"] not in seen)
+        return out
 
     # ----------------------------------------------------------- память
     def remember(self, text: str, tags: str = "", source: str = "",
