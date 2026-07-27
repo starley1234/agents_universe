@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.autorun import AutoRunner                    # noqa: E402
 from agent.core import Agent                            # noqa: E402
-from agent.llm.base import BaseLLM, LLMReply, ToolCall  # noqa: E402
+from agent.llm.base import BaseLLM, LLMReply            # noqa: E402
 from agent.store import Store                           # noqa: E402
 from agent.tools import memory as mem_tools             # noqa: E402
 from agent.tools.base import ToolRegistry               # noqa: E402

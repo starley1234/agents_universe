@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Callable

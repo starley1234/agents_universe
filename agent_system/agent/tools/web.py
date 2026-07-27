@@ -47,6 +47,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -61,6 +62,13 @@ _DEFAULT_SEARCH_URLS = {
     "duckduckgo_lite": "https://lite.duckduckgo.com/lite/",
     "duckduckgo_html": "https://html.duckduckgo.com/html/",
 }
+
+#: socket.getaddrinfo() САМ ПО СЕБЕ не имеет тайм-аута — на зависшем или
+#: намеренно медленном DNS-сервере (в т.ч. подконтрольном атакующему,
+#: если домен указывает на его же NS) проверка SSRF повисла бы навсегда
+#: и держала бы поток агента. DNS_RESOLVE_TIMEOUT ограничивает именно
+#: этот шаг отдельно от cfg.timeout (тот — про сам HTTP-запрос).
+DNS_RESOLVE_TIMEOUT = 5.0
 
 
 @dataclass
@@ -91,6 +99,37 @@ def _normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _resolve_with_timeout(host: str, timeout: float) -> list:
+    """socket.getaddrinfo() с тайм-аутом через отдельный поток.
+
+    Сам getaddrinfo не принимает timeout — на зависшем DNS это значило
+    бы, что проверка SSRF (и с ней весь шаг агента) висит бесконечно.
+    Поток-резолвер остаётся daemon и после тайм-аута — не самый чистый
+    способ "отменить" системный вызов, но getaddrinfo нельзя прервать
+    иначе средствами stdlib, а утечка одного зависшего потока на редкий
+    случай безопаснее, чем подвешенный агент.
+    """
+    result: dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            result["infos"] = socket.getaddrinfo(host, None)
+        except socket.gaierror as exc:
+            result["error"] = exc
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise ToolError(
+            f"Разрешение хоста {host!r} не уложилось в {timeout:g} с — "
+            "DNS не отвечает или отвечает слишком медленно"
+        )
+    if "error" in result:
+        raise ToolError(f"Не удалось разрешить хост {host!r}: {result['error']}")
+    return result.get("infos", [])
+
+
 # ============================================================ SSRF-защита
 def _check_url_safe(url: str, allow_local: bool) -> None:
     """Отклонить схему/хост, небезопасные для исходящего запроса модели.
@@ -110,10 +149,7 @@ def _check_url_safe(url: str, allow_local: bool) -> None:
         raise ToolError(f"Не удалось определить хост в URL {url!r}")
     if allow_local:
         return
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror as exc:
-        raise ToolError(f"Не удалось разрешить хост {host!r}: {exc}") from exc
+    infos = _resolve_with_timeout(host, DNS_RESOLVE_TIMEOUT)
     for info in infos:
         raw_ip = info[4][0]
         try:

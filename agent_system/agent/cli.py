@@ -198,7 +198,7 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
 
 def cmd_check(cfg: Config) -> int:
     """Самопроверка: конфиг, песочница, доступность модели."""
-    from .tools.shell import docker_available, effective_mode
+    from .tools.shell import effective_mode
 
     ok = True
     print("Проверка окружения\n" + "─" * 40)

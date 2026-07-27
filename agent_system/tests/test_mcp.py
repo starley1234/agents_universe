@@ -313,7 +313,6 @@ def test_replan() -> None:
 
         r2 = AutoRunner(lambda: Agent(llm, reg, max_steps=2), st, max_hours=1)
         r2.run_id = rid2
-        before = len(st.tasks(rid2))
         ok = r2._replan("провалено пунктов: 2")
         after = st.tasks(rid2)
         check("перепланирование сработало", ok)

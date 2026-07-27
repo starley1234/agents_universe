@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .base import BaseLLM, LLMError, LLMReply, ToolCall, Usage
+from .base import BaseLLM, LLMError, LLMReply, ToolCall
 
 
 class Ollama(BaseLLM):

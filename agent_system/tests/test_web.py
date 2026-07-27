@@ -472,6 +472,36 @@ def test_ssrf_dns_resolution_failure_is_tool_error() -> None:
         check("неразрешимый хост отклонён", True)
 
 
+def test_dns_resolve_timeout_does_not_hang_forever() -> None:
+    section("SSRF-защита: зависший DNS-резолвер не подвешивает агента навсегда")
+    import socket
+    import time
+
+    orig_getaddrinfo = socket.getaddrinfo
+
+    def hanging_getaddrinfo(*a, **kw):
+        time.sleep(10)          # заведомо дольше тайм-аута ниже
+        return orig_getaddrinfo(*a, **kw)
+
+    socket.getaddrinfo = hanging_getaddrinfo
+    try:
+        t0 = time.time()
+        try:
+            web_mod._resolve_with_timeout("example.com", timeout=1.0)
+            check("зависший DNS даёт тайм-аут, а не висит", False)
+        except ToolError as exc:
+            dt = time.time() - t0
+            check("тайм-аут сработал в разумное время (не 10 с)", dt < 3.0,
+                  f"{dt:.2f}s")
+            check("сообщение об ошибке понятное", "не уложилось" in str(exc), str(exc))
+    finally:
+        socket.getaddrinfo = orig_getaddrinfo
+
+    # позитивный контроль: реальный (не подменённый) резолвинг работает
+    infos = web_mod._resolve_with_timeout("127.0.0.1", timeout=web_mod.DNS_RESOLVE_TIMEOUT)
+    check("нормальный резолвинг не сломан подменой", len(infos) > 0, str(infos))
+
+
 # ============================================================== rate limit
 def test_rate_limit_enforced_between_calls() -> None:
     section("web: лимит частоты выдерживается между вызовами")
@@ -573,6 +603,7 @@ def main() -> int:
     test_ssrf_web_fetch_end_to_end()
     test_ssrf_redirect_to_private_is_blocked()
     test_ssrf_dns_resolution_failure_is_tool_error()
+    test_dns_resolve_timeout_does_not_hang_forever()
     test_rate_limit_enforced_between_calls()
     test_web_config_from_dict_ignores_comments()
     test_build_agent_with_web_skill()
