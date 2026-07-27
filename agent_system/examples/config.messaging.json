@@ -25,14 +25,18 @@
       "imap_use_ssl": true
     },
     "telegram": {
-      "rate_limit": 1.0
+      "rate_limit": 1.0,
+      "_комментарий_webhook": "webhook_secret — секрет для приёма вложений через POST /webhook/telegram (см. agent/webhooks.py). Сам секрет — из переменной окружения TELEGRAM_WEBHOOK_SECRET, здесь этому полю просто нет места (см. .env.example)."
     },
     "max": {
-      "rate_limit": 0.6
+      "rate_limit": 0.6,
+      "_комментарий_webhook": "то же самое для MAX: секрет из MAX_WEBHOOK_SECRET, приём на POST /webhook/max."
     },
     "_комментарий_confirm_sends": "true (по умолчанию) — перед реальной отправкой письма/сообщения агент спрашивает подтверждения оператора (как run_command для опасных команд). Для автономного прогона без оператора поставьте false осознанно.",
-    "confirm_sends": true
+    "confirm_sends": true,
+    "_комментарий_webhook_profile": "профиль, который применяется к КАЖДОМУ входящему сообщению через вебхук (например 'intake' — разбор документов). Пусто = использовать профиль/навыки, с которым запущен сам сервер (см. агент.server.serve).",
+    "webhook_profile": "intake"
   },
 
-  "_комментарий_сценарий": "Пример потока «фото/текст → анализ → отчёт»: пользователь присылает файл через email_read/telegram_get_updates/max_get_updates -> агент сохраняет вложение в workspace -> pdf_classify/pdf_extract или doc_classify/doc_extract режут на структуру -> extract_entities кладёт сущности в онтологию -> pptx_create/pptx_add_slide/pptx_add_table_slide собирают отчёт -> telegram_send_file/max_send_message/email_send отправляют его обратно."
+  "_комментарий_сценарий": "Пример потока «фото/текст → анализ → отчёт»: пользователь присылает файл боту в Telegram/MAX -> платформа стучится на POST /webhook/telegram или /webhook/max (см. agent/webhooks.py, вложение скачивается автоматически в workspace/inbox/<канал>/<чат>/) -> агент с профилем webhook_profile разбирает файл (pdf_classify/pdf_extract или doc_classify/doc_extract режут на структуру, extract_entities кладёт сущности в онтологию) -> ответ уходит обратно в тот же чат. Для чтения почты/ручного опроса без вложений по-прежнему годятся email_read/telegram_get_updates/max_get_updates."
 }

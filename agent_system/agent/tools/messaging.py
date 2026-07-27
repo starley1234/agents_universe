@@ -35,6 +35,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from email.header import decode_header
+from pathlib import Path
 from typing import Any, Callable
 
 from .base import Tool, ToolError, Workspace
@@ -74,6 +75,13 @@ class TelegramConfig:
     bot_token: str = ""
     api_base: str = "https://api.telegram.org"
     rate_limit: float = 1.0           # не чаще 1 сообщения в секунду
+    # Секрет для Webhook (см. agent/webhooks.py): Telegram присылает его в
+    # заголовке X-Telegram-Bot-Api-Secret-Token каждого запроса на вебхук.
+    # Пусто = маршрут /webhook/telegram в agent/server.py не активируется
+    # (см. там же) — приём вложений без проверенного секрета означает, что
+    # ЛЮБОЙ желающий может отправить POST и заставить агента выполнить
+    # придуманную задачу, поэтому включение только по явному значению.
+    webhook_secret: str = ""
 
     def ready(self) -> bool:
         return bool(self.bot_token)
@@ -85,6 +93,10 @@ class MaxConfig:
     bot_token: str = ""
     api_base: str = "https://platform-api2.max.ru"
     rate_limit: float = 0.6           # лимит платформы: 2 сообщения/сек в чат
+    # Секрет для Webhook: MAX присылает его в заголовке
+    # X-Max-Bot-Api-Secret (см. POST /subscriptions). Та же логика, что у
+    # TelegramConfig.webhook_secret — пусто -> маршрут выключен.
+    webhook_secret: str = ""
 
     def ready(self) -> bool:
         return bool(self.bot_token)
@@ -97,6 +109,10 @@ class MessagingConfig:
     max: MaxConfig = field(default_factory=MaxConfig)
     # см. пояснение в шапке файла: отправка — необратимое действие
     confirm_sends: bool = True
+    # Профиль, применяемый при обработке ВХОДЯЩИХ сообщений через Webhook
+    # (см. agent/webhooks.py) — например "intake" для разбора вложений.
+    # Пусто = использовать тот же профиль/навыки, с которым запущен сервер.
+    webhook_profile: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "MessagingConfig":
@@ -110,8 +126,10 @@ class MessagingConfig:
         tg_cfg = TelegramConfig(**_clean(data.pop("telegram", {}) or {}))
         max_cfg = MaxConfig(**_clean(data.pop("max", {}) or {}))
         confirm_sends = bool(data.pop("confirm_sends", True))
+        webhook_profile = str(data.pop("webhook_profile", "") or "")
         return cls(email=email_cfg, telegram=tg_cfg, max=max_cfg,
-                   confirm_sends=confirm_sends)
+                   confirm_sends=confirm_sends, webhook_profile=webhook_profile)
+
 
 
 
@@ -370,50 +388,94 @@ def build_email_tools(ws: Workspace, cfg: EmailConfig, confirm_sends: bool,
 
 
 # ============================================================= telegram
+def telegram_api_request(cfg: TelegramConfig, method: str,
+                         payload: dict[str, Any] | None = None,
+                         files: dict[str, tuple[str, bytes, str]] | None = None
+                         ) -> dict[str, Any]:
+    """Сырой вызов Telegram Bot API — общая точка для Tool-обёрток ниже И
+
+    agent/webhooks.py (автоматический ответ на входящее сообщение). Без
+    ожидания rate-limit: у build_telegram_tools свой _RateLimiter вокруг
+    этой функции (частые вызовы модели), а webhooks.py отвечает на
+    входящее сообщение один раз — рисковать забанить бота почти нечем,
+    заводить для этого отдельный лимитер excessive.
+    """
+    if not cfg.ready():
+        raise ToolError(
+            "Telegram не настроен. Укажите telegram.bot_token в конфиге "
+            "(через переменную окружения, см. .env.example)."
+        )
+    url = f"{cfg.api_base}/bot{cfg.bot_token}/{method}"
+    if files:
+        boundary = "----agentboundary"
+        body = bytearray()
+        for key, val in (payload or {}).items():
+            body += (f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{key}"\r\n\r\n{val}\r\n').encode()
+        for key, (filename, data, ctype) in files.items():
+            body += (f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{key}"; filename="{filename}"\r\n'
+                    f"Content-Type: {ctype}\r\n\r\n").encode()
+            body += data
+            body += b"\r\n"
+        body += f"--{boundary}--\r\n".encode()
+        req = urllib.request.Request(
+            url, data=bytes(body), method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    else:
+        req = urllib.request.Request(
+            url, data=json.dumps(payload or {}).encode(), method="POST",
+            headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:400]
+        raise ToolError(f"Telegram API HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ToolError(f"Не достучались до Telegram API: {exc}") from exc
+    if not data.get("ok"):
+        raise ToolError(f"Telegram API отказал: {data.get('description')}")
+    return data.get("result", {})
+
+
+def telegram_download_file(cfg: TelegramConfig, file_id: str,
+                           max_size: int = MAX_ATTACH_SIZE) -> tuple[bytes, str]:
+    """Скачать вложение по file_id (см. приём вложений в webhooks.py).
+
+    Двухшаговый протокол Telegram: getFile отдаёт file_path (доступен
+    ~час), затем сам файл лежит на отдельном домене /file/bot<token>/...
+    Тело здесь не связано с диалоговой моделью — это чистый httр-клиент,
+    используется и Tool'ом (если понадобится), и вебхуком.
+    """
+    info = telegram_api_request(cfg, "getFile", {"file_id": file_id})
+    file_path = info.get("file_path")
+    if not file_path:
+        raise ToolError(f"Telegram не отдал file_path для file_id={file_id}")
+    size = info.get("file_size") or 0
+    if size and size > max_size:
+        raise ToolError(
+            f"Файл {file_path} больше {max_size // 1_000_000} МБ — не скачиваем"
+        )
+    url = f"{cfg.api_base}/file/bot{cfg.bot_token}/{file_path}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            data = resp.read(max_size + 1)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ToolError(f"Не удалось скачать файл Telegram: {exc}") from exc
+    if len(data) > max_size:
+        raise ToolError(f"Файл {file_path} больше {max_size // 1_000_000} МБ")
+    return data, Path(file_path).name
+
+
 def build_telegram_tools(ws: Workspace, cfg: TelegramConfig, confirm_sends: bool,
                          confirm: Callable[[str, str], bool] | None) -> list[Tool]:
     limiter = _RateLimiter(cfg.rate_limit)
 
     def _call(method: str, payload: dict[str, Any] | None = None,
              files: dict[str, tuple[str, bytes, str]] | None = None) -> dict[str, Any]:
-        if not cfg.ready():
-            raise ToolError(
-                "Telegram не настроен. Укажите telegram.bot_token в конфиге "
-                "(через переменную окружения, см. .env.example)."
-            )
         limiter.wait()
-        url = f"{cfg.api_base}/bot{cfg.bot_token}/{method}"
-        if files:
-            boundary = "----agentboundary"
-            body = bytearray()
-            for key, val in (payload or {}).items():
-                body += (f"--{boundary}\r\nContent-Disposition: form-data; "
-                        f'name="{key}"\r\n\r\n{val}\r\n').encode()
-            for key, (filename, data, ctype) in files.items():
-                body += (f"--{boundary}\r\nContent-Disposition: form-data; "
-                        f'name="{key}"; filename="{filename}"\r\n'
-                        f"Content-Type: {ctype}\r\n\r\n").encode()
-                body += data
-                body += b"\r\n"
-            body += f"--{boundary}--\r\n".encode()
-            req = urllib.request.Request(
-                url, data=bytes(body), method="POST",
-                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-        else:
-            req = urllib.request.Request(
-                url, data=json.dumps(payload or {}).encode(), method="POST",
-                headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-            raise ToolError(f"Telegram API HTTP {exc.code}: {detail}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise ToolError(f"Не достучались до Telegram API: {exc}") from exc
-        if not data.get("ok"):
-            raise ToolError(f"Telegram API отказал: {data.get('description')}")
-        return data.get("result", {})
+        return telegram_api_request(cfg, method, payload, files)
 
     def telegram_send_message(chat_id: str, text: str,
                               parse_mode: str = "") -> str:
@@ -499,37 +561,65 @@ def build_telegram_tools(ws: Workspace, cfg: TelegramConfig, confirm_sends: bool
 
 
 # ==================================================================== max
+def max_api_request(cfg: MaxConfig, method: str, http_method: str,
+                    params: dict[str, Any] | None = None,
+                    body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Сырой вызов MAX Bot API — общая точка для build_max_tools И
+
+    agent/webhooks.py, по тому же принципу, что telegram_api_request.
+    """
+    if not cfg.ready():
+        raise ToolError(
+            "MAX не настроен. Укажите max.bot_token в конфиге (через "
+            "переменную окружения, см. .env.example)."
+        )
+    qs = ""
+    if params:
+        clean = {k: v for k, v in params.items() if v is not None}
+        if clean:
+            qs = "?" + urllib.parse.urlencode(clean)
+    url = f"{cfg.api_base}{method}{qs}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=http_method,
+        headers={"Authorization": cfg.bot_token,
+                "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:400]
+        raise ToolError(f"MAX API HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ToolError(f"Не достучались до MAX API: {exc}") from exc
+
+
+def max_download_attachment(url: str, max_size: int = MAX_ATTACH_SIZE) -> bytes:
+    """Скачать вложение MAX по прямой ссылке из payload.url.
+
+    В отличие от Telegram, MAX отдаёт готовую скачиваемую ссылку прямо во
+    входящем событии (см. https://dev.max.ru/docs-api) — отдельного
+    getFile-запроса не требуется, только сама загрузка по HTTP.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            data = resp.read(max_size + 1)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ToolError(f"Не удалось скачать вложение MAX: {exc}") from exc
+    if len(data) > max_size:
+        raise ToolError(f"Вложение больше {max_size // 1_000_000} МБ")
+    return data
+
+
+
 def build_max_tools(ws: Workspace, cfg: MaxConfig, confirm_sends: bool,
                     confirm: Callable[[str, str], bool] | None) -> list[Tool]:
     limiter = _RateLimiter(cfg.rate_limit)
 
     def _request(method: str, http_method: str, params: dict[str, Any] | None = None,
                 body: dict[str, Any] | None = None) -> dict[str, Any]:
-        if not cfg.ready():
-            raise ToolError(
-                "MAX не настроен. Укажите max.bot_token в конфиге (через "
-                "переменную окружения, см. .env.example)."
-            )
         limiter.wait()
-        qs = ""
-        if params:
-            clean = {k: v for k, v in params.items() if v is not None}
-            if clean:
-                qs = "?" + urllib.parse.urlencode(clean)
-        url = f"{cfg.api_base}{method}{qs}"
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(
-            url, data=data, method=http_method,
-            headers={"Authorization": cfg.bot_token,
-                    "Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-            raise ToolError(f"MAX API HTTP {exc.code}: {detail}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise ToolError(f"Не достучались до MAX API: {exc}") from exc
+        return max_api_request(cfg, method, http_method, params, body)
 
     def max_send_message(text: str, user_id: str = "", chat_id: str = "") -> str:
         if not text.strip():

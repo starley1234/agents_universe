@@ -24,7 +24,7 @@
 
 ```bash
 cd agent_system
-make test                     # 582 проверки, ~17 с
+make test                     # 623 проверки, ~18 с
 make build-sandbox            # образ песочницы (для sandbox=docker)
 
 export OPENAI_API_KEY=sk-...
@@ -375,15 +375,65 @@ IMAP_HOST=... IMAP_USER=... IMAP_PASSWORD=...
 `confirm_sends: false`, беря ответственность на себя.
 
 Типичный сценарий «входящее фото/документ → анализ → отчёт»: получить
-вложение (`email_read`, либо забрать файл, присланный через
-`telegram_get_updates`/`max_get_updates`, отдельным HTTP/webhook-
-обработчиком) → сохранить в workspace → распознать (`pdf_extract`/
-`doc_extract`, `extract_entities`) → собрать отчёт (`office`) →
-отправить обратно (`telegram_send_file`/`max_send_message`/
-`email_send`). Приём вложений по Long Polling затронут только частично
-(текст входящих сообщений виден через `*_get_updates`); постоянный
-приём файлов от пользователей эффективнее делать через Webhook —
-это отдельная задача поверх HTTP API (`agent/server.py`).
+вложение (`email_read`, либо через `agent/webhooks.py` — см. ниже) →
+сохранить в workspace → распознать (`pdf_extract`/`doc_extract`,
+`extract_entities`) → собрать отчёт (`office`) → отправить обратно
+(`telegram_send_file`/`max_send_message`/`email_send`).
+
+#### Приём вложений через Webhook (`agent/webhooks.py`)
+
+`telegram_get_updates`/`max_get_updates` (Long Polling) видят только
+ТЕКСТ входящего сообщения — сам файл туда не попадает, только его
+описание. Единственный способ реально скачать фото/документ, присланный
+боту, — Webhook: платформа сама стучится HTTP POST-ом на наш сервер,
+когда пользователь что-то прислал.
+
+`agent/server.py` поднимает два маршрута:
+
+- `POST /webhook/telegram` — секрет проверяется по заголовку
+  `X-Telegram-Bot-Api-Secret-Token`;
+- `POST /webhook/max` — секрет проверяется по заголовку
+  `X-Max-Bot-Api-Secret`.
+
+Маршрут появляется, ТОЛЬКО если в конфиге задан
+`messaging.telegram.webhook_secret`/`messaging.max.webhook_secret`
+(через переменные окружения `TELEGRAM_WEBHOOK_SECRET`/
+`MAX_WEBHOOK_SECRET`, см. `.env.example`) — без секрета мы не можем
+отличить платформу от произвольного POST-запроса из интернета, поэтому
+тихого «вебхук без проверки» здесь нет: сервер просто не регистрирует
+маршрут (404), пока секрет не задан.
+
+Что происходит на каждый входящий запрос:
+
+1. Секрет из заголовка сверяется с настроенным — не совпал → `401`,
+   ничего не скачивается и не запускается.
+2. Ответ `200 OK` отправляется НЕМЕДЛЕННО, сама обработка уходит в
+   фоновый поток — оба API требуют быстрого ответа (MAX жёстко: 30 с,
+   иначе до 10 повторных попыток доставки того же события).
+3. В фоне: вложение скачивается (`getFile`+загрузка по токену у
+   Telegram, прямая ссылка `payload.url` у MAX) и сохраняется в
+   `workspace/inbox/<telegram|max>/<чат>/`; имя файла от платформы
+   очищается (`_safe_name`), чтобы не выйти за пределы этой папки.
+4. Собирается агент с профилем `messaging.webhook_profile` (если задан,
+   иначе — тем же, с которым поднят сервер) и получает задачу с текстом
+   сообщения и перечнем сохранённых файлов.
+5. Ответ агента уходит обратно в тот же чат тем же каналом
+   (best-effort: если платформа недоступна, вебхук это уже не блокирует
+   — событие было принято на шаге 2).
+
+Зарегистрировать сам вебхук на стороне платформы (сообщить ей внешний
+HTTPS-адрес сервера) — отдельный шаг, не выполняется автоматически при
+старте (внешний адрес сервера агенту не известен):
+
+```python
+from agent.webhooks import register_telegram_webhook, register_max_webhook
+register_telegram_webhook(cfg.messaging.telegram, "https://your-domain.com/webhook/telegram")
+register_max_webhook(cfg.messaging.max, "https://your-domain.com/webhook/max")
+```
+
+Пример конфига — `examples/config.messaging.json` (поля
+`messaging.telegram.webhook_secret`/`messaging.max.webhook_secret`/
+`messaging.webhook_profile`).
 
 ### Набор `rag`
 
@@ -533,7 +583,7 @@ curl -X POST http://127.0.0.1:8080/run \
 **тест обязан уметь падать**.
 
 ```
-make test        # 582 проверки (ядро + память + автономия + MCP + pdf + docparse + pg_ontology + office + messaging + router + rag + cert_verify)
+make test        # 623 проверки (ядро + память + автономия + MCP + pdf + docparse + pg_ontology + office + messaging + router + rag + cert_verify + webhooks)
 make test-e2e    # 18 проверок на реальных сокетах
 ```
 
@@ -602,7 +652,17 @@ HTTP-стек от запроса до выполненной задачи. На
 понижает verdict до `needs_review` (и это видно и в возвращаемом тексте,
 и в самой базе — модель не может «переспорить» проверку), вырожденно
 короткая цитата отклоняется, `compliant`/`non_compliant` без
-доказательства не регистрируется вовсе.
+доказательства не регистрируется вовсе. Приём вложений через Webhook
+(`agent/webhooks.py`) проверен на 41 сценарии на реальном HTTP-стеке:
+поднимаются настоящий `agent/server.py`, фейковые Telegram/MAX API и
+фейковая LLM (та же схема, что в `test_e2e.py`) — запрос без секрета или
+с неверным секретом отклоняется `401` и вложение при этом НЕ скачивается
+(проверено по факту отсутствия обращения к `getFile`), верный секрет
+даёт мгновенный `200` (обработка реально уходит в фон — таймер в тесте
+это подтверждает), файл вложения реально долетает до диска побайтово,
+имя файла от платформы обезврежено от `../`, а без настроенного
+`webhook_secret` маршрут не регистрируется вовсе (`404`, а не «принял и
+не глядя отклонил»).
 
 ---
 
@@ -615,7 +675,9 @@ agent/
   config.py         конфигурация: файл + окружение + CLI
   router.py         авто-выбор профиля под задачу: эвристика + LLM-фолбэк
   cli.py            командная строка
-  server.py         HTTP API
+  server.py         HTTP API + вебхуки Telegram/MAX (POST /webhook/*)
+  webhooks.py       приём вложений через Webhook: проверка секрета,
+                    скачивание файла, фоновый прогон агента, ответ в чат
   llm/              драйверы моделей (openai_like, anthropic, ollama),
                     embeddings.py — драйверы эмбеддингов (openai/ollama/hash)
   tools/            base (реестр, изоляция путей), files, shell,

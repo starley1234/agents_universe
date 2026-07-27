@@ -5,9 +5,19 @@
   GET  /info            — конфигурация и список инструментов
   POST /run             — {"task": "...", "workspace": "..."} -> результат
   POST /run/stream      — то же, но события построчно (NDJSON)
+  POST /webhook/telegram — приём входящих сообщений Telegram (см. ниже)
+  POST /webhook/max      — приём входящих сообщений MAX (см. ниже)
 
 Токен: если задан AGENT_API_TOKEN, требуется заголовок
 Authorization: Bearer <token>. Без него сервер слушает только localhost.
+
+Вебхуки /webhook/* — ОТДЕЛЬНАЯ модель доверия, не токен API: платформа
+(Telegram/MAX) не умеет присылать Authorization: Bearer, зато подписывает
+запрос своим секретом в отдельном заголовке (см. agent/webhooks.py:
+verify_telegram_secret/verify_max_secret). Маршрут появляется, только
+если соответствующий webhook_secret задан в конфиге — без секрета мы не
+можем отличить платформу от произвольного POST из интернета, поэтому
+такой маршрут просто не регистрируется (см. serve()).
 """
 from __future__ import annotations
 
@@ -21,8 +31,10 @@ from typing import Any
 from .build import build_agent
 from .config import Config
 from .router import route_and_apply
+from . import webhooks
 
 MAX_BODY = 1_000_000
+
 
 
 
@@ -112,6 +124,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": f"нет маршрута {self.path}"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/webhook/telegram":
+            self._webhook_telegram()
+            return
+        if self.path == "/webhook/max":
+            self._webhook_max()
+            return
         if not self._authorized():
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
@@ -151,6 +169,43 @@ class Handler(BaseHTTPRequestHandler):
             self._run_plain(cfg, task, route_note)
         else:
             self._run_stream(cfg, task, route_note)
+
+    # --- вебхуки: приём входящих сообщений/вложений от платформ ------
+    def _webhook_telegram(self) -> None:
+        tg_cfg = self.cfg.messaging.telegram
+        if not tg_cfg.webhook_secret:
+            # Маршрут в принципе не должен был активироваться (см. serve()),
+            # но если конфиг подменили между стартом и запросом — отказ,
+            # а не тихий приём непроверяемых сообщений.
+            self._send(404, {"error": f"нет маршрута {self.path}"})
+            return
+        if not webhooks.verify_telegram_secret(self.headers, tg_cfg):
+            self._send(401, {"error": "неверный X-Telegram-Bot-Api-Secret-Token"})
+            return
+        data = self._read_json()
+        if data is None:
+            self._send(400, {"error": "ожидается JSON в теле запроса"})
+            return
+        # Отвечаем 200 немедленно: сама обработка (скачивание вложения,
+        # прогон агента) уходит в фон — см. шапку модуля webhooks.py про
+        # требования Telegram/MAX к времени ответа.
+        webhooks.dispatch_telegram(self.cfg, data)
+        self._send(200, {"ok": True})
+
+    def _webhook_max(self) -> None:
+        max_cfg = self.cfg.messaging.max
+        if not max_cfg.webhook_secret:
+            self._send(404, {"error": f"нет маршрута {self.path}"})
+            return
+        if not webhooks.verify_max_secret(self.headers, max_cfg):
+            self._send(401, {"error": "неверный X-Max-Bot-Api-Secret"})
+            return
+        data = self._read_json()
+        if data is None:
+            self._send(400, {"error": "ожидается JSON в теле запроса"})
+            return
+        webhooks.dispatch_max(self.cfg, data)
+        self._send(200, {"ok": True})
 
     def _run_plain(self, cfg: Config, task: str, route_note: str | None = None) -> None:
         try:
@@ -221,6 +276,12 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8080,
     print(f"Веб-интерфейс и API: http://{host}:{port}/  "
           f"(токен: {'да' if Handler.token else 'нет, только localhost'})")
     print(f"модель: {cfg.provider}/{cfg.model} · песочница: {cfg.sandbox.mode}")
+    if cfg.messaging.telegram.webhook_secret:
+        print(f"webhook Telegram: POST http://{host}:{port}/webhook/telegram "
+              f"(зарегистрируйте адрес через webhooks.register_telegram_webhook)")
+    if cfg.messaging.max.webhook_secret:
+        print(f"webhook MAX: POST http://{host}:{port}/webhook/max "
+              f"(зарегистрируйте адрес через webhooks.register_max_webhook)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

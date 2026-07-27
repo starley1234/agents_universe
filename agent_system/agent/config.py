@@ -209,8 +209,12 @@ class Config:
             "IMAP_PASSWORD", cfg.messaging.email.imap_password)
         cfg.messaging.telegram.bot_token = os.getenv(
             "TELEGRAM_BOT_TOKEN", cfg.messaging.telegram.bot_token)
+        cfg.messaging.telegram.webhook_secret = os.getenv(
+            "TELEGRAM_WEBHOOK_SECRET", cfg.messaging.telegram.webhook_secret)
         cfg.messaging.max.bot_token = os.getenv(
             "MAX_BOT_TOKEN", cfg.messaging.max.bot_token)
+        cfg.messaging.max.webhook_secret = os.getenv(
+            "MAX_WEBHOOK_SECRET", cfg.messaging.max.webhook_secret)
 
         # переопределения из CLI
         for k, v in overrides.items():
@@ -282,8 +286,8 @@ class Config:
         # секреты каналов связи — тоже не светим
         msg = d.get("messaging") or {}
         for section, fields in (("email", ("smtp_password", "imap_password")),
-                                ("telegram", ("bot_token",)),
-                                ("max", ("bot_token",))):
+                                ("telegram", ("bot_token", "webhook_secret")),
+                                ("max", ("bot_token", "webhook_secret"))):
             sec = msg.get(section) or {}
             for f in fields:
                 if sec.get(f):
