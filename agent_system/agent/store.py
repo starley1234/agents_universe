@@ -148,6 +148,20 @@ CREATE TRIGGER IF NOT EXISTS chunk_ad AFTER DELETE ON chunk BEGIN
   INSERT INTO chunk_fts(chunk_fts, rowid, text, source)
     VALUES('delete', old.id, old.text, old.source);
 END;
+
+CREATE TABLE IF NOT EXISTS cert_check(
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER,
+  requirement TEXT NOT NULL,         -- пункт требования, напр. "ФАП-21 п.21.16А"
+  requirement_text TEXT DEFAULT '',  -- текст/суть требования, если известен
+  verdict TEXT NOT NULL,             -- compliant | non_compliant | not_found | needs_review
+  evidence_source TEXT DEFAULT '',   -- файл/документ с доказательством
+  evidence_quote TEXT DEFAULT '',    -- ДОСЛОВНАЯ цитата из источника
+  quote_verified INTEGER DEFAULT 0,  -- 1, если цитата реально найдена в источнике
+  comment TEXT DEFAULT '',
+  created REAL
+);
+CREATE INDEX IF NOT EXISTS ix_cert_check_run ON cert_check(run_id, verdict);
 """
 
 
@@ -609,4 +623,57 @@ class Store:
                        "entity_refs": row["entity_refs"], "score": score})
         out.sort(key=lambda r: -r["score"])
         return out[:limit]
+
+    # ------------------------------------------ cert_verify: чек-лист СБ
+    _VALID_VERDICTS = {"compliant", "non_compliant", "not_found", "needs_review"}
+
+    def add_cert_check(self, requirement: str, verdict: str,
+                       requirement_text: str = "", evidence_source: str = "",
+                       evidence_quote: str = "", quote_verified: bool = False,
+                       comment: str = "", run_id: int | None = None) -> int:
+        if verdict not in self._VALID_VERDICTS:
+            raise ValueError(
+                f"verdict должен быть одним из {sorted(self._VALID_VERDICTS)}, "
+                f"получено {verdict!r}"
+            )
+        cur = self.db.execute(
+            "INSERT INTO cert_check(run_id,requirement,requirement_text,"
+            "verdict,evidence_source,evidence_quote,quote_verified,comment,"
+            "created) VALUES(?,?,?,?,?,?,?,?,?)",
+            (run_id, requirement.strip(), requirement_text, verdict,
+             evidence_source, evidence_quote, int(quote_verified),
+             comment, self._now()))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def cert_checks(self, run_id: int | None = None) -> list[dict[str, Any]]:
+        if run_id is not None:
+            rows = self.db.execute(
+                "SELECT * FROM cert_check WHERE run_id=? ORDER BY id",
+                (run_id,))
+        else:
+            rows = self.db.execute("SELECT * FROM cert_check ORDER BY id")
+        return [dict(r) for r in rows]
+
+    def cert_summary(self, run_id: int | None = None) -> dict[str, int]:
+        checks = self.cert_checks(run_id)
+        out = {v: 0 for v in self._VALID_VERDICTS}
+        for c in checks:
+            out[c["verdict"]] = out.get(c["verdict"], 0) + 1
+        out["total"] = len(checks)
+        out["unverified_quotes"] = sum(
+            1 for c in checks
+            if c["evidence_quote"] and not c["quote_verified"])
+        return out
+
+    def clear_cert_checks(self, run_id: int | None = None) -> int:
+        """Начать проверку заново — например, при повторном прогоне на
+        обновлённом комплекте документов."""
+        if run_id is not None:
+            cur = self.db.execute("DELETE FROM cert_check WHERE run_id=?",
+                                  (run_id,))
+        else:
+            cur = self.db.execute("DELETE FROM cert_check")
+        self.db.commit()
+        return cur.rowcount
 

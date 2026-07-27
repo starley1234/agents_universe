@@ -8,6 +8,7 @@ from .core import Agent, DEFAULT_SYSTEM
 from .llm import build_llm
 from .llm.embeddings import build_embedder
 from .skills import cad_openscad
+from .skills import cert_verify
 from .skills import docparse
 from .skills import pdf_pipeline
 from .skills import pg_ontology
@@ -29,16 +30,16 @@ SKILLS: dict[str, Callable] = {
     "shell": lambda ws, cfg, confirm: shell_tools.build(ws, cfg.sandbox, confirm),
     "cad": lambda ws, cfg, confirm: cad_openscad.build(ws),
     "office": lambda ws, cfg, confirm: office_docs_tools.build(ws),
-    # memory, pdf, docparse, pg_ontology, messaging и rag подключаются
-    # отдельно: им нужен Store и/или отдельный драйвер модели (vision/
-    # эмбеддинги), либо своя конфигурация каналов связи, а не просто
-    # Workspace.
+    # memory, pdf, docparse, pg_ontology, messaging, rag и cert_verify
+    # подключаются отдельно: им нужен Store и/или отдельный драйвер
+    # модели (vision/эмбеддинги), либо своя конфигурация каналов связи,
+    # а не просто Workspace.
 }
 
 
 def known_skills() -> list[str]:
     return sorted([*SKILLS, "memory", "present", "mcp", "pdf", "docparse",
-                  "pg_ontology", "messaging", "rag"])
+                  "pg_ontology", "messaging", "rag", "cert_verify"])
 
 
 
@@ -58,7 +59,7 @@ def build_agent(
 
     registry = ToolRegistry()
     extra = {"memory", "present", "mcp", "pdf", "docparse", "pg_ontology",
-            "messaging", "rag"}
+            "messaging", "rag", "cert_verify"}
     unknown = [s for s in cfg.skills if s not in SKILLS and s not in extra]
     if unknown:
         raise ValueError(
@@ -67,7 +68,7 @@ def build_agent(
         )
     for name in cfg.skills:
         if name in ("memory", "present", "mcp", "pdf", "docparse",
-                    "pg_ontology", "messaging", "rag"):
+                    "pg_ontology", "messaging", "rag", "cert_verify"):
             continue
         registry.extend(SKILLS[name](ws, cfg, confirm))
 
@@ -171,6 +172,15 @@ def build_agent(
             chunk_size=cfg.rag_chunk_size, chunk_overlap=cfg.rag_chunk_overlap,
             default_top_k=cfg.rag_top_k,
         ))
+
+    # cert_verify: валидация комплекта документов для сертификации
+    # (ФАП-21/Росавиация). Требует только Store — та же база, что у
+    # memory/docparse/rag, чтобы выводы о соответствии сохранялись между
+    # шагами прогона и переживали перезапуск.
+    if "cert_verify" in cfg.skills:
+        if store is None:
+            store = Store(cfg.db)
+        registry.extend(cert_verify.build(ws, store, run_id_getter or (lambda: 0)))
 
     return Agent(
         llm=llm,
