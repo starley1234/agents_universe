@@ -26,13 +26,20 @@ from ..store_pg import PgError, PgStore
 from ..tools.base import Tool, ToolError
 
 
-def build(dsn: str, embedder: BaseEmbedder, dim: int) -> list[Tool]:
+def build(dsn: str, embedder: BaseEmbedder, dim: int = 0) -> list[Tool]:
     _store: list[PgStore | None] = [None]
 
     def store() -> PgStore:
         if _store[0] is None:
+            use_dim = dim
+            if use_dim <= 0:
+                # Автоопределение размерности по факту первого реального
+                # вызова эмбеддера — конфиг не нужно синхронизировать
+                # вручную с конкретной моделью (у text-embedding-3-small
+                # 1536, у hash-эмбеддера по умолчанию 256 и т.д.).
+                use_dim = len(_embed("dimension probe"))
             try:
-                _store[0] = PgStore(dsn, dim=dim)
+                _store[0] = PgStore(dsn, dim=use_dim)
             except PgError as exc:
                 raise ToolError(str(exc)) from exc
         return _store[0]

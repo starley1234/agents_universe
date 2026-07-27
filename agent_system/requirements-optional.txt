@@ -1,0 +1,21 @@
+# Ядро агента (agent/core.py, cli.py, tools/files.py, tools/shell.py,
+# mcp.py, store.py) работает на голой стандартной библиотеке Python —
+# этот файл НЕ обязателен для базового использования.
+#
+# Каждая строка ниже нужна только конкретному навыку и подключается
+# независимо; пропустите то, что не используете.
+
+# --- навык "pdf": чтение и распознавание PDF ---
+pymupdf
+
+# --- навык "docparse": чтение Word/Excel/CSV ---
+python-docx
+openpyxl
+
+# --- навык "pg_ontology": онтология в PostgreSQL + pgvector ---
+psycopg[binary]
+
+# --- тесты навыка pg_ontology: временный embedded Postgres ---
+# (не нужен для работы агента, только чтобы прогнать tests/test_pg_ontology.py
+# без установленного и настроенного PostgreSQL)
+pgserver
