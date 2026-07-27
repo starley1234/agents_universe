@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import time
@@ -28,6 +29,23 @@ from typing import Any
 #: Полный проход по большой базе стоит десятки миллисекунд, а старые
 #: записи почти никогда не нужны — агент оперирует недавним.
 LIKE_SCAN = 20_000
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Косинусное сходство. Дублирует agent/llm/embeddings.cosine —
+    намеренно: store.py не зависит от llm/, чтобы память/онтология
+    работали даже если пакет embeddings когда-нибудь изменит форму
+    экспорта; формула в три строки не стоит того, чтобы городить
+    зависимость между модулями разного назначения."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -394,6 +412,60 @@ class Store:
         except sqlite3.IntegrityError:
             return False
 
+    def get_entity(self, kind: str, name: str) -> dict[str, Any] | None:
+        r = self.db.execute("SELECT * FROM entity WHERE kind=? AND name=?",
+                            (kind, name)).fetchone()
+        return dict(r) if r else None
+
+    def set_entity_embedding(self, kind: str, name: str, vector: list[float],
+                             description: str = "") -> None:
+        """Записать эмбеддинг объекта (для RAG на онтологии, см. skills/rag.py).
+
+        Если объекта ещё нет — создаём пустой, чтобы вызывающему коду не
+        приходилось делать upsert_entity отдельно перед векторизацией.
+        """
+        self.upsert_entity(kind, name)
+        if description:
+            self.db.execute(
+                "UPDATE entity SET embedding=?, description=? "
+                "WHERE kind=? AND name=?",
+                (json.dumps(vector), description, kind, name))
+        else:
+            self.db.execute(
+                "UPDATE entity SET embedding=? WHERE kind=? AND name=?",
+                (json.dumps(vector), kind, name))
+        self.db.commit()
+
+    def entities_with_embedding(self, kind: str = "") -> list[dict[str, Any]]:
+        if kind:
+            rows = self.db.execute(
+                "SELECT * FROM entity WHERE kind=? AND embedding IS NOT NULL",
+                (kind,))
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM entity WHERE embedding IS NOT NULL")
+        return [dict(r) for r in rows]
+
+    def semantic_search_entities(self, embedding: list[float], kind: str = "",
+                                 limit: int = 10) -> list[dict[str, Any]]:
+        """Косинусное сходство В ПАМЯТИ — линейный проход по векторизованным
+        объектам. Для SQLite (один файл, один процесс) это уместно: даже
+        десятки тысяч объектов проходятся за миллисекунды, а собственного
+        векторного индекса SQLite не имеет. Для большего масштаба —
+        навык pg_ontology/PgStore с pgvector.
+        """
+        out = []
+        for row in self.entities_with_embedding(kind):
+            try:
+                vec = json.loads(row["embedding"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            score = _cosine(embedding, vec)
+            out.append({"kind": row["kind"], "name": row["name"],
+                       "description": row["description"], "score": score})
+        out.sort(key=lambda r: -r["score"])
+        return out[:limit]
+
     def neighbours(self, kind: str, name: str) -> list[dict[str, Any]]:
         row = self.db.execute("SELECT id FROM entity WHERE kind=? AND name=?",
                               (kind, name)).fetchone()
@@ -511,4 +583,30 @@ class Store:
             if any(list(ref) == [kind, name] for ref in refs):
                 out.append(d)
         return out
+
+    def semantic_search_chunks(self, embedding: list[float], limit: int = 6,
+                               source: str | None = None) -> list[dict[str, Any]]:
+        """Косинусное сходство В ПАМЯТИ по фрагментам — см. пояснение у
+        semantic_search_entities. Уместно для объёма одного agent.db;
+        для большего масштаба — навык pg_ontology/rag с бэкендом PgStore.
+        """
+        if source:
+            rows = self.db.execute(
+                "SELECT * FROM chunk WHERE embedding IS NOT NULL AND source=?",
+                (source,))
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM chunk WHERE embedding IS NOT NULL")
+        out = []
+        for row in rows:
+            try:
+                vec = json.loads(row["embedding"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            score = _cosine(embedding, vec)
+            out.append({"id": row["id"], "source": row["source"],
+                       "ord": row["ord"], "text": row["text"],
+                       "entity_refs": row["entity_refs"], "score": score})
+        out.sort(key=lambda r: -r["score"])
+        return out[:limit]
 

@@ -268,15 +268,27 @@ class PgStore:
         return ids
 
     def semantic_search_chunks(self, embedding: list[float],
-                               limit: int = 6) -> list[dict[str, Any]]:
+                               limit: int = 6, source: str | None = None) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
-        cur.execute("""
-            SELECT source, ord, text, entity_refs, 1 - (embedding <=> %s) AS score
-            FROM onto_chunk WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s LIMIT %s
-        """, (self._vec(embedding), self._vec(embedding), limit))
+        if source:
+            cur.execute("""
+                SELECT source, ord, text, entity_refs, 1 - (embedding <=> %s) AS score
+                FROM onto_chunk WHERE embedding IS NOT NULL AND source=%s
+                ORDER BY embedding <=> %s LIMIT %s
+            """, (self._vec(embedding), source, self._vec(embedding), limit))
+        else:
+            cur.execute("""
+                SELECT source, ord, text, entity_refs, 1 - (embedding <=> %s) AS score
+                FROM onto_chunk WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s LIMIT %s
+            """, (self._vec(embedding), self._vec(embedding), limit))
         return [{"source": s, "ord": o, "text": t, "entity_refs": refs, "score": float(sc)}
                 for s, o, t, refs, sc in cur.fetchall()]
+
+    def sources(self) -> list[str]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT DISTINCT source FROM onto_chunk ORDER BY source")
+        return [r[0] for r in cur.fetchall()]
 
     def chunks_for_entities(self, refs: list[tuple[str, str]]) -> list[dict[str, Any]]:
         """Фрагменты, привязанные к любому из объектов — для RAG на графе."""

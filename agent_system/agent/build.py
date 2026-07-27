@@ -11,6 +11,7 @@ from .skills import cad_openscad
 from .skills import docparse
 from .skills import pdf_pipeline
 from .skills import pg_ontology
+from .skills import rag as rag_skill
 from .mcp import MCPPool
 from .store import Store
 from .tools import memory as memory_tools
@@ -28,15 +29,16 @@ SKILLS: dict[str, Callable] = {
     "shell": lambda ws, cfg, confirm: shell_tools.build(ws, cfg.sandbox, confirm),
     "cad": lambda ws, cfg, confirm: cad_openscad.build(ws),
     "office": lambda ws, cfg, confirm: office_docs_tools.build(ws),
-    # memory, pdf, docparse, pg_ontology и messaging подключаются отдельно:
-    # им нужен Store и/или отдельный драйвер модели (vision/эмбеддинги),
-    # либо своя конфигурация каналов связи, а не просто Workspace.
+    # memory, pdf, docparse, pg_ontology, messaging и rag подключаются
+    # отдельно: им нужен Store и/или отдельный драйвер модели (vision/
+    # эмбеддинги), либо своя конфигурация каналов связи, а не просто
+    # Workspace.
 }
 
 
 def known_skills() -> list[str]:
     return sorted([*SKILLS, "memory", "present", "mcp", "pdf", "docparse",
-                  "pg_ontology", "messaging"])
+                  "pg_ontology", "messaging", "rag"])
 
 
 
@@ -56,7 +58,7 @@ def build_agent(
 
     registry = ToolRegistry()
     extra = {"memory", "present", "mcp", "pdf", "docparse", "pg_ontology",
-            "messaging"}
+            "messaging", "rag"}
     unknown = [s for s in cfg.skills if s not in SKILLS and s not in extra]
     if unknown:
         raise ValueError(
@@ -65,7 +67,7 @@ def build_agent(
         )
     for name in cfg.skills:
         if name in ("memory", "present", "mcp", "pdf", "docparse",
-                    "pg_ontology", "messaging"):
+                    "pg_ontology", "messaging", "rag"):
             continue
         registry.extend(SKILLS[name](ws, cfg, confirm))
 
@@ -136,6 +138,39 @@ def build_agent(
     # messaging.confirm_sends=False отправка будет отклонена.
     if "messaging" in cfg.skills:
         registry.extend(messaging_tools.build(ws, cfg.messaging, confirm))
+
+    # RAG: индексация текста в векторную/полнотекстовую базу и поиск по
+    # ней — обычный (по всем фрагментам) и на онтологии (по объектам).
+    # Бэкенд выбирается по наличию pg_dsn: с ним — PostgreSQL+pgvector
+    # (тот же навык pg_ontology использует), без него — тот же SQLite
+    # Store, что и memory/docparse (единая база на одну машину).
+    if "rag" in cfg.skills:
+        e_provider, e_model, e_base_url, e_api_key = cfg.resolve_embedding()
+        embedder = build_embedder(
+            e_provider, e_model, base_url=e_base_url, api_key=e_api_key,
+        )
+        if cfg.pg_dsn:
+            # Тот же приём, что в pg_ontology.build: если размерность не
+            # задана явно, определяем её по факту первого реального
+            # вызова эмбеддера — ЛЕНИВО, при первом использовании
+            # инструмента, а не при сборке агента.
+            pg_dim = cfg.pg_vector_dim
+
+            def _dim_getter(pg_dim=pg_dim, embedder=embedder) -> int:
+                if pg_dim > 0:
+                    return pg_dim
+                return len(embedder.embed_one("dimension probe"))
+
+            backend = rag_skill._PgBackend(cfg.pg_dsn, _dim_getter)
+        else:
+            if store is None:
+                store = Store(cfg.db)
+            backend = rag_skill._SQLiteBackend(store, run_id_getter or (lambda: 0))
+        registry.extend(rag_skill.build(
+            ws, embedder, backend,
+            chunk_size=cfg.rag_chunk_size, chunk_overlap=cfg.rag_chunk_overlap,
+            default_top_k=cfg.rag_top_k,
+        ))
 
     return Agent(
         llm=llm,
