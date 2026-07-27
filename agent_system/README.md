@@ -24,7 +24,7 @@
 
 ```bash
 cd agent_system
-make test                     # 65 проверок, ~1 с
+make test                     # 492 проверки, ~15 с
 make build-sandbox            # образ песочницы (для sandbox=docker)
 
 export OPENAI_API_KEY=sk-...
@@ -444,7 +444,7 @@ curl -X POST http://127.0.0.1:8080/run \
 
 ```
 make test        # 492 проверки (ядро + память + автономия + MCP + pdf + docparse + pg_ontology + office + messaging + router)
-make test-e2e    # 14 проверок на реальных сокетах
+make test-e2e    # 18 проверок на реальных сокетах
 ```
 
 Покрыто: изоляция путей (включая симлинки), файловые операции, тайм-ауты

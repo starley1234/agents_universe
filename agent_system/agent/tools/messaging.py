@@ -442,7 +442,8 @@ def build_telegram_tools(ws: Workspace, cfg: TelegramConfig, confirm_sends: bool
         res = _call("sendDocument", payload,
                    files={"document": (p.name, p.read_bytes(),
                                        ctype or "application/octet-stream")})
-        return f"Файл {ws.relative(p)} отправлен в Telegram (чат {chat_id})"
+        return (f"Файл {ws.relative(p)} отправлен в Telegram (чат {chat_id}), "
+               f"message_id={res.get('message_id')}")
 
     def telegram_get_updates(limit: int = 10, offset: int = 0) -> str:
         res = _call("getUpdates", {"limit": max(1, min(100, limit)),

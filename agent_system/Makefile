@@ -1,7 +1,7 @@
 .PHONY: help test test-e2e check build build-sandbox run serve clean install
 
 help:
-	@echo "make test          — все тесты (492 проверок)"
+	@echo "make test          — все тесты (492 проверки)"
 	@echo "make auto GOAL=... — автономный прогон на час"
 	@echo "make test-e2e      — сквозной тест на реальных сокетах"
 	@echo "make check         — самопроверка окружения"

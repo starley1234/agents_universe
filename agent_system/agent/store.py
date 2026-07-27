@@ -501,7 +501,6 @@ class Store:
 
     def entity_chunks(self, kind: str, name: str) -> list[dict[str, Any]]:
         """Фрагменты, привязанные к объекту онтологии — RAG-по-графу."""
-        needle = json.dumps([kind, name], ensure_ascii=False)
         out = []
         for r in self.db.execute("SELECT * FROM chunk"):
             d = dict(r)

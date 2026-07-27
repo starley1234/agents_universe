@@ -10,11 +10,14 @@ import json
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .mcp import MCPServerConfig, configs_from_dict
 from .tools.messaging import MessagingConfig
 from .tools.shell import SandboxConfig
+
+if TYPE_CHECKING:  # разрыв цикла: router.py импортирует Config только
+    from .router import ProfileInfo  # локально, внутри функции
 
 
 @dataclass
@@ -106,7 +109,7 @@ class Config:
         return sorted(p.stem for p in d.glob("*.json")) if d.exists() else []
 
     @classmethod
-    def profile_infos(cls) -> list["ProfileInfo"]:
+    def profile_infos(cls) -> list[ProfileInfo]:
         """Описания всех профилей для авто-выбора (см. agent/router.py).
 
         Читает только name/description/keywords — не поднимает skills/
