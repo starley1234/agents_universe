@@ -192,18 +192,31 @@
   <!-- ============================================== ОНТОЛОГИЯ -->
   <section id="view-ontology" class="hidden">
     <div class="card">
-      <h2>Объекты</h2>
+      <h2>Граф онтологии</h2>
       <div class="row">
         <select id="onto-kind"><option value="">(все типы)</option></select>
         <button id="onto-reload">Обновить</button>
+        <button id="onto-view-toggle" data-mode="graph">Показать таблицами</button>
+        <span class="muted" id="graph-hint">перетаскивайте узлы, наведите — описание</span>
       </div>
+      <div id="graph-empty" class="muted hidden">Связей пока нет — граф строится
+        только по объектам, между которыми есть хотя бы одна связь
+        (link/note_entity). Изолированные объекты видны в разделе ниже.</div>
+      <canvas id="onto-canvas" width="1040" height="480"
+              style="width:100%;height:480px;background:#0f1116;border:1px solid var(--line);
+                     border-radius:8px;cursor:grab"></canvas>
+      <div id="onto-tooltip" class="pill hidden" style="position:fixed;pointer-events:none;
+           max-width:320px;white-space:normal;z-index:20"></div>
+    </div>
+    <div class="card hidden" id="onto-tables-card">
+      <h2>Объекты (таблица)</h2>
       <table id="onto-entities-table">
         <thead><tr><th>Тип</th><th>Имя</th><th>Описание</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
-    <div class="card">
-      <h2>Связи</h2>
+    <div class="card hidden" id="onto-relations-card">
+      <h2>Связи (таблица)</h2>
       <table id="onto-relations-table">
         <thead><tr><th>Субъект</th><th>Предикат</th><th>Объект</th></tr></thead>
         <tbody></tbody>
@@ -541,10 +554,183 @@ $('#mem-search').onclick = loadMemory;
 $('#mem-query').addEventListener('keydown', e => { if (e.key === 'Enter') loadMemory(); });
 
 // ======================================================== онтология
+const KIND_COLORS = ['#4a9eff','#3ecf8e','#c9a227','#ff6b6b','#b18cff','#4ad4d4','#ff9f4a'];
+function colorForKind(kind){
+  let h = 0;
+  for (let i = 0; i < kind.length; i++) h = (h * 31 + kind.charCodeAt(i)) >>> 0;
+  return KIND_COLORS[h % KIND_COLORS.length];
+}
+
+// Простая force-directed раскладка (Фрухтерман-Рейнгольд, упрощённо):
+// узлы отталкиваются друг от друга, связанные — стягиваются пружиной.
+// Без сторонних библиотек — canvas + requestAnimationFrame, то, что уже
+// используется остальным дашбордом (ноль зависимостей).
+class GraphView {
+  constructor(canvas, tooltip){
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.tooltip = tooltip;
+    this.nodes = []; this.edges = [];
+    this.dragging = null;
+    this.raf = null;
+    this._bindEvents();
+  }
+
+  setData(data){
+    const prev = new Map(this.nodes.map(n => [n.id, n]));
+    const w = this.canvas.width, h = this.canvas.height;
+    this.nodes = data.nodes.map(n => {
+      const old = prev.get(n.id);
+      return Object.assign({
+        x: old ? old.x : w/2 + (Math.random()-0.5) * w * 0.6,
+        y: old ? old.y : h/2 + (Math.random()-0.5) * h * 0.6,
+        vx: 0, vy: 0,
+      }, n);
+    });
+    const byId = new Map(this.nodes.map(n => [n.id, n]));
+    this.edges = data.edges.filter(e => byId.has(e.source) && byId.has(e.target));
+    this._restart();
+  }
+
+  _restart(){
+    if (this.raf) cancelAnimationFrame(this.raf);
+    let ticks = 0;
+    const step = () => {
+      this._tick();
+      this._draw();
+      ticks++;
+      // 260 кадров достаточно для укладки в стабильную позицию, дальше
+      // считать физику вхолостую бессмысленно — экономим CPU вкладки
+      if (ticks < 260) this.raf = requestAnimationFrame(step);
+    };
+    this.raf = requestAnimationFrame(step);
+  }
+
+  _tick(){
+    const nodes = this.nodes, w = this.canvas.width, h = this.canvas.height;
+    const REPEL = 2600, SPRING = 0.02, SPRING_LEN = 110, CENTER = 0.0025, DAMP = 0.85;
+    for (const a of nodes){
+      if (a === this.dragging) continue;
+      let fx = (w/2 - a.x) * CENTER, fy = (h/2 - a.y) * CENTER;
+      for (const b of nodes){
+        if (a === b) continue;
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let d2 = dx*dx + dy*dy || 0.01;
+        let d = Math.sqrt(d2);
+        const f = REPEL / d2;
+        fx += (dx / d) * f; fy += (dy / d) * f;
+      }
+      a._fx = fx; a._fy = fy;
+    }
+    for (const e of this.edges){
+      const a = nodes.find(n => n.id === e.source), b = nodes.find(n => n.id === e.target);
+      if (!a || !b) continue;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d = Math.sqrt(dx*dx + dy*dy) || 0.01;
+      const f = (d - SPRING_LEN) * SPRING;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      if (a !== this.dragging){ a._fx = (a._fx||0) + fx; a._fy = (a._fy||0) + fy; }
+      if (b !== this.dragging){ b._fx = (b._fx||0) - fx; b._fy = (b._fy||0) - fy; }
+    }
+    for (const a of nodes){
+      if (a === this.dragging) continue;
+      a.vx = (a.vx + (a._fx||0)) * DAMP;
+      a.vy = (a.vy + (a._fy||0)) * DAMP;
+      a.x = Math.min(w-16, Math.max(16, a.x + a.vx));
+      a.y = Math.min(h-16, Math.max(16, a.y + a.vy));
+    }
+  }
+
+  _draw(){
+    const ctx = this.ctx, w = this.canvas.width, h = this.canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = '#2a2f3d'; ctx.fillStyle = '#8b91a3';
+    ctx.font = '11px ui-monospace,monospace';
+    const byId = new Map(this.nodes.map(n => [n.id, n]));
+    for (const e of this.edges){
+      const a = byId.get(e.source), b = byId.get(e.target);
+      if (!a || !b) continue;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+      ctx.fillText(e.pred, mx + 3, my - 3);
+    }
+    for (const n of this.nodes){
+      ctx.beginPath();
+      ctx.fillStyle = colorForKind(n.kind);
+      ctx.arc(n.x, n.y, n === this.hover ? 9 : 7, 0, Math.PI*2);
+      ctx.fill();
+      if (n === this.dragging || n === this.hover){
+        ctx.lineWidth = 2; ctx.strokeStyle = '#e6e8ee'; ctx.stroke();
+      }
+      ctx.fillStyle = '#e6e8ee';
+      ctx.fillText(n.name, n.x + 11, n.y + 4);
+    }
+  }
+
+  _nodeAt(x, y){
+    for (let i = this.nodes.length - 1; i >= 0; i--){
+      const n = this.nodes[i];
+      if ((n.x-x)**2 + (n.y-y)**2 <= 12*12) return n;
+    }
+    return null;
+  }
+
+  _pos(evt){
+    const r = this.canvas.getBoundingClientRect();
+    return {
+      x: (evt.clientX - r.left) * (this.canvas.width / r.width),
+      y: (evt.clientY - r.top) * (this.canvas.height / r.height),
+    };
+  }
+
+  _bindEvents(){
+    this.canvas.addEventListener('mousedown', e => {
+      const p = this._pos(e);
+      this.dragging = this._nodeAt(p.x, p.y);
+      if (this.dragging) this.canvas.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mouseup', () => {
+      this.dragging = null;
+      this.canvas.style.cursor = 'grab';
+    });
+    this.canvas.addEventListener('mousemove', e => {
+      const p = this._pos(e);
+      if (this.dragging){
+        this.dragging.x = p.x; this.dragging.y = p.y;
+        this.dragging.vx = 0; this.dragging.vy = 0;
+        if (!this.raf) this._restart();
+      }
+      const hit = this._nodeAt(p.x, p.y);
+      this.hover = hit;
+      if (hit){
+        this.tooltip.classList.remove('hidden');
+        this.tooltip.style.left = (e.clientX + 14) + 'px';
+        this.tooltip.style.top = (e.clientY + 10) + 'px';
+        this.tooltip.textContent = hit.kind + ':' + hit.name +
+          (hit.description ? ' — ' + hit.description.slice(0, 200) : '');
+      } else {
+        this.tooltip.classList.add('hidden');
+      }
+    });
+    this.canvas.addEventListener('mouseleave', () => {
+      this.tooltip.classList.add('hidden');
+      this.hover = null;
+    });
+  }
+}
+
+let graphView = null;
+
+function ensureGraphView(){
+  if (!graphView) graphView = new GraphView($('#onto-canvas'), $('#onto-tooltip'));
+  return graphView;
+}
+
 async function loadOntology(){
   try{
     const kind = $('#onto-kind').value;
-    const data = await apiGet('/api/entities' + (kind ? '?kind=' + encodeURIComponent(kind) : ''));
+    const suffix = kind ? '?kind=' + encodeURIComponent(kind) : '';
+    const data = await apiGet('/api/entities' + suffix);
     const sel = $('#onto-kind');
     if (!sel.dataset.filled){
       for (const k of data.kinds){
@@ -572,10 +758,26 @@ async function loadOntology(){
                     '<td>' + esc(r.obj_kind) + ':' + esc(r.obj_name) + '</td>';
       rtb.appendChild(tr);
     }
+
+    const graph = await apiGet('/api/graph' + suffix);
+    $('#graph-empty').classList.toggle('hidden', graph.edges.length > 0);
+    $('#onto-canvas').classList.toggle('hidden', graph.edges.length === 0);
+    if (graph.edges.length > 0) ensureGraphView().setData(graph);
   }catch(e){ showMsg('err', 'Онтология: ' + e.message); }
 }
 $('#onto-reload').onclick = loadOntology;
 $('#onto-kind').addEventListener('change', loadOntology);
+$('#onto-view-toggle').onclick = () => {
+  const btn = $('#onto-view-toggle');
+  const showGraph = btn.dataset.mode !== 'graph';
+  btn.dataset.mode = showGraph ? 'graph' : 'tables';
+  btn.textContent = showGraph ? 'Показать таблицами' : 'Показать граф';
+  $('#graph-hint').classList.toggle('hidden', !showGraph);
+  $('#onto-canvas').classList.toggle('hidden', !showGraph);
+  $('#onto-tables-card').classList.toggle('hidden', showGraph);
+  $('#onto-relations-card').classList.toggle('hidden', showGraph);
+  if (showGraph) loadOntology();  // граф мог не строиться, пока был скрыт
+};
 
 // ======================================================== старт
 $('#token').addEventListener('change', () => showView(

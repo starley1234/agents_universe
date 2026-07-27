@@ -345,6 +345,40 @@ def test_api_ontology() -> None:
                                  for r in data["relations"]), str(data))
 
 
+def test_api_graph() -> None:
+    section("GET /api/graph: узлы/рёбра для визуализации, изолированные объекты не включены")
+    with _Ctx() as c:
+        st = Store(c.cfg.db)
+        st.link(("part", "AB-01"), "assembled_into", ("assembly", "Редуктор"))
+        st.link(("part", "AB-02"), "assembled_into", ("assembly", "Редуктор"))
+        st.upsert_entity("part", "одинокая деталь")  # без единой связи
+        st.close()
+
+        code, data = c.get("/api/graph")
+        check("ответ 200", code == 200, str((code, data)))
+        names = {n["name"] for n in data["nodes"]}
+        check("связанные объекты видны", {"AB-01", "AB-02", "Редуктор"} <= names,
+              str(names))
+        check("изолированный объект НЕ попал в граф",
+              "одинокая деталь" not in names, str(names))
+        check("рёбра ссылаются на существующие id узлов",
+              all(e["source"] in {n["id"] for n in data["nodes"]}
+                  and e["target"] in {n["id"] for n in data["nodes"]}
+                  for e in data["edges"]),
+              str(data))
+        check("предикат сохранён на ребре",
+              any(e["pred"] == "assembled_into" for e in data["edges"]), str(data))
+
+        code, data = c.get("/api/graph?kind=part")
+        names2 = {n["name"] for n in data["nodes"]}
+        check("фильтр по kind сохраняет окрестность (включая обратную сторону связи)",
+              "Редуктор" in names2 and "AB-01" in names2, str(names2))
+
+        code, data = c.get("/api/graph?kind=" + urllib.parse.quote("несуществующий_тип"))
+        check("несуществующий kind -> пустой граф, не ошибка",
+              data["nodes"] == [] and data["edges"] == [], str(data))
+
+
 def test_api_profiles_write_delete_over_http() -> None:
     section("POST /api/profiles, DELETE через HTTP: реально пишет/удаляет файл")
     with tempfile.TemporaryDirectory() as pd:
@@ -480,6 +514,29 @@ def test_store_counts_helpers_directly() -> None:
         st.close()
 
 
+def test_store_graph_data_directly() -> None:
+    section("Store.graph_data(): напрямую (без HTTP) — состав узлов/рёбер")
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(str(Path(td) / "a.db"))
+        st.link(("part", "X1"), "part_of", ("assembly", "Узел"))
+        st.upsert_entity("part", "без связей вообще")
+        data = st.graph_data()
+        check("узел без связей отсутствует",
+              "без связей вообще" not in {n["name"] for n in data["nodes"]})
+        check("оба конца связи присутствуют",
+              {"X1", "Узел"} <= {n["name"] for n in data["nodes"]})
+        check("у ребра корректные id узлов",
+              data["edges"][0]["source"] != data["edges"][0]["target"])
+
+        # НЕГАТИВНЫЙ: пустая база -> пустой граф, а не исключение
+        st2 = Store(str(Path(td) / "empty.db"))
+        empty = st2.graph_data()
+        check("пустая база не роняет graph_data",
+              empty == {"nodes": [], "edges": []}, str(empty))
+        st2.close()
+        st.close()
+
+
 def main() -> int:
     print("=" * 60)
     print("ТЕСТЫ: веб-морда конфигов/логов (agent/webui.py)")
@@ -492,8 +549,10 @@ def main() -> int:
     test_api_counts_and_runs_reflect_real_store()
     test_api_facts_search()
     test_api_ontology()
+    test_api_graph()
     test_api_profiles_write_delete_over_http()
     test_store_counts_helpers_directly()
+    test_store_graph_data_directly()
     test_autorun_start_status_finish()
     test_autorun_conflict_when_already_running()
     test_autorun_stop()

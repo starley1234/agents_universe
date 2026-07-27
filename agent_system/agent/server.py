@@ -191,6 +191,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/relations":
                 with self._closing_store() as st:
                     self._send(200, {"relations": st.list_relations(qi("limit", 200))})
+            elif path == "/api/graph":
+                with self._closing_store() as st:
+                    self._send(200, st.graph_data(q1("kind"), qi("limit", 400)))
             elif path == "/api/counts":
                 with self._closing_store() as st:
                     self._send(200, st.counts())

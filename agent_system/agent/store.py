@@ -709,6 +709,49 @@ class Store:
             "ORDER BY r.id DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
 
+    def graph_data(self, kind: str = "", limit: int = 400) -> dict[str, Any]:
+        """Узлы и рёбра для интерактивного графа онтологии в дашборде.
+
+        Состав узлов вычисляется ИЗ ВЫБОРКИ СВЯЗЕЙ, а не из entity целиком:
+        изолированный объект без единой связи графу неинтересен — для него
+        уже есть текстовый поиск/список сущностей отдельно; сила графа
+        именно в связях между объектами. С фильтром по kind показываем
+        окрестность объектов этого типа (связь входит в выборку, если
+        хотя бы один конец — нужного типа), без фильтра — срез из самых
+        свежих связей целиком.
+
+        Возвращает {"nodes": [{id,kind,name,description}],
+                    "edges": [{source,target,pred}]} — заготовку под
+        любой JS-рендерер (id узла = id строки entity, устойчив к
+        повторению имени в разных kind).
+        """
+        base = ("SELECT r.id, r.subj AS subj_id, sa.kind AS subj_kind, "
+               "sa.name AS subj_name, sa.description AS subj_desc, "
+               "r.pred, r.obj AS obj_id, sb.kind AS obj_kind, "
+               "sb.name AS obj_name, sb.description AS obj_desc "
+               "FROM relation r "
+               "JOIN entity sa ON sa.id=r.subj JOIN entity sb ON sb.id=r.obj ")
+        if kind:
+            rows = self.db.execute(
+                base + "WHERE sa.kind=? OR sb.kind=? ORDER BY r.id DESC LIMIT ?",
+                (kind, kind, limit))
+        else:
+            rows = self.db.execute(base + "ORDER BY r.id DESC LIMIT ?", (limit,))
+
+        nodes: dict[int, dict[str, Any]] = {}
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            r = dict(row)
+            nodes.setdefault(r["subj_id"], {
+                "id": r["subj_id"], "kind": r["subj_kind"],
+                "name": r["subj_name"], "description": r["subj_desc"] or ""})
+            nodes.setdefault(r["obj_id"], {
+                "id": r["obj_id"], "kind": r["obj_kind"],
+                "name": r["obj_name"], "description": r["obj_desc"] or ""})
+            edges.append({"id": r["id"], "source": r["subj_id"],
+                         "target": r["obj_id"], "pred": r["pred"]})
+        return {"nodes": list(nodes.values()), "edges": edges}
+
     def entity_kinds(self) -> list[str]:
         return [r[0] for r in self.db.execute(
             "SELECT DISTINCT kind FROM entity ORDER BY kind")]
