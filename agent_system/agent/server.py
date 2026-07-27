@@ -20,8 +20,10 @@ from typing import Any
 
 from .build import build_agent
 from .config import Config
+from .router import route_and_apply
 
 MAX_BODY = 1_000_000
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -132,19 +134,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"неверные параметры: {exc}"})
             return
 
-        if self.path == "/run":
-            self._run_plain(cfg, task)
-        else:
-            self._run_stream(cfg, task)
+        route_note = None
+        if data.get("auto_route") and not data.get("profile"):
+            # роутинг только если профиль не задан явно в запросе — тот
+            # же принцип, что и в CLI (--auto-route несовместим с -P)
+            try:
+                decision = route_and_apply(cfg, task)
+                route_note = (f"роль подобрана автоматически: "
+                             f"{decision.profile} ({decision.method}; "
+                             f"{decision.reason})")
+            except Exception as exc:
+                self._send(400, {"error": f"не удалось подобрать роль: {exc}"})
+                return
 
-    def _run_plain(self, cfg: Config, task: str) -> None:
+        if self.path == "/run":
+            self._run_plain(cfg, task, route_note)
+        else:
+            self._run_stream(cfg, task, route_note)
+
+    def _run_plain(self, cfg: Config, task: str, route_note: str | None = None) -> None:
         try:
             agent = build_agent(cfg)
             res = agent.run(task)
         except Exception as exc:
             self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
             return
-        self._send(200, {
+        payload = {
             "answer": res.answer,
             "stopped_by": res.stopped_by,
             "steps": len(res.steps),
@@ -155,9 +170,14 @@ class Handler(BaseHTTPRequestHandler):
                                   "result": c["result"][:4000]}
                                  for c in s.calls]}
                       for s in res.steps],
-        })
+        }
+        if route_note:
+            payload["profile"] = cfg.profile
+            payload["route"] = route_note
+        self._send(200, payload)
 
-    def _run_stream(self, cfg: Config, task: str) -> None:
+
+    def _run_stream(self, cfg: Config, task: str, route_note: str | None = None) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -176,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
+        if route_note:
+            emit("route", {"profile": cfg.profile, "message": route_note})
         try:
             agent = build_agent(cfg, on_event=emit)
             res = agent.run(task)
@@ -183,6 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                           "steps": len(res.steps)})
         except Exception as exc:
             emit("error", {"message": f"{type(exc).__name__}: {exc}"})
+
 
 
 def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8080,

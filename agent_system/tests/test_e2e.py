@@ -146,6 +146,39 @@ def main() -> int:
         except urllib.error.HTTPError as e:
             check("пустая задача отклонена", e.code == 400)
 
+        # auto_route: сервис сам подбирает профиль по тексту задачи
+        print("\nАвто-выбор профиля через HTTP API\n" + "─" * 20)
+        FakeLLMHandler.calls = 0
+        payload = json.dumps({"task": "почини баг в функции и прогони тест",
+                              "auto_route": True}).encode()
+        req = urllib.request.Request(
+            f"{base}/run", data=payload, method="POST",
+            headers={"Authorization": "Bearer secret",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            res_route = json.load(r)
+        check("профиль подобран автоматически", res_route.get("profile") == "coder",
+              str(res_route.get("profile")))
+        check("объяснение выбора присутствует", "route" in res_route,
+              str(res_route.keys()))
+        check("задача при этом реально выполнена",
+              res_route["stopped_by"] == "done", res_route["stopped_by"])
+
+        # НЕГАТИВНЫЙ: auto_route вместе с явным profile — явный profile главнее
+        FakeLLMHandler.calls = 0
+        payload = json.dumps({"task": "почини баг в функции",
+                              "auto_route": True,
+                              "profile": "marketing"}).encode()
+        req = urllib.request.Request(
+            f"{base}/run", data=payload, method="POST",
+            headers={"Authorization": "Bearer secret",
+                     "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            res_explicit = json.load(r)
+        check("явный profile в запросе не перебивается роутером",
+              "profile" not in res_explicit or res_explicit.get("profile") != "coder",
+              str(res_explicit.get("profile")))
+
         # стриминг
         FakeLLMHandler.calls = 0
         (Path(td) / "hello.txt").unlink(missing_ok=True)

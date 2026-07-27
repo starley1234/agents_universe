@@ -9,6 +9,7 @@ from typing import Any
 from .autorun import AutoRunner
 from .build import build_agent, known_skills
 from .mcp import MCPPool
+from .router import route_and_apply
 from .store import Store
 from .config import Config
 from .llm import available as providers
@@ -250,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-w", "--workspace", help="рабочая папка")
     ap.add_argument("-P", "--profile", help="роль: " +
                     ", ".join(Config.list_profiles()))
+    ap.add_argument("--auto-route", action="store_true",
+                    help="самому подобрать профиль под задачу (эвристика "
+                         "+ LLM-фолбэк), не задавайте вместе с -P")
     ap.add_argument("-s", "--skills", help="навыки через запятую: "
                                            f"{', '.join(known_skills())}")
     ap.add_argument("--sandbox", dest="sandbox_mode",
@@ -287,6 +291,21 @@ def main(argv: list[str] | None = None) -> int:
     color = not args.no_color and sys.stdout.isatty()
     if args.check:
         return cmd_check(cfg)
+
+    if args.auto_route:
+        if args.profile:
+            print(f"{C_ERR}--auto-route и -P/--profile вместе не имеют "
+                  f"смысла — уберите один из них{C_OFF}", file=sys.stderr)
+            return 2
+        goal_for_routing = " ".join(args.task)
+        if not goal_for_routing:
+            print(f"{C_ERR}--auto-route нужна задача текстом — иначе "
+                  f"нечего анализировать{C_OFF}", file=sys.stderr)
+            return 2
+        decision = route_and_apply(cfg, goal_for_routing)
+        print(f"{C_DIM}роль подобрана автоматически: {decision.profile} "
+              f"({decision.method}; {decision.reason}){C_OFF}")
+
     if args.auto or args.resume:
         goal = " ".join(args.task)
         if not goal and not args.resume:
@@ -304,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\nпрервано")
         return 130
     except Exception as exc:
+
         print(f"{C_ERR}Сбой: {type(exc).__name__}: {exc}{C_OFF}", file=sys.stderr)
         return 1
 

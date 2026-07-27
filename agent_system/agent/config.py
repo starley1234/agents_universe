@@ -105,6 +105,28 @@ class Config:
         d = cls.profiles_dir()
         return sorted(p.stem for p in d.glob("*.json")) if d.exists() else []
 
+    @classmethod
+    def profile_infos(cls) -> list["ProfileInfo"]:
+        """Описания всех профилей для авто-выбора (см. agent/router.py).
+
+        Читает только name/description/keywords — не поднимает skills/
+        system_prompt, они роутеру не нужны и не должны на него влиять.
+        """
+        from .router import ProfileInfo
+        out: list[ProfileInfo] = []
+        for name in cls.list_profiles():
+            f = cls.profiles_dir() / f"{name}.json"
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            out.append(ProfileInfo(
+                name=data.get("name", name),
+                description=data.get("description", ""),
+                keywords=list(data.get("keywords") or []),
+            ))
+        return out
+
     def apply_profile(self, name: str) -> None:
         """Профиль задаёт роль: набор навыков, промпт и лимит шагов.
 
