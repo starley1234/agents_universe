@@ -85,6 +85,7 @@ class Agent:
         tool_result_limit: int = 4000,
         keep_last_results: int = 3,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        before_step: Callable[[int], None] | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -94,6 +95,9 @@ class Agent:
         self.tool_result_limit = tool_result_limit
         self.keep_last_results = keep_last_results
         self.on_event = on_event or (lambda kind, data: None)
+        # Крючок перед шагом: сюда вешается автоснимок рабочей папки.
+        # Сбой крючка не должен ломать работу — он страховка, а не цель.
+        self.before_step = before_step
 
     # ------------------------------------------------------------ helpers
     def _emit(self, kind: str, **data: Any) -> None:
@@ -189,6 +193,11 @@ class Agent:
 
         for n in range(1, self.max_steps + 1):
             t0 = time.time()
+            if self.before_step is not None:
+                try:
+                    self.before_step(n)
+                except Exception as exc:      # страховка не важнее работы
+                    self._emit("warn", message=f"снимок не сделан: {exc}")
             try:
                 reply = self.llm.chat(
                     self._trim(self._compact(messages)), schemas)

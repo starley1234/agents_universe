@@ -35,8 +35,39 @@ def build(store: Store, run_id_getter) -> list[Tool]:
         for r in rows:
             tag = f" [{r['tags']}]" if r["tags"] else ""
             conf = "" if r["confidence"] >= 1.0 else f" (уверенность {r['confidence']:.1f})"
-            out.append(f"- {r['text']}{tag}{conf}")
+            # Номер нужен для revise/forget: без него исправить найденное
+            # нечем, и агенту остаётся только дописывать поверх.
+            out.append(f"- #{r['id']} {r['text']}{tag}{conf}")
         return "\n".join(out)
+
+    def revise(fact_id: int, text: str = "", tags: str = "",
+               confidence: float = -1.0) -> str:
+        old = store.revise(fact_id, text,
+                           None if not tags else tags,
+                           None if confidence < 0 else confidence)
+        if old is None:
+            raise ToolError(f"Факта #{fact_id} нет. Найди его через recall.")
+        now = store.get_fact(fact_id)
+        if now is None:
+            return (f"Факт #{fact_id} совпал с уже существующим и удалён "
+                    f"как дубль.\nБыло: {old['text'][:200]}")
+        return (f"Факт #{fact_id} исправлен.\nБыло: {old['text'][:200]}\n"
+                f"Стало: {now['text'][:200]}")
+
+    def forget(fact_id: int = 0, query: str = "") -> str:
+        try:
+            gone = store.forget(fact_id, query)
+        except ValueError as exc:
+            raise ToolError(
+                f"{exc}. Всю память разом стереть нельзя — это защита "
+                "от случайной потери всей истории работы.") from exc
+        if not gone:
+            return ("Ничего не удалено: такого факта нет"
+                    if fact_id else f"По запросу {query!r} ничего не найдено")
+        head = f"Удалено фактов: {len(gone)}"
+        body = "\n".join(f"- #{r['id']} {r['text'][:160]}" for r in gone[:10])
+        tail = f"\n… и ещё {len(gone) - 10}" if len(gone) > 10 else ""
+        return f"{head}\n{body}{tail}\nОсталось в памяти: {store.fact_count()}"
 
     # ------------------------------------------------------- онтология
     def link(subject_kind: str, subject: str, predicate: str,
@@ -81,7 +112,7 @@ def build(store: Store, run_id_getter) -> list[Tool]:
         if not rows:
             return "План пуст. Составьте его через plan_add."
         mark = {"open": "[ ]", "doing": "[~]", "done": "[x]",
-                "failed": "[!]", "skipped": "[-]"}
+                "failed": "[!]", "skipped": "[-]", "blocked": "[?]"}
         out = []
         for t in rows:
             line = f"{mark.get(t['status'], '[ ]')} #{t['id']} {t['title']}"
@@ -93,6 +124,13 @@ def build(store: Store, run_id_getter) -> list[Tool]:
         return "\n".join(out)
 
     def plan_done(task_id: int, result: str = "") -> str:
+        # Заблокированный вопросом пункт закрывать нельзя: иначе агент
+        # «выполнит» то, чего не сделал, и вопрос потеряется.
+        cur = [t for t in store.tasks(rid()) if t["id"] == task_id]
+        if cur and cur[0]["status"] == "blocked":
+            raise ToolError(
+                f"Пункт #{task_id} ждёт ответа человека — закрыть его нельзя. "
+                "Возьми следующий пункт плана.")
         store.set_task(task_id, "done", result)
         left = [t for t in store.tasks(rid())
                 if t["status"] in ("open", "doing")]
@@ -124,6 +162,31 @@ def build(store: Store, run_id_getter) -> list[Tool]:
                              "limit": {"type": "integer"}},
               "required": []},
              recall),
+        Tool("revise",
+             "Исправить факт в памяти по его номеру (#N из recall). "
+             "Узнал, что записанное неверно или устарело, — правь, а не "
+             "дописывай рядом: две противоречивые записи хуже одной.",
+             {"type": "object",
+              "properties": {
+                  "fact_id": {"type": "integer", "description": "Номер из recall"},
+                  "text": {"type": "string", "description": "Новый текст"},
+                  "tags": {"type": "string"},
+                  "confidence": {"type": "number",
+                                 "description": "0..1, -1 = не менять"}},
+              "required": ["fact_id"]},
+             revise),
+        Tool("forget",
+             "Удалить из памяти неверное или устаревшее: по номеру факта "
+             "либо всё найденное по запросу. Стереть память целиком "
+             "нельзя. Удаляй осознанно — восстановления нет.",
+             {"type": "object",
+              "properties": {
+                  "fact_id": {"type": "integer"},
+                  "query": {"type": "string",
+                            "description": "Удалить всё найденное по запросу"}},
+              "required": []},
+             forget,
+             dangerous=True),
         Tool("note_entity",
              "Создать или дополнить объект предметной области "
              "(деталь, файл, человек, гипотеза, метрика).",

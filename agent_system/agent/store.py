@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS task(
   id INTEGER PRIMARY KEY,
   run_id INTEGER, parent_id INTEGER,
   title TEXT NOT NULL,
-  status TEXT DEFAULT 'open',        -- open | doing | done | failed | skipped
+  -- blocked: пункт упёрся в вопрос к человеку. Не выполнен и не провален,
+  -- в работу больше не берётся, виден в итоге прогона.
+  status TEXT DEFAULT 'open',        -- open|doing|done|failed|skipped|blocked
   result TEXT, created REAL, updated REAL,
   ord INTEGER DEFAULT 0
 );
@@ -74,6 +76,13 @@ END;
 CREATE TRIGGER IF NOT EXISTS fact_ad AFTER DELETE ON fact BEGIN
   INSERT INTO fact_fts(fact_fts, rowid, text, tags)
     VALUES('delete', old.id, old.text, old.tags);
+END;
+-- Без этого триггера правка факта оставляла в индексе СТАРЫЙ текст:
+-- поиск находил исправленное по неверным словам и не находил по верным.
+CREATE TRIGGER IF NOT EXISTS fact_au AFTER UPDATE ON fact BEGIN
+  INSERT INTO fact_fts(fact_fts, rowid, text, tags)
+    VALUES('delete', old.id, old.text, old.tags);
+  INSERT INTO fact_fts(rowid, text, tags) VALUES (new.id, new.text, new.tags);
 END;
 
 CREATE TABLE IF NOT EXISTS entity(
@@ -328,6 +337,65 @@ class Store:
     def fact_count(self) -> int:
         return int(self.db.execute("SELECT COUNT(*) FROM fact").fetchone()[0])
 
+    # ------------------------------------------------- гигиена памяти
+    # Память, которая только копится, со временем начинает врать: старое
+    # решение соседствует с новым, и recall выдаёт оба. Отсюда правка и
+    # удаление фактов — операции такие же обычные, как запись.
+
+    def get_fact(self, fact_id: int) -> dict[str, Any] | None:
+        r = self.db.execute("SELECT * FROM fact WHERE id=?",
+                            (fact_id,)).fetchone()
+        return dict(r) if r else None
+
+    def revise(self, fact_id: int, text: str = "", tags: str | None = None,
+               confidence: float | None = None) -> dict[str, Any] | None:
+        """Исправить факт на месте. Возвращает состояние ДО правки."""
+        old = self.get_fact(fact_id)
+        if old is None:
+            return None
+        new_text = text.strip() or old["text"]
+        if new_text != old["text"]:
+            # Уникальность текста: правка «в уже существующий» факт —
+            # это на деле удаление дубля, а не ошибка.
+            dup = self.db.execute("SELECT id FROM fact WHERE text=? AND id<>?",
+                                  (new_text, fact_id)).fetchone()
+            if dup:
+                self.db.execute("DELETE FROM fact WHERE id=?", (fact_id,))
+                self.db.commit()
+                return old
+        self.db.execute(
+            "UPDATE fact SET text=?, tags=?, confidence=? WHERE id=?",
+            (new_text,
+             old["tags"] if tags is None else tags,
+             old["confidence"] if confidence is None else confidence,
+             fact_id))
+        self.db.commit()
+        return old
+
+    def forget(self, fact_id: int = 0, query: str = "",
+               limit: int = 50) -> list[dict[str, Any]]:
+        """Удалить факт по номеру либо все найденные по запросу.
+
+        Возвращает удалённое — чтобы вызывающий мог показать человеку,
+        что именно исчезло. Пустой запрос НЕ чистит всю память: такая
+        «оговорка» стоила бы всей истории работы.
+        """
+        if fact_id:
+            row = self.get_fact(fact_id)
+            if row is None:
+                return []
+            self.db.execute("DELETE FROM fact WHERE id=?", (fact_id,))
+            self.db.commit()
+            return [row]
+        if not query.strip():
+            raise ValueError("нужен номер факта или непустой запрос")
+        rows = self.recall(query, limit)
+        if rows:
+            self.db.executemany("DELETE FROM fact WHERE id=?",
+                                [(r["id"],) for r in rows])
+            self.db.commit()
+        return rows
+
     # -------------------------------------------------------- онтология
     def upsert_entity(self, kind: str, name: str,
                       props: dict[str, Any] | None = None,
@@ -400,6 +468,25 @@ class Store:
         return int(self.db.execute(
             "SELECT COUNT(*) FROM event WHERE run_id=? AND sig=?",
             (run_id, sig)).fetchone()[0])
+
+    def runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """История прогонов, новые первыми. Данные копились с самого
+        начала, но посмотреть их было нечем."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM run ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def run_events(self, run_id: int, limit: int = 200,
+                   kinds: str = "") -> list[dict[str, Any]]:
+        """Журнал прогона по порядку. kinds — виды через запятую."""
+        sql = "SELECT * FROM event WHERE run_id=?"
+        args: list[Any] = [run_id]
+        if kinds.strip():
+            names = [k.strip() for k in kinds.split(",") if k.strip()]
+            sql += f" AND kind IN ({','.join('?' * len(names))})"
+            args += names
+        sql += " ORDER BY id LIMIT ?"
+        args.append(limit)
+        return [dict(r) for r in self.db.execute(sql, args)]
 
     def recent_events(self, run_id: int, limit: int = 12) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute(

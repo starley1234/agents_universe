@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .core import Agent
+from .dispatch import choose_profile
 from .llm.base import price_of
 from .store import Store
 
@@ -107,16 +108,36 @@ class AutoRunner:
         max_iterations: int = 50,
         repeat_limit: int = 3,
         replan_after_fails: int = 2,
+        max_usd: float = 0.0,
+        route_tasks: bool = False,
+        known_profiles: list[str] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.make_agent = agent_factory
         self.store = store
         self.max_seconds = max_hours * 3600
         self.max_iterations = max_iterations
+        # Предел расхода за прогон. 0 = не ограничивать: на локальной
+        # модели платить не за что, и мешать там незачем.
+        self.max_usd = max_usd
         self.repeat_limit = repeat_limit
         self.replan_after_fails = replan_after_fails
         self.on_event = on_event or (lambda k, d: None)
         self.run_id = 0
+        # Передача между агентами: каждый пункт плана своему профилю.
+        self.route_tasks = route_tasks
+        self.known_profiles = known_profiles or []
+        self.last_profile: str | None = None
+
+    def _agent_for(self, profile: str | None) -> Agent:
+        """Агент под профиль. Фабрика может его не принимать — тогда
+        работаем по-старому, одним набором навыков."""
+        if profile is None:
+            return self.make_agent()
+        try:
+            return self.make_agent(profile)          # type: ignore[call-arg]
+        except TypeError:
+            return self.make_agent()
 
     def _emit(self, kind: str, **data: Any) -> None:
         try:
@@ -245,9 +266,21 @@ class AutoRunner:
             if time.time() - t0 > self.max_seconds:
                 stop = "time"
                 break
+            # Деньги проверяем ДО начала итерации: остановиться на пороге
+            # можно только между шагами, прервать оплаченный запрос нельзя.
+            if self.max_usd > 0:
+                spent_all = float(
+                    (self.store.get_run(self.run_id) or {}).get("cost", 0) or 0)
+                if spent_all >= self.max_usd:
+                    self._emit("budget", spent=spent_all, limit=self.max_usd)
+                    stop = "budget"
+                    break
             task = self.store.next_task(self.run_id)
             if not task:
-                stop = "done"
+                # Незакрытый вопрос — не «done»: работа упёрлась в человека.
+                stop = "blocked" if any(
+                    t["status"] == "blocked"
+                    for t in self.store.tasks(self.run_id)) else "done"
                 break
 
             it += 1
@@ -266,7 +299,18 @@ class AutoRunner:
                     warn = ("ВНИМАНИЕ: ты повторяешь одно и то же действие. "
                             "Смени подход или закрой пункт через plan_fail.")
 
-            agent = self.make_agent()
+            # Пункт плана может уйти СВОЕМУ агенту: чертёж — конструктору,
+            # письмо — делопроизводителю. Профиль выбирается по тексту
+            # пункта, а не по общей цели: внутри одной цели темы разные.
+            who = None
+            if self.route_tasks:
+                pick = choose_profile(task["title"], self.known_profiles)
+                who = pick.profile
+                if who and who != self.last_profile:
+                    self._emit("handoff", profile=who, task=task["title"],
+                               reason=pick.reason)
+                    self.last_profile = who
+            agent = self._agent_for(who)
             calls: list[str] = []
 
             def watch(kind: str, data: dict[str, Any]) -> None:
@@ -345,16 +389,31 @@ class AutoRunner:
         row = self.store.get_run(self.run_id) or {}
         tok = int(row.get("tok_in", 0)) + int(row.get("tok_out", 0))
         spent = float(row.get("cost", 0) or 0)
+        # Вопросы, оставшиеся без ответа, — не мелочь: пункт не сделан,
+        # и человек должен увидеть это первым делом, а не в логе.
+        blocked = [t for t in allt if t["status"] == "blocked"]
+        ask_block = ""
+        if blocked:
+            ask_block = "\n\nЖДУТ ОТВЕТА ЧЕЛОВЕКА:\n" + "\n".join(
+                f"  #{t['id']} {t['title']}\n     {t['result']}"
+                for t in blocked)
         summary = (
             f"Прогон #{self.run_id}: {stop}\n"
             f"Итераций: {it}, время: {elapsed/60:.1f} мин\n"
-            f"План: {len(done)} из {len(allt)} пунктов\n"
+            f"План: {len(done)} из {len(allt)} пунктов"
+            + (f", заблокировано вопросом: {len(blocked)}" if blocked else "")
+            + "\n"
             f"Память: {self.store.fact_count()} фактов, "
             f"граф: {e} объектов / {r} связей"
             + (f"\nПлан пересматривался: {replans} раз" if replans else "")
             + (f"\nТокенов: {tok:,}" if tok else "")
             + (f", примерно ${spent:.4f}" if spent > 0
                else " (локальная модель, оплаты нет)" if tok else "")
+            + (f"\nОСТАНОВЛЕН ПО БЮДЖЕТУ: потрачено ${spent:.4f} при пределе "
+               f"${self.max_usd:.2f}. План не доделан — продолжить можно "
+               f"командой --resume {self.run_id} с большим --max-usd."
+               if stop == "budget" else "")
+            + ask_block
         )
         self._emit("finish", summary=summary, stopped_by=stop)
         return AutoResult(self.run_id, it, stop, summary, elapsed, tok, spent)

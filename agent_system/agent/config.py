@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .mcp import MCPServerConfig, configs_from_dict
+from .skills.comms import CommsConfig
 from .tools.shell import SandboxConfig
 
 
@@ -39,8 +40,27 @@ class Config:
     db: str = "agent.db"                # SQLite: память, онтология, план
     max_hours: float = 1.0              # бюджет времени автономного прогона
     max_iterations: int = 50
+    max_usd: float = 0.0                # предел расхода за прогон, 0 = без предела
     # --- внешние MCP-серверы: поиск, страницы, картинки, речь ---
     mcp: list[MCPServerConfig] = field(default_factory=list)
+    # --- PostgreSQL + pgvector (навык pg) ---
+    pg_dsn: str = ""                    # postgresql://user:pass@host/db
+    embed_url: str = ""                 # OpenAI-совместимый /v1 для векторов
+    embed_model: str = ""
+    embed_key: str = ""
+    embed_dim: int = 768
+    # --- встроенный fetch ---
+    fetch_allow_private: bool = False   # ходить во внутреннюю сеть
+    # --- снимки рабочей папки (навык vcs) ---
+    vcs_auto: bool = True               # снимок перед каждым шагом агента
+    # --- запуск Python (навык python) ---
+    python_timeout: int = 60            # предел одного запуска, секунд
+    # --- связь с внешним миром (навык comms) ---
+    comms: CommsConfig = field(default_factory=CommsConfig)
+    # --- маршрутизация моделей: дешёвая на рутину, сильная на сложное ---
+    model_cheap: str = ""               # пусто = маршрутизация выключена
+    model_strong: str = ""
+    route_long_context: int = 12_000
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -90,11 +110,33 @@ class Config:
                 raise FileNotFoundError(f"Конфиг {path} не найден")
             data = json.loads(p.read_text(encoding="utf-8"))
 
-        sandbox_data = data.pop("sandbox", {}) or {}
+        sandbox_data = {k: v for k, v in (data.pop("sandbox", {}) or {}).items()
+                        if not k.startswith("_")}
+        comms_data = {k: v for k, v in (data.pop("comms", {}) or {}).items()
+                      if not k.startswith("_")}
         mcp_data = data.pop("mcp", {}) or {}
         profile_name = data.pop("profile", None)
+        # Ключи с подчёркиванием — комментарии автора конфига, а не поля.
+        # JSON комментариев не знает, а пояснять настройки где-то надо.
+        data = {k: v for k, v in data.items() if not k.startswith("_")}
+        # Опечатка в ключе раньше давала невнятный TypeError из dataclass.
+        # Молча игнорировать её нельзя: настройка бы просто не применилась.
+        known = {f for f in cls.__dataclass_fields__}
+        bad = [k for k in data if k not in known]
+        if bad:
+            close = ", ".join(sorted(known))
+            raise ValueError(
+                f"Неизвестные ключи в конфиге: {', '.join(bad)}. "
+                f"Допустимы: {close}. Пояснения пишите с подчёркивания: "
+                '"_комментарий": "…"')
         cfg = cls(**{k: v for k, v in data.items() if v is not None})
         cfg.sandbox = SandboxConfig(**sandbox_data)
+        unknown_comms = [k for k in comms_data
+                         if k not in CommsConfig.__dataclass_fields__]
+        if unknown_comms:
+            raise ValueError(
+                f"Неизвестные ключи в разделе comms: {', '.join(unknown_comms)}")
+        cfg.comms = CommsConfig(**comms_data)
         cfg.mcp = configs_from_dict(mcp_data.get("servers", mcp_data))
 
         # профиль — база; всё, что задано явно ниже, его перекрывает
@@ -137,3 +179,19 @@ class Config:
         if d.get("api_key"):
             d["api_key"] = "***"          # не светим ключ в логах
         return d
+
+
+def replace_profile(cfg: Config, profile: str) -> Config:
+    """Копия конфига с другим профилем.
+
+    Нужна для передачи задачи между агентами: меняются навыки и промпт,
+    всё остальное (модель, база, рабочая папка, MCP) остаётся общим.
+    Исходный конфиг не трогаем — он ещё нужен другим пунктам плана.
+    """
+    import copy
+    out = copy.deepcopy(cfg)
+    # system_prompt не обнуляем: apply_profile перезаписывает его сам,
+    # если в профиле он задан. А вот профиль БЕЗ промпта должен унаследовать
+    # общий системный промпт из конфига — обнуление сломало бы этот случай.
+    out.apply_profile(profile)
+    return out

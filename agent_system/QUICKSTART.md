@@ -7,12 +7,12 @@ scp -r agent_system/ user@сервер:~/
 ssh user@сервер && cd ~/agent_system
 ```
 
-473 КБ. Нужен только **Python 3.10+**. `pip install` не требуется.
+1.7 МБ. Нужен только **Python 3.10+**. `pip install` не требуется.
 
 ## 2. Проверить
 
 ```bash
-make test          # 266 проверок, ~30 с
+make test          # 723 проверки, ~40 с
 ```
 
 Всё зелёное — система рабочая.
@@ -177,7 +177,7 @@ python3 -m agent --auto --resume 1
 
 | команда | что делает |
 |---|---|
-| `make test` | 266 проверок |
+| `make test` | 723 проверки |
 | `python3 -m agent --check` | диагностика |
 | `python3 -m agent "задача"` | разовый запуск |
 | `python3 -m agent --auto -P autonomous --hours 8 "цель"` | автономно |
@@ -186,6 +186,9 @@ python3 -m agent --auto --resume 1
 | `python3 -m agent -P cad_auto ...` | роль конструктора |
 
 Роли: `coder` · `cad` · `cad_auto` · `autonomous` · `research` · `marketing`
+· **`docs`** (разбор документов) · **`rag`** (поиск по базе) · **`verify`** (сертификация) · **`onto`** (онтология в PostgreSQL)
+
+Подробно о них — [SKILLS.md](docs/SKILLS.md).
 
 ## Если что-то не так
 

@@ -7,13 +7,14 @@
 <style>
   :root{
     --bg:#12141a; --panel:#1a1d26; --line:#2a2f3d; --txt:#e6e8ee;
-    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --tool:#c9a227;
+    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b;
+    --tool:#c9a227; --ask:#b06bff;
   }
   *{box-sizing:border-box}
   body{margin:0;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
        background:var(--bg);color:var(--txt);height:100vh;display:flex;flex-direction:column}
   header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
-         display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+         display:flex;gap:12px;align-items:center;flex-wrap:wrap}
   header b{font-weight:600}
   .pill{font-size:12px;color:var(--dim);background:#232733;padding:3px 9px;border-radius:99px}
   select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
@@ -21,7 +22,11 @@
   button{cursor:pointer}
   button:hover:not(:disabled){border-color:var(--acc)}
   button:disabled{opacity:.5;cursor:default}
-  #log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+  .tab{background:none;border:none;border-bottom:2px solid transparent;
+       border-radius:0;color:var(--dim);padding:6px 4px}
+  .tab.on{color:var(--txt);border-bottom-color:var(--acc)}
+  .view{flex:1;overflow-y:auto;padding:16px;display:none;flex-direction:column;gap:10px}
+  .view.on{display:flex}
   .msg{max-width:min(900px,92%);padding:10px 13px;border-radius:8px;white-space:pre-wrap;
        word-break:break-word}
   .me{align-self:flex-end;background:#243a5c;border:1px solid #2f4a72}
@@ -33,25 +38,48 @@
             overflow:auto;white-space:pre-wrap}
   .err{align-self:flex-start;background:#2a1618;border:1px solid #52252a;color:var(--err)}
   .sys{align-self:center;color:var(--dim);font-size:12px}
+  .ask{align-self:flex-start;background:#241a33;border:1px solid #4a2f70;
+       max-width:min(900px,92%);padding:12px 14px;border-radius:8px}
+  .ask b{color:var(--ask)}
+  .ask .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .ask input{flex:1;min-width:200px}
+  .ask .opt{background:#332450;border-color:#4a2f70}
   footer{padding:12px 16px;background:var(--panel);border-top:1px solid var(--line);
          display:flex;gap:10px}
   #task{flex:1;resize:none;min-height:44px;max-height:180px}
-  .spin{display:inline-block;animation:s 1s linear infinite}
-  @keyframes s{to{transform:rotate(360deg)}}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500}
+  tr.run{cursor:pointer}
+  tr.run:hover td{background:#1e2230}
+  .st{font-size:12px;padding:2px 8px;border-radius:99px;background:#232733}
+  .st.done{color:var(--ok)} .st.active{color:var(--acc)}
+  .st.stopped,.st.failed{color:var(--err)}
+  .plan li{list-style:none;display:flex;gap:8px;align-items:baseline;
+           padding:5px 0;border-bottom:1px solid var(--line)}
+  .plan{padding:0;margin:0}
+  .plan .mark{width:26px;color:var(--dim)}
+  .plan .acts{margin-left:auto;display:flex;gap:6px}
+  .plan button{padding:2px 8px;font-size:12px}
+  .muted{color:var(--dim)}
+  h3{margin:14px 0 6px;font-size:14px;font-weight:600}
 </style>
 </head>
 <body>
 <header>
   <b>Агент</b>
+  <button class="tab on" data-view="work">Работа</button>
+  <button class="tab" data-view="runs">Прогоны</button>
   <select id="profile" title="Роль агента"></select>
-  <input id="ws" placeholder="рабочая папка" size="18">
-  <input id="token" type="password" placeholder="токен (если задан)" size="16">
+  <input id="ws" placeholder="рабочая папка" size="16">
+  <input id="token" type="password" placeholder="токен" size="12">
   <span class="pill" id="status">—</span>
   <span style="flex:1"></span>
   <button id="clear">Очистить</button>
 </header>
 
-<div id="log"></div>
+<div id="work" class="view on"></div>
+<div id="runs" class="view"></div>
 
 <footer>
   <textarea id="task" placeholder="Задача агенту…  (Ctrl+Enter — отправить)"></textarea>
@@ -61,15 +89,17 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const log = $('#log');
+const work = $('#work'), runsView = $('#runs');
 let controller = null;
+let poller = null;          // опрос вопросов: вкладку могли перезагрузить
+const shownAsks = new Set();
 
-function add(cls, text){
+function add(cls, text, box){
   const d = document.createElement('div');
   d.className = 'msg ' + cls;
   d.textContent = text;
-  log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  (box || work).appendChild(d);
+  work.scrollTop = work.scrollHeight;
   return d;
 }
 function addTool(name, args){
@@ -78,8 +108,8 @@ function addTool(name, args){
   const s = document.createElement('summary');
   s.textContent = '→ ' + name + ' ' + JSON.stringify(args).slice(0, 120);
   d.appendChild(s);
-  log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  work.appendChild(d);
+  work.scrollTop = work.scrollHeight;
   return d;
 }
 function headers(){
@@ -88,33 +118,87 @@ function headers(){
   if (t) h['Authorization'] = 'Bearer ' + t;
   return h;
 }
-
-async function loadInfo(){
-  try{
-    const r = await fetch('/info', {headers: headers()});
-    if (r.status === 401){ $('#status').textContent = 'нужен токен'; return; }
-    const d = await r.json();
-    $('#status').textContent = d.config.provider + '/' + d.config.model
-                             + ' · ' + d.config.sandbox.mode;
-    if (!$('#ws').value) $('#ws').value = d.config.workspace;
-    const sel = $('#profile');
-    sel.innerHTML = '';
-    (d.profiles || []).forEach(p => {
-      const o = document.createElement('option');
-      o.value = p; o.textContent = p;
-      if (p === d.config.profile) o.selected = true;
-      sel.appendChild(o);
-    });
-    const o = document.createElement('option');
-    o.value = ''; o.textContent = '(по конфигу)';
-    sel.insertBefore(o, sel.firstChild);
-    if (!d.config.profile) o.selected = true;
-  }catch(e){ $('#status').textContent = 'нет связи'; }
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers: headers()}, opts || {}));
+  if (!r.ok) throw new Error('HTTP ' + r.status + ': ' + (await r.text()).slice(0,200));
+  return r.json();
 }
 
+/* ─────────────── вопросы агента ─────────────── */
+function showAsk(q){
+  if (shownAsks.has(q.id)) return;
+  shownAsks.add(q.id);
+  const box = document.createElement('div');
+  box.className = 'ask';
+  box.id = 'ask-' + q.id;
+  const t = document.createElement('div');
+  t.innerHTML = '<b>Вопрос агента:</b> ';
+  t.appendChild(document.createTextNode(q.question));
+  box.appendChild(t);
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  (q.options || []).forEach(o => {
+    const b = document.createElement('button');
+    b.className = 'opt';
+    b.textContent = o;
+    b.onclick = () => reply(q.id, o);
+    row.appendChild(b);
+  });
+  const inp = document.createElement('input');
+  inp.placeholder = 'свой ответ…';
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && inp.value.trim()) reply(q.id, inp.value.trim());
+  });
+  row.appendChild(inp);
+  const skip = document.createElement('button');
+  skip.textContent = 'Решай сам';
+  skip.onclick = () => reply(q.id, '', true);
+  row.appendChild(skip);
+  box.appendChild(row);
+  work.appendChild(box);
+  work.scrollTop = work.scrollHeight;
+  inp.focus();
+}
+async function reply(id, text, skip){
+  try{
+    await api('/answer', {method:'POST',
+      body: JSON.stringify({id, text, skip: !!skip})});
+    const box = document.getElementById('ask-' + id);
+    if (box){
+      box.innerHTML = '';
+      box.textContent = skip ? '↩ отдано на усмотрение агента'
+                             : '↩ ответ: ' + text;
+      box.className = 'msg sys';
+    }
+  }catch(e){
+    // Вопрос мог истечь, пока человек печатал. Молчать нельзя:
+    // иначе кажется, что ответ доставлен.
+    add('err', 'Ответ не принят: ' + e.message);
+  }
+}
+async function pollAsks(){
+  try{
+    const d = await api('/questions');
+    (d.questions || []).forEach(showAsk);
+  }catch(e){ /* сервер занят или нет связи — молча ждём */ }
+}
+
+/* ─────────────── запуск ─────────────── */
 async function run(){
   const task = $('#task').value.trim();
   if (!task || controller) return;
+
+  // Показываем, кто возьмёт задачу, ДО начала работы.
+  if (!$('#profile').value){
+    try{
+      const d = await api('/dispatch', {method:'POST',
+        body: JSON.stringify({task})});
+      add('sys', '⤷ ' + d.explain);
+      if (d.profile) $('#profile').value = d.profile;
+    }catch(e){ /* не смогли — не беда, пойдём по конфигу */ }
+  }
+
   add('me', task);
   $('#task').value = '';
   $('#send').disabled = true;
@@ -149,7 +233,10 @@ async function run(){
           pre.textContent = e.result || '';
           pending.appendChild(pre); pending = null;
         }
+        else if (e.event === 'ask')    showAsk(e);
         else if (e.event === 'thought' && e.text) add('sys', '… ' + e.text);
+        else if (e.event === 'empty')  add('sys', '⟳ модель не сделала хода, подталкиваю');
+        else if (e.event === 'warn')   add('sys', '⚠ ' + (e.message || ''));
         else if (e.event === 'done'){ busy.remove(); add('bot', e.answer || '(пусто)'); }
         else if (e.event === 'error')  add('err', e.message || 'ошибка');
         else if (e.event === 'limit')  add('err', 'исчерпан лимит шагов');
@@ -168,14 +255,168 @@ async function run(){
   }
 }
 
+/* ─────────────── прогоны ─────────────── */
+const MARK = {open:'[ ]', doing:'[~]', done:'[x]', failed:'[!]',
+              skipped:'[-]', blocked:'[?]'};
+
+async function loadRuns(){
+  runsView.innerHTML = '';
+  let d;
+  try{ d = await api('/runs'); }
+  catch(e){ runsView.innerHTML = ''; add('err', 'Не загрузить прогоны: ' + e.message, runsView); return; }
+  if (!d.runs || !d.runs.length){
+    add('sys', 'Прогонов пока нет', runsView); return;
+  }
+  const tb = document.createElement('table');
+  tb.innerHTML = '<tr><th>#</th><th>когда</th><th>состояние</th>' +
+                 '<th>цель</th><th>шагов</th><th>токенов</th><th>$</th></tr>';
+  d.runs.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = 'run';
+    const when = r.started ? new Date(r.started*1000)
+                   .toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',
+                                             hour:'2-digit',minute:'2-digit'}) : '—';
+    const tok = (r.tok_in||0) + (r.tok_out||0);
+    const cost = r.cost ? '$' + Number(r.cost).toFixed(4) : '—';
+    tr.innerHTML = `<td>${r.id}</td><td class="muted">${when}</td>` +
+      `<td><span class="st ${r.status}">${r.status}</span></td>` +
+      `<td>${escapeHtml((r.goal||'').slice(0,60))}</td>` +
+      `<td class="muted">${r.steps||0}</td>` +
+      `<td class="muted">${tok.toLocaleString('ru-RU')}</td>` +
+      `<td class="muted">${cost}</td>`;
+    tr.onclick = () => openRun(r.id);
+    tb.appendChild(tr);
+  });
+  runsView.appendChild(tb);
+}
+
+async function openRun(id){
+  runsView.innerHTML = '';
+  const back = document.createElement('button');
+  back.textContent = '← ко всем прогонам';
+  back.style.alignSelf = 'flex-start';
+  back.onclick = loadRuns;
+  runsView.appendChild(back);
+
+  let d;
+  try{ d = await api('/runs/' + id); }
+  catch(e){ add('err', e.message, runsView); return; }
+
+  const r = d.run;
+  const head = document.createElement('div');
+  const tok = (r.tok_in||0) + (r.tok_out||0);
+  head.innerHTML = `<h3>Прогон #${r.id}: ${escapeHtml(r.goal||'')}</h3>` +
+    `<div class="muted">состояние ${r.status} · шагов ${r.steps||0} · ` +
+    `вызовов ${r.tool_calls||0} · токенов ${tok.toLocaleString('ru-RU')}` +
+    (r.cost ? ` · $${Number(r.cost).toFixed(4)}` : '') + '</div>';
+  runsView.appendChild(head);
+
+  if (d.tasks && d.tasks.length){
+    const h = document.createElement('h3'); h.textContent = 'План';
+    runsView.appendChild(h);
+    const ul = document.createElement('ul');
+    ul.className = 'plan';
+    d.tasks.forEach(t => {
+      const li = document.createElement('li');
+      const m = document.createElement('span');
+      m.className = 'mark'; m.textContent = MARK[t.status] || '[ ]';
+      li.appendChild(m);
+      const txt = document.createElement('span');
+      txt.textContent = '#' + t.id + ' ' + t.title;
+      if (t.result){
+        const sm = document.createElement('div');
+        sm.className = 'muted'; sm.style.fontSize = '12px';
+        sm.textContent = '→ ' + t.result.slice(0, 160);
+        txt.appendChild(sm);
+      }
+      li.appendChild(txt);
+      const acts = document.createElement('div');
+      acts.className = 'acts';
+      [['done','закрыть'],['failed','провалить'],['open','вернуть']]
+        .forEach(([st, label]) => {
+          if (t.status === st) return;
+          const b = document.createElement('button');
+          b.textContent = label;
+          b.onclick = async ev => {
+            ev.stopPropagation();
+            try{
+              await api('/plan', {method:'POST',
+                body: JSON.stringify({run_id: r.id, task_id: t.id, status: st})});
+              openRun(r.id);
+            }catch(e){ alert('Не изменить пункт: ' + e.message); }
+          };
+          acts.appendChild(b);
+        });
+      li.appendChild(acts);
+      ul.appendChild(li);
+    });
+    runsView.appendChild(ul);
+  }
+
+  if (d.events && d.events.length){
+    const h = document.createElement('h3'); h.textContent = 'Журнал';
+    runsView.appendChild(h);
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'font-size:12px;color:var(--dim);white-space:pre-wrap';
+    pre.textContent = d.events.map(e => {
+      const t = e.created ? new Date(e.created*1000)
+                  .toLocaleTimeString('ru-RU') : '';
+      return `${t}  ${e.kind.padEnd(7)} ${(e.name||'').slice(0,22).padEnd(22)} ` +
+             `${(e.summary||'').slice(0,70)}`;
+    }).join('\n');
+    runsView.appendChild(pre);
+  }
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;',
+    '>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ─────────────── общее ─────────────── */
+async function loadInfo(){
+  try{
+    const d = await api('/info');
+    $('#status').textContent = d.config.provider + '/' + d.config.model
+                             + ' · ' + d.config.sandbox.mode;
+    if (!$('#ws').value) $('#ws').value = d.config.workspace;
+    const sel = $('#profile');
+    sel.innerHTML = '';
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = '(выбрать самому)';
+    sel.appendChild(o);
+    (d.profiles || []).forEach(p => {
+      const x = document.createElement('option');
+      x.value = p; x.textContent = p;
+      if (p === d.config.profile) x.selected = true;
+      sel.appendChild(x);
+    });
+    if (!d.config.profile) o.selected = true;
+  }catch(e){
+    $('#status').textContent = e.message.includes('401') ? 'нужен токен' : 'нет связи';
+  }
+}
+
+document.querySelectorAll('.tab').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('on'));
+    document.querySelectorAll('.view').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    $('#' + b.dataset.view).classList.add('on');
+    if (b.dataset.view === 'runs') loadRuns();
+  };
+});
 $('#send').onclick = run;
 $('#stop').onclick = () => controller && controller.abort();
-$('#clear').onclick = () => log.innerHTML = '';
+$('#clear').onclick = () => { work.innerHTML = ''; shownAsks.clear(); };
 $('#task').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) run();
 });
 $('#token').addEventListener('change', loadInfo);
 loadInfo();
+// Вопрос мог остаться висеть после перезагрузки вкладки — подбираем.
+poller = setInterval(pollAsks, 3000);
+pollAsks();
 $('#task').focus();
 </script>
 </body>

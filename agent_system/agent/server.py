@@ -5,6 +5,12 @@
   GET  /info            — конфигурация и список инструментов
   POST /run             — {"task": "...", "workspace": "..."} -> результат
   POST /run/stream      — то же, но события построчно (NDJSON)
+  POST /dispatch        — какой профиль возьмёт задачу и почему
+  GET  /questions       — вопросы агента, ждущие ответа
+  POST /answer          — {"id": 1, "text": "…"} — ответить агенту
+  GET  /runs            — история прогонов
+  GET  /runs/N          — прогон целиком: план, расход, журнал
+  POST /plan            — {"run_id": N, "task_id": M, "status": "done"}
 
 Токен: если задан AGENT_API_TOKEN, требуется заголовок
 Authorization: Bearer <token>. Без него сервер слушает только localhost.
@@ -20,6 +26,9 @@ from typing import Any
 
 from .build import build_agent
 from .config import Config
+from .dispatch import choose_profile
+from .store import Store
+from .webio import QuestionBox
 
 MAX_BODY = 1_000_000
 
@@ -27,6 +36,10 @@ MAX_BODY = 1_000_000
 class Handler(BaseHTTPRequestHandler):
     cfg: Config
     token: str | None = None
+    # Ящик вопросов общий на весь сервер. Значение по умолчанию нужно
+    # тем, кто поднимает Handler напрямую, минуя serve(): без него
+    # первый же запрос падал с AttributeError. Поймано сквозным тестом.
+    box: QuestionBox = QuestionBox()
     server_version = "AgentAPI/1.0"
 
     # --- служебное ----------------------------------------------------
@@ -97,6 +110,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
+        if self.path == "/questions":
+            self._send(200, {"questions": self.box.pending()})
+            return
+        if self.path == "/runs" or self.path.startswith("/runs/"):
+            self._runs(self.path)
+            return
         if self.path == "/info":
             try:
                 agent = build_agent(self.cfg)
@@ -113,7 +132,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
-        if self.path not in ("/run", "/run/stream"):
+        if self.path not in ("/run", "/run/stream", "/answer", "/plan",
+                             "/dispatch"):
             self._send(404, {"error": f"нет маршрута {self.path}"})
             return
 
@@ -121,6 +141,17 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             self._send(400, {"error": "ожидается JSON в теле запроса"})
             return
+
+        if self.path == "/answer":
+            self._answer(data)
+            return
+        if self.path == "/plan":
+            self._plan(data)
+            return
+        if self.path == "/dispatch":
+            self._dispatch(data)
+            return
+
         task = (data.get("task") or "").strip()
         if not task:
             self._send(400, {"error": "поле 'task' обязательно"})
@@ -137,8 +168,86 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._run_stream(cfg, task)
 
+    def _answer(self, data: dict[str, Any]) -> None:
+        try:
+            qid = int(data.get("id", 0))
+        except (TypeError, ValueError):
+            self._send(400, {"error": "поле 'id' должно быть числом"})
+            return
+        text = str(data.get("text") or "")
+        if data.get("skip"):
+            ok = self.box.drop(qid)
+        else:
+            ok = self.box.answer(qid, text)
+        if not ok:
+            # Вопрос мог истечь по таймауту, пока человек печатал.
+            # Молчать нельзя: иначе кажется, что ответ доставлен.
+            self._send(404, {"error": f"вопрос #{qid} уже неактуален "
+                                      "(истёк таймаут или снят)"})
+            return
+        self._send(200, {"status": "ok", "id": qid})
+
+    def _dispatch(self, data: dict[str, Any]) -> None:
+        """Кто возьмёт задачу. Отдельно от запуска: человек видит выбор
+        ДО начала работы и может его заменить."""
+        task = (data.get("task") or "").strip()
+        if not task:
+            self._send(400, {"error": "поле 'task' обязательно"})
+            return
+        pick = choose_profile(task, Config.list_profiles())
+        self._send(200, {"profile": pick.profile, "reason": pick.reason,
+                         "autonomous": pick.autonomous,
+                         "explain": pick.explain(),
+                         "runners_up": pick.runners_up or []})
+
+    def _runs(self, path: str) -> None:
+        store = Store(self.cfg.db)
+        try:
+            tail = path[len("/runs"):].strip("/")
+            if not tail:
+                self._send(200, {"runs": store.runs(30)})
+                return
+            try:
+                rid = int(tail)
+            except ValueError:
+                self._send(400, {"error": f"неверный номер прогона {tail!r}"})
+                return
+            row = store.get_run(rid)
+            if not row:
+                self._send(404, {"error": f"прогона #{rid} нет"})
+                return
+            self._send(200, {"run": row, "tasks": store.tasks(rid),
+                             "events": store.run_events(rid, limit=200)})
+        finally:
+            store.close()
+
+    def _plan(self, data: dict[str, Any]) -> None:
+        """Правка плана человеком: закрыть, провалить, снять пункт."""
+        try:
+            task_id = int(data.get("task_id", 0))
+        except (TypeError, ValueError):
+            self._send(400, {"error": "поле 'task_id' должно быть числом"})
+            return
+        status = str(data.get("status") or "").strip()
+        allowed = ("done", "failed", "skipped", "open")
+        if status not in allowed:
+            self._send(400, {"error": f"status должен быть одним из "
+                                      f"{', '.join(allowed)}"})
+            return
+        store = Store(self.cfg.db)
+        try:
+            store.set_task(task_id, status, str(data.get("result") or ""))
+            self._send(200, {"status": "ok", "task_id": task_id,
+                             "new_status": status})
+        finally:
+            store.close()
+
     def _run_plain(self, cfg: Config, task: str) -> None:
         try:
+            # ask=None намеренно: у /run нет потока событий, показать
+            # вопрос некому. Агент не станет ждать пустоту — инструмент
+            # ask_user сам пометит пункт как заблокированный и пойдёт
+            # дальше. Ждать 10 минут в тишине было бы хуже всего.
             agent = build_agent(cfg)
             res = agent.run(task)
         except Exception as exc:
@@ -177,7 +286,13 @@ class Handler(BaseHTTPRequestHandler):
                     pass
 
         try:
-            agent = build_agent(cfg, on_event=emit)
+            # Вопрос агента уходит в поток событий, ответ приходит
+            # отдельным запросом POST /answer.
+            def ask(question: str, options: list[str]) -> str:
+                return self.box.ask(question, options)
+
+            self.box.on_new = lambda q: emit("ask", q.as_dict())
+            agent = build_agent(cfg, on_event=emit, ask=ask)
             res = agent.run(task)
             emit("done", {"answer": res.answer, "stopped_by": res.stopped_by,
                           "steps": len(res.steps)})
@@ -189,6 +304,18 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8080,
           token: str | None = None) -> None:
     Handler.cfg = cfg
     Handler.token = token or os.getenv("AGENT_API_TOKEN")
+    Handler.box = QuestionBox()
+    # HTTP-заголовки допускают только latin-1. Токен с кириллицей клиент
+    # физически не сможет отправить — узнать об этом лучше при старте,
+    # а не по непонятной ошибке кодировки у пользователя.
+    if Handler.token:
+        try:
+            Handler.token.encode("latin-1")
+        except UnicodeEncodeError:
+            raise SystemExit(
+                "Отказ: токен содержит символы вне latin-1 (например, "
+                "кириллицу). HTTP-заголовок такой токен не передаст — "
+                "используйте латиницу, цифры и дефис.")
     if host not in ("127.0.0.1", "localhost") and not Handler.token:
         raise SystemExit(
             "Отказ: сервер открыт наружу без токена. Задайте AGENT_API_TOKEN "

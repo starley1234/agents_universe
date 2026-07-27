@@ -3,6 +3,7 @@
   "description": "Тексты, лендинги, контент-планы",
   "skills": [
     "files",
+    "makedocs",
     "memory",
     "present",
     "mcp"
