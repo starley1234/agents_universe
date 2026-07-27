@@ -15,6 +15,7 @@ from typing import Any, TYPE_CHECKING
 from .mcp import MCPServerConfig, configs_from_dict
 from .tools.messaging import MessagingConfig
 from .tools.shell import SandboxConfig
+from .tools.web import WebConfig
 
 if TYPE_CHECKING:  # разрыв цикла: router.py импортирует Config только
     from .router import ProfileInfo  # локально, внутри функции
@@ -86,6 +87,12 @@ class Config:
     # Ключи/пароли не хранятся в JSON-конфиге — только в переменных
     # окружения (см. .env.example), как и остальные секреты в системе.
     messaging: MessagingConfig = field(default_factory=MessagingConfig)
+
+    # --- веб-поиск и загрузка страниц без MCP (навык "web") ---
+    # Никаких секретов тут по умолчанию не требуется (DuckDuckGo без
+    # ключа); для backend="searxng" адрес своего инстанса — не секрет,
+    # поэтому в отличие от messaging остаётся в JSON-конфиге.
+    web: WebConfig = field(default_factory=WebConfig)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -160,6 +167,7 @@ class Config:
         sandbox_data = data.pop("sandbox", {}) or {}
         mcp_data = data.pop("mcp", {}) or {}
         messaging_data = data.pop("messaging", {}) or {}
+        web_data = data.pop("web", {}) or {}
         profile_name = data.pop("profile", None)
         cfg = cls(**{k: v for k, v in data.items()
                     if v is not None and not k.startswith("_")})
@@ -167,6 +175,7 @@ class Config:
         cfg.sandbox = SandboxConfig(**sandbox_data)
         cfg.mcp = configs_from_dict(mcp_data.get("servers", mcp_data))
         cfg.messaging = MessagingConfig.from_dict(messaging_data)
+        cfg.web = WebConfig.from_dict(web_data)
 
         # профиль — база; всё, что задано явно ниже, его перекрывает
         prof = overrides.pop("profile", None) or os.getenv("AGENT_PROFILE") \

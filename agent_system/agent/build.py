@@ -22,6 +22,7 @@ from .tools import office_docs as office_docs_tools
 from .tools import present as present_tools
 from .tools import files as files_tools
 from .tools import shell as shell_tools
+from .tools import web as web_tools
 from .tools.base import ToolRegistry, Workspace
 
 # Наборы навыков. Добавить свой = положить модуль с build(ws) -> list[Tool]
@@ -31,6 +32,7 @@ SKILLS: dict[str, Callable] = {
     "shell": lambda ws, cfg, confirm: shell_tools.build(ws, cfg.sandbox, confirm),
     "cad": lambda ws, cfg, confirm: cad_openscad.build(ws),
     "office": lambda ws, cfg, confirm: office_docs_tools.build(ws),
+    "web": lambda ws, cfg, confirm: web_tools.build(ws, cfg.web),
     # memory, pdf, docparse, pg_ontology, messaging, rag и cert_verify
     # подключаются отдельно: им нужен Store и/или отдельный драйвер
     # модели (vision/эмбеддинги), либо своя конфигурация каналов связи,
