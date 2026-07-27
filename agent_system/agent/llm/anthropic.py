@@ -22,6 +22,8 @@ API_VERSION = "2023-06-01"
 
 class Anthropic(BaseLLM):
     name = "anthropic"
+    supports_vision = True
+
 
     def __init__(
         self,
@@ -40,9 +42,28 @@ class Anthropic(BaseLLM):
         self.temperature = temperature
         self.max_tokens = max_tokens
 
+    # --- зрение: формат Anthropic отличается от базового (OpenAI-подобного):
+    # блок image с source={type: base64, media_type, data}, без data:-URI.
+    def build_vision_message(
+        self, instruction: str, images: list[tuple[bytes, str]],
+    ) -> dict[str, Any]:
+        import base64
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
+        for data, mime in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": base64.b64encode(data).decode(),
+                },
+            })
+        return {"role": "user", "content": content}
+
     # --- конвертация истории из внутреннего (OpenAI-подобного) вида ----
     @staticmethod
     def _split(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+
         system_parts: list[str] = []
         out: list[dict[str, Any]] = []
         for m in messages:

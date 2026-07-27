@@ -7,6 +7,7 @@ from .config import Config
 from .core import Agent, DEFAULT_SYSTEM
 from .llm import build_llm
 from .skills import cad_openscad
+from .skills import pdf_pipeline
 from .mcp import MCPPool
 from .store import Store
 from .tools import memory as memory_tools
@@ -21,12 +22,14 @@ SKILLS: dict[str, Callable] = {
     "files": lambda ws, cfg, confirm: files_tools.build(ws),
     "shell": lambda ws, cfg, confirm: shell_tools.build(ws, cfg.sandbox, confirm),
     "cad": lambda ws, cfg, confirm: cad_openscad.build(ws),
-    # memory подключается отдельно: ему нужен Store, а не Workspace
+    # memory и pdf подключаются отдельно: первому нужен Store, а не
+    # Workspace, второму — отдельный драйвер модели (vision), а не тот,
+    # что ведёт диалог с инструментами.
 }
 
 
 def known_skills() -> list[str]:
-    return sorted([*SKILLS, "memory", "present", "mcp"])
+    return sorted([*SKILLS, "memory", "present", "mcp", "pdf"])
 
 
 def build_agent(
@@ -44,7 +47,7 @@ def build_agent(
     ws = Workspace(cfg.workspace)
 
     registry = ToolRegistry()
-    extra = {"memory", "present", "mcp"}
+    extra = {"memory", "present", "mcp", "pdf"}
     unknown = [s for s in cfg.skills if s not in SKILLS and s not in extra]
     if unknown:
         raise ValueError(
@@ -52,7 +55,7 @@ def build_agent(
             f"Доступны: {', '.join(known_skills())}"
         )
     for name in cfg.skills:
-        if name in ("memory", "present", "mcp"):
+        if name in ("memory", "present", "mcp", "pdf"):
             continue
         registry.extend(SKILLS[name](ws, cfg, confirm))
 
@@ -76,8 +79,25 @@ def build_agent(
         pool = mcp_pool if mcp_pool is not None else MCPPool(cfg.mcp)
         registry.extend(pool.tools())
 
+    # PDF: читает документ, определяет тип страницы локально (без LLM),
+    # затем распознаёт через ОТДЕЛЬНЫЙ, обычно vision-, драйвер модели.
+    # Драйвер собирается независимо от основного llm, чтобы можно было
+    # держать дешёвую/локальную модель для диалога и модель с поддержкой
+    # изображений — для распознавания страниц.
+    if "pdf" in cfg.skills:
+        v_provider, v_model, v_base_url, v_api_key = cfg.resolve_vision()
+        vision_llm = build_llm(
+            v_provider, v_model,
+            base_url=v_base_url, api_key=v_api_key, temperature=cfg.temperature,
+        )
+        registry.extend(pdf_pipeline.build(
+            ws, vision_llm, dpi=cfg.pdf_dpi,
+            max_pages_per_call=cfg.pdf_max_pages_per_call,
+        ))
+
     return Agent(
         llm=llm,
+
         tools=registry,
         system_prompt=cfg.system_prompt or DEFAULT_SYSTEM,
         max_steps=cfg.max_steps,

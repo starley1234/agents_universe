@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS entity(
   kind TEXT NOT NULL,                -- part | file | person | idea | metric ...
   name TEXT NOT NULL,
   props TEXT DEFAULT '{}',
+  description TEXT DEFAULT '',       -- текстовое описание для семантического поиска
+  embedding TEXT,                    -- JSON-массив float, для RAG на онтологии
   run_id INTEGER, created REAL,
   UNIQUE(kind, name)
 );
@@ -103,7 +105,33 @@ CREATE TABLE IF NOT EXISTS event(
 CREATE INDEX IF NOT EXISTS ix_event_run ON event(run_id, step);
 CREATE INDEX IF NOT EXISTS ix_event_sig ON event(run_id, sig);
 CREATE INDEX IF NOT EXISTS ix_task_run ON task(run_id, status);
+
+CREATE TABLE IF NOT EXISTS chunk(
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,              -- откуда фрагмент: имя файла/документа
+  ord INTEGER DEFAULT 0,             -- порядковый номер фрагмента в источнике
+  text TEXT NOT NULL,
+  tags TEXT DEFAULT '',
+  entity_refs TEXT DEFAULT '[]',     -- JSON [[kind,name], ...] — привязка
+                                      -- фрагмента к объектам онтологии,
+                                      -- нужна для RAG на базе онтологии
+  embedding TEXT,                    -- JSON-массив float, пусто пока не векторизован
+  dim INTEGER DEFAULT 0,
+  run_id INTEGER, created REAL
+);
+CREATE INDEX IF NOT EXISTS ix_chunk_source ON chunk(source, ord);
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+  text, source, content=chunk, content_rowid=id
+);
+CREATE TRIGGER IF NOT EXISTS chunk_ai AFTER INSERT ON chunk BEGIN
+  INSERT INTO chunk_fts(rowid, text, source) VALUES (new.id, new.text, new.source);
+END;
+CREATE TRIGGER IF NOT EXISTS chunk_ad AFTER DELETE ON chunk BEGIN
+  INSERT INTO chunk_fts(chunk_fts, rowid, text, source)
+    VALUES('delete', old.id, old.text, old.source);
+END;
 """
+
 
 
 class Store:
@@ -405,3 +433,83 @@ class Store:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM event WHERE run_id=? ORDER BY id DESC LIMIT ?",
             (run_id, limit))][::-1]
+
+    # -------------------------------------------------- RAG: фрагменты
+    def add_chunks(self, source: str, texts: list[str], tags: str = "",
+                   entity_refs: list[tuple[str, str]] | None = None,
+                   run_id: int | None = None) -> list[int]:
+        """Заменяет все фрагменты источника на новые (переиндексация)."""
+        self.db.execute("DELETE FROM chunk WHERE source=?", (source,))
+        refs = json.dumps(list(entity_refs or []), ensure_ascii=False)
+        ids: list[int] = []
+        for i, text in enumerate(texts):
+            cur = self.db.execute(
+                "INSERT INTO chunk(source,ord,text,tags,entity_refs,run_id,"
+                "created) VALUES(?,?,?,?,?,?,?)",
+                (source, i, text, tags, refs, run_id, self._now()))
+            ids.append(int(cur.lastrowid))
+        self.db.commit()
+        return ids
+
+    def set_chunk_embedding(self, chunk_id: int, vector: list[float]) -> None:
+        self.db.execute(
+            "UPDATE chunk SET embedding=?, dim=? WHERE id=?",
+            (json.dumps(vector), len(vector), chunk_id))
+        self.db.commit()
+
+    def chunks_without_embedding(self, limit: int = 500) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM chunk WHERE embedding IS NULL LIMIT ?", (limit,))]
+
+    def all_chunks(self, source: str | None = None) -> list[dict[str, Any]]:
+        if source:
+            rows = self.db.execute(
+                "SELECT * FROM chunk WHERE source=? ORDER BY ord", (source,))
+        else:
+            rows = self.db.execute("SELECT * FROM chunk ORDER BY source, ord")
+        return [dict(r) for r in rows]
+
+    def chunk_count(self, source: str | None = None) -> int:
+        if source:
+            return int(self.db.execute(
+                "SELECT COUNT(*) FROM chunk WHERE source=?",
+                (source,)).fetchone()[0])
+        return int(self.db.execute("SELECT COUNT(*) FROM chunk").fetchone()[0])
+
+    def sources(self) -> list[str]:
+        return [r[0] for r in self.db.execute(
+            "SELECT DISTINCT source FROM chunk ORDER BY source")]
+
+    def fts_chunks(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Полнотекстовый поиск по фрагментам — та же логика ступеней,
+        что и в recall(), но по-крупному тексту документов, а не фактам."""
+        terms = self._terms(query)
+        if not terms:
+            return []
+        prefixes = [self._stem(t) for t in terms]
+        try:
+            rows = self.db.execute(
+                "WITH hit AS ("
+                "  SELECT rowid FROM chunk_fts WHERE chunk_fts MATCH ?"
+                "  ORDER BY rowid DESC LIMIT ?"
+                ") SELECT c.* FROM hit JOIN chunk c ON c.id=hit.rowid LIMIT ?",
+                (" OR ".join(f"{p}*" for p in prefixes),
+                 max(limit * 20, 200), limit)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
+    def entity_chunks(self, kind: str, name: str) -> list[dict[str, Any]]:
+        """Фрагменты, привязанные к объекту онтологии — RAG-по-графу."""
+        needle = json.dumps([kind, name], ensure_ascii=False)
+        out = []
+        for r in self.db.execute("SELECT * FROM chunk"):
+            d = dict(r)
+            try:
+                refs = json.loads(d.get("entity_refs") or "[]")
+            except json.JSONDecodeError:
+                refs = []
+            if any(list(ref) == [kind, name] for ref in refs):
+                out.append(d)
+        return out
+

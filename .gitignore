@@ -1,0 +1,29 @@
+## Виртуальные окружения Python — не индексируем, ставятся через
+## python3 -m venv .venv && pip install -r ...
+.venv/
+venv/
+env/
+.env
+
+## Байткод и кэши Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+## Рантайм-артефакты agent_system: база состояния (память/онтология/план)
+## и рабочая папка агента по умолчанию — генерируются при запуске,
+## в git не нужны.
+agent_system/agent.db
+agent_system/agent.db-*
+agent_system/workspace/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+## Прочий мусор ОС/редакторов
+.DS_Store
+*.swp

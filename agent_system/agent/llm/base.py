@@ -116,6 +116,11 @@ class BaseLLM:
     name = "base"
     #: локальные драйверы ставят False — платить не за что
     billable = True
+    #: заявленная поддержка изображений в сообщениях (мультимодальность).
+    #: Это свойство ДРАЙВЕРА (протокола API), а не конкретной модели —
+    #: сама модель может не уметь смотреть на картинки, тогда провайдер
+    #: ответит понятной ошибкой, а не тихим искажением результата.
+    supports_vision = False
 
     def __init__(self, model: str, retries: int = 3, retry_base: float = 2.0,
                  **kwargs: Any) -> None:
@@ -240,5 +245,40 @@ class BaseLLM:
         except (TypeError, ValueError):
             return Usage()
 
+    # --- зрение: единый вызов для всех провайдеров ---------------------
+    def build_vision_message(
+        self, instruction: str, images: list[tuple[bytes, str]],
+    ) -> dict[str, Any]:
+        """Сообщение пользователя с картинками, в формате ЭТОГО провайдера.
+
+        images — список (байты, mime-тип), например ('image/png').
+        Базовая реализация — формат OpenAI (content = список блоков
+        text/image_url), его понимают openai, openrouter, vllm, lmstudio,
+        llamacpp. Anthropic и Ollama переопределяют под свой протокол.
+        """
+        import base64
+        content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
+        for data, mime in images:
+            b64 = base64.b64encode(data).decode()
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        return {"role": "user", "content": content}
+
+    def vision_chat(self, system_prompt: str, instruction: str,
+                     images: list[tuple[bytes, str]]) -> LLMReply:
+        """Разовый запрос «текст + картинки -> текст», без инструментов.
+
+        Переиспользует chat() — значит, бесплатно получаем повтор при
+        сбое сети и учёт токенов, ничего не дублируя для картинок.
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            self.build_vision_message(instruction, images),
+        ]
+        return self.chat(messages, tools=None)
+
     def __repr__(self) -> str:  # pragma: no cover - диагностика
         return f"<{type(self).__name__} model={self.model!r}>"
+

@@ -19,6 +19,8 @@ from .base import BaseLLM, LLMError, LLMReply, ToolCall, Usage
 
 class OpenAILike(BaseLLM):
     name = "openai"
+    supports_vision = True
+
 
     def __init__(
         self,

@@ -17,6 +17,8 @@ from .base import BaseLLM, LLMError, LLMReply, ToolCall, Usage
 class Ollama(BaseLLM):
     name = "ollama"
     billable = False   # локальная модель: платить не за что
+    supports_vision = True
+
 
     def __init__(
         self,
@@ -30,6 +32,18 @@ class Ollama(BaseLLM):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.temperature = temperature
+
+    # --- зрение: нативный протокол Ollama держит картинки ОТДЕЛЬНЫМ полем
+    # "images" (список строк base64 без data:-префикса), а не в content.
+    def build_vision_message(
+        self, instruction: str, images: list[tuple[bytes, str]],
+    ) -> dict[str, Any]:
+        import base64
+        return {
+            "role": "user",
+            "content": instruction,
+            "images": [base64.b64encode(data).decode() for data, _ in images],
+        }
 
     def _chat_once(
         self,

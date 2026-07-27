@@ -41,6 +41,37 @@ class Config:
     max_iterations: int = 50
     # --- внешние MCP-серверы: поиск, страницы, картинки, речь ---
     mcp: list[MCPServerConfig] = field(default_factory=list)
+    # --- распознавание PDF (навык "pdf") ---
+    # Отдельная модель для распознавания страниц: как правило, это должна
+    # быть vision-модель, а не обязательно та же, что ведёт диалог с
+    # инструментами. Если ничего не задано — используется основная модель
+    # (cfg.provider/cfg.model), при условии, что она умеет в изображения.
+    vision_provider: str | None = None
+    vision_model: str | None = None
+    vision_base_url: str | None = None
+    vision_api_key: str | None = None
+    pdf_dpi: int = 170                  # разрешение рендера страницы в PNG
+    pdf_max_pages_per_call: int = 25    # защита от случайного распознавания
+                                         # сотен страниц одним вызовом
+
+    # --- эмбеддинги (навыки "rag", "pg_ontology") ---
+    # Отдельный провайдер/модель для векторизации текста. Если не задан —
+    # берётся провайдер основной модели с моделью embedding_model.
+    embedding_provider: str | None = None
+    embedding_model: str = "text-embedding-3-small"
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+
+    # --- PostgreSQL + pgvector (навык "pg_ontology", бэкенд "rag") ---
+    # Строка подключения вида postgresql://user:pass@host:5432/db.
+    # Если не задана — pg_ontology откажется подключаться с понятной
+    # ошибкой, а rag использует SQLite (agent.db) как бэкенд по умолчанию.
+    pg_dsn: str | None = None
+
+    # --- RAG (навык "rag") ---
+    rag_chunk_size: int = 1200          # символов на фрагмент
+    rag_chunk_overlap: int = 150        # перекрытие между фрагментами
+    rag_top_k: int = 6                  # сколько фрагментов подтягивать
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -115,6 +146,13 @@ class Config:
             cfg.workspace = os.environ["AGENT_WORKSPACE"]
         if os.getenv("AGENT_SANDBOX"):
             cfg.sandbox.mode = os.environ["AGENT_SANDBOX"]
+        cfg.vision_provider = os.getenv("AGENT_VISION_PROVIDER", cfg.vision_provider)
+        cfg.vision_model = os.getenv("AGENT_VISION_MODEL", cfg.vision_model)
+        cfg.pg_dsn = os.getenv("AGENT_PG_DSN", cfg.pg_dsn)
+        cfg.embedding_provider = os.getenv("AGENT_EMBEDDING_PROVIDER",
+                                           cfg.embedding_provider)
+        cfg.embedding_model = os.getenv("AGENT_EMBEDDING_MODEL",
+                                        cfg.embedding_model)
 
         # переопределения из CLI
         for k, v in overrides.items():
@@ -131,9 +169,57 @@ class Config:
         cfg.api_key = cfg.api_key or key
         return cfg
 
+    def resolve_vision(self) -> tuple[str, str, str | None, str | None]:
+        """Провайдер/модель/base_url/ключ для распознавания PDF-страниц.
+
+        Если vision_* не заданы явно — используется ОСНОВНАЯ модель
+        диалога. Так навык pdf работает «из коробки» с любым провайдером,
+        а отдельную (обычно более дешёвую) vision-модель можно подключить
+        одной строкой в конфиге, не трогая остальное.
+        """
+        provider = self.vision_provider or self.provider
+        model = self.vision_model or self.model
+        if self.vision_base_url:
+            base_url = self.vision_base_url
+        elif self.vision_provider:
+            base_url, _ = self._env_default(provider)
+        else:
+            base_url = self.base_url
+        if self.vision_api_key:
+            api_key = self.vision_api_key
+        elif self.vision_provider:
+            _, api_key = self._env_default(provider)
+        else:
+            api_key = self.api_key
+        return provider, model, base_url, api_key
+
+    def resolve_embedding(self) -> tuple[str, str, str | None, str | None]:
+        """Провайдер/модель/base_url/ключ для эмбеддингов.
+
+        Та же логика, что у resolve_vision: без explicit embedding_* —
+        используется провайдер основной модели, но модель эмбеддинга
+        своя (диалоговая модель обычно не умеет отдавать векторы).
+        """
+        provider = self.embedding_provider or self.provider
+        model = self.embedding_model
+        if self.embedding_base_url:
+            base_url = self.embedding_base_url
+        elif self.embedding_provider:
+            base_url, _ = self._env_default(provider)
+        else:
+            base_url = self.base_url
+        if self.embedding_api_key:
+            api_key = self.embedding_api_key
+        elif self.embedding_provider:
+            _, api_key = self._env_default(provider)
+        else:
+            api_key = self.api_key
+        return provider, model, base_url, api_key
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["mcp"] = [m["name"] for m in d.get("mcp", [])]
         if d.get("api_key"):
+
             d["api_key"] = "***"          # не светим ключ в логах
         return d
