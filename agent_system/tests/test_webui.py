@@ -73,6 +73,33 @@ class _ProfilesDirPatch:
         Config.profiles_dir = self._orig
 
 
+class _EnvFilesPatch:
+    """Подменяет agent.webui.env_file_path()/env_example_path() на
+
+    временные файлы — тесты записи .env не должны трогать настоящий
+    .env.example репозитория и уж тем более реальный .env, если он
+    вдруг есть на машине разработчика.
+    """
+
+    def __init__(self, tmp: Path, example_text: str) -> None:
+        self.tmp = tmp
+        self.example_text = example_text
+        self._orig_file = webui.env_file_path
+        self._orig_example = webui.env_example_path
+
+    def __enter__(self):
+        example = self.tmp / ".env.example"
+        example.write_text(self.example_text, encoding="utf-8")
+        envf = self.tmp / ".env"
+        webui.env_file_path = lambda: envf
+        webui.env_example_path = lambda: example
+        return envf, example
+
+    def __exit__(self, *exc) -> None:
+        webui.env_file_path = self._orig_file
+        webui.env_example_path = self._orig_example
+
+
 class FakeLLMHandler(BaseHTTPRequestHandler):
     """Планировщик даёт N пунктов, рефлексия — валидный JSON, рабочие шаги —
 
@@ -261,6 +288,112 @@ def test_profiles_negative_validation() -> None:
                 check("чтение несуществующего профиля -> ошибка", True)
 
 
+_ENV_EXAMPLE = (
+    "# --- выбор модели ---\n"
+    "AGENT_PROVIDER=openai          # openai | anthropic | ollama\n"
+    "AGENT_MODEL=gpt-4o-mini\n"
+    "\n"
+    "# ключ провайдера, не в конфиг!\n"
+    "OPENAI_API_KEY=\n"
+    "\n"
+    "AGENT_API_TOKEN=\n"
+)
+
+
+def test_env_list_low_level() -> None:
+    section("agent/webui.py: list_env_vars() — секреты не отдаются целиком")
+    with tempfile.TemporaryDirectory() as td:
+        with _EnvFilesPatch(Path(td), _ENV_EXAMPLE) as (envf, _example):
+            envf.write_text("AGENT_PROVIDER=ollama\nOPENAI_API_KEY=sk-real-secret\n",
+                            encoding="utf-8")
+            by_name = {v["name"]: v for v in webui.list_env_vars()}
+            check("описание переменной подхвачено из .env.example",
+                  "выбор модели" in by_name["AGENT_PROVIDER"]["comment"]
+                  or by_name["OPENAI_API_KEY"]["comment"], str(by_name))
+            check("несекретное значение видно как есть",
+                  by_name["AGENT_PROVIDER"]["value"] == "ollama", str(by_name))
+            check("секрет НЕ отдаётся целиком",
+                  "sk-real-secret" not in json.dumps(by_name), str(by_name))
+            check("секрет помечен is_secret",
+                  by_name["OPENAI_API_KEY"]["is_secret"] is True)
+            check("факт 'задано' виден без значения",
+                  by_name["OPENAI_API_KEY"]["is_set"] is True
+                  and by_name["OPENAI_API_KEY"]["value"] == "")
+            check("незаданная переменная -> is_set False",
+                  by_name["AGENT_API_TOKEN"]["is_set"] is False)
+
+
+def test_env_save_requires_confirm_for_secrets() -> None:
+    section("agent/webui.py: изменение/очистка секрета требует confirm=True")
+    with tempfile.TemporaryDirectory() as td:
+        with _EnvFilesPatch(Path(td), _ENV_EXAMPLE) as (envf, _example):
+            # несекретное значение — без confirm
+            webui.save_env_vars({"AGENT_PROVIDER": "anthropic"})
+            check("несекретное значение сохранилось без confirm",
+                  "AGENT_PROVIDER=anthropic" in envf.read_text())
+
+            try:
+                webui.save_env_vars({"OPENAI_API_KEY": "sk-new"})
+                check("секрет без confirm отклонён", False)
+            except webui.WebUIError:
+                check("секрет без confirm отклонён", True)
+            check("файл не изменился после отказа",
+                  "sk-new" not in envf.read_text())
+
+            webui.save_env_vars({"OPENAI_API_KEY": "sk-new"}, confirm=True)
+            check("секрет с confirm=True сохранён",
+                  "OPENAI_API_KEY=sk-new" in envf.read_text())
+
+            try:
+                webui.save_env_vars(clear=["OPENAI_API_KEY"])
+                check("очистка секрета без confirm отклонена", False)
+            except webui.WebUIError:
+                check("очистка секрета без confirm отклонена", True)
+
+            webui.save_env_vars(clear=["OPENAI_API_KEY"], confirm=True)
+            check("очистка секрета с confirm=True прошла",
+                  "OPENAI_API_KEY=\n" in envf.read_text()
+                  or envf.read_text().rstrip("\n").endswith("OPENAI_API_KEY="))
+
+
+def test_env_save_preserves_comments_and_unrelated_lines() -> None:
+    section("agent/webui.py: save_env_vars не портит комментарии/прочие строки")
+    with tempfile.TemporaryDirectory() as td:
+        with _EnvFilesPatch(Path(td), _ENV_EXAMPLE) as (envf, _example):
+            webui.save_env_vars({"AGENT_PROVIDER": "ollama"})
+            text = envf.read_text()
+            check("инлайн-комментарий у изменённой строки сохранён",
+                  "# openai | anthropic | ollama" in text, text)
+            check("заголовочный комментарий блока не пропал",
+                  "# --- выбор модели ---" in text, text)
+            check("необновлённая переменная осталась прежней",
+                  "AGENT_MODEL=gpt-4o-mini" in text, text)
+
+
+def test_env_save_rejects_unknown_variable() -> None:
+    section("agent/webui.py: неизвестное имя переменной отклоняется")
+    with tempfile.TemporaryDirectory() as td:
+        with _EnvFilesPatch(Path(td), _ENV_EXAMPLE):
+            try:
+                webui.save_env_vars({"TOTALLY_RANDOM_NAME": "x"})
+                check("неизвестная переменная отклонена", False)
+            except webui.WebUIError:
+                check("неизвестная переменная отклонена", True)
+
+
+def test_env_first_save_bootstraps_from_example() -> None:
+    section("agent/webui.py: первое сохранение создаёт .env из .env.example")
+    with tempfile.TemporaryDirectory() as td:
+        with _EnvFilesPatch(Path(td), _ENV_EXAMPLE) as (envf, _example):
+            check(".env ещё не существует", not envf.exists())
+            webui.save_env_vars({"AGENT_MODEL": "gpt-4o"})
+            check(".env создан", envf.exists())
+            text = envf.read_text()
+            check("пояснения из .env.example перенесены",
+                  "# --- выбор модели ---" in text, text)
+            check("новое значение применено", "AGENT_MODEL=gpt-4o" in text, text)
+
+
 # ==================================================== HTTP: дашборд/API
 def test_dashboard_html_served_without_token() -> None:
     section("GET /dashboard: страница отдаётся без токена (данные — с токеном)")
@@ -400,6 +533,46 @@ def test_api_profiles_write_delete_over_http() -> None:
 
                 code, data = c.get("/api/profiles/httptest")
                 check("после удаления не читается (400)", code == 400, str((code, data)))
+
+
+def test_api_env_over_http() -> None:
+    section("GET/POST /api/env через HTTP: чтение, запись, подтверждение секретов")
+    with tempfile.TemporaryDirectory() as ed:
+        with _EnvFilesPatch(Path(ed), _ENV_EXAMPLE) as (envf, _example):
+            with _Ctx() as c:
+                code, data = c.get("/api/env", token=False)
+                check("без токена — 401", code == 401, str((code, data)))
+
+                code, data = c.get("/api/env")
+                by_name = {v["name"]: v for v in data["vars"]}
+                check("переменные из .env.example видны", "AGENT_PROVIDER" in by_name,
+                      str(by_name))
+                check("секрет не отдаётся целиком",
+                      by_name["OPENAI_API_KEY"]["value"] == "", str(by_name))
+
+                code, data = c.post("/api/env", {"values": {"AGENT_MODEL": "gpt-4o"}})
+                check("несекретное значение сохранено (200)", code == 200,
+                      str((code, data)))
+                check("restart_required=true отражён в ответе",
+                      data.get("restart_required") is True, str(data))
+                check("файл реально обновлён", "AGENT_MODEL=gpt-4o" in envf.read_text())
+
+                code, data = c.post("/api/env",
+                                    {"values": {"OPENAI_API_KEY": "sk-http"}})
+                check("секрет без confirm отклонён через HTTP (400)", code == 400,
+                      str((code, data)))
+                check("секрет не попал в файл",
+                      "sk-http" not in envf.read_text())
+
+                code, data = c.post("/api/env", {
+                    "values": {"OPENAI_API_KEY": "sk-http"}, "confirm": True})
+                check("секрет с confirm=True сохранён через HTTP (200)", code == 200,
+                      str((code, data)))
+                check("секрет реально в файле", "sk-http" in envf.read_text())
+
+                code, data = c.post("/api/env", {"values": {"NOPE_VAR": "1"}})
+                check("неизвестная переменная отклонена через HTTP (400)",
+                      code == 400, str((code, data)))
 
 
 # ===================================================== автономный режим
@@ -544,6 +717,11 @@ def main() -> int:
 
     test_profiles_crud()
     test_profiles_negative_validation()
+    test_env_list_low_level()
+    test_env_save_requires_confirm_for_secrets()
+    test_env_save_preserves_comments_and_unrelated_lines()
+    test_env_save_rejects_unknown_variable()
+    test_env_first_save_bootstraps_from_example()
     test_dashboard_html_served_without_token()
     test_api_requires_token()
     test_api_counts_and_runs_reflect_real_store()
@@ -551,6 +729,7 @@ def main() -> int:
     test_api_ontology()
     test_api_graph()
     test_api_profiles_write_delete_over_http()
+    test_api_env_over_http()
     test_store_counts_helpers_directly()
     test_store_graph_data_directly()
     test_autorun_start_status_finish()

@@ -162,6 +162,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/profiles/"):
                 name = path[len("/api/profiles/"):]
                 self._send(200, webui.read_profile(name))
+            elif path == "/api/env":
+                self._send(200, {"vars": webui.list_env_vars()})
             elif path == "/api/runs":
                 with self._closing_store() as st:
                     self._send(200, {"runs": st.list_runs(qi("limit", 50))})
@@ -280,6 +282,11 @@ class Handler(BaseHTTPRequestHandler):
                 name = path[len("/api/profiles/"):-len("/delete")]
                 webui.delete_profile(name)
                 self._send(200, {"deleted": name})
+            elif path == "/api/env":
+                result = webui.save_env_vars(
+                    data.get("values") or {}, data.get("clear") or [],
+                    confirm=bool(data.get("confirm")))
+                self._send(200, result)
             elif path == "/api/auto/start":
                 run_id = self.autorun.start(
                     self.cfg, data.get("goal", ""), data.get("profile") or None,

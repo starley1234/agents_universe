@@ -24,6 +24,7 @@ import json
 import queue
 import re
 import threading
+from pathlib import Path
 from typing import Any
 
 from .autorun import AutoRunner
@@ -31,6 +32,7 @@ from .build import build_agent
 from .config import Config
 from .mcp import MCPPool
 from .store import Store
+
 
 #: имя профиля — только это можно положить в имя файла на диске;
 #: то же ограничение, что негласно подразумевает Config.list_profiles()
@@ -143,6 +145,226 @@ def delete_profile(name: str) -> None:
     if not f.exists():
         raise WebUIError(f"профиль {name!r} не найден")
     f.unlink()
+
+
+# ======================================================= .env-редактор
+# ГЛАВНЫЙ ПРИНЦИП, как и в остальной системе: секреты храним ТОЛЬКО в
+# .env, никогда в JSON. Этот раздел не меняет это правило, а даёт
+# управляемый способ редактировать сам .env через дашборд вместо ручного
+# редактирования файла по SSH — с маскировкой при чтении и обязательным
+# подтверждением перед записью секрета (тот же приём, что confirm_sends
+# в messaging: случайно отправленное здесь тоже не отменить).
+#
+# ЧЕСТНОЕ ОГРАНИЧЕНИЕ: os.getenv() в agent/config.py читается один раз,
+# при Config.load() на старте процесса. Запись .env НЕ подхватывается
+# уже работающим сервером на лету — save_env_vars() всегда возвращает
+# restart_required=True, и дашборд обязан показать это пользователю, а
+# не создавать иллюзию мгновенного применения.
+ENV_SECRET_RE = re.compile(r"(_KEY|_PASSWORD|_TOKEN|_SECRET|_DSN)$")
+
+_KEY_LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+
+
+def env_file_path() -> Path:
+    """Путь к .env — рядом с .env.example, в корне agent_system/.
+
+    Функция, а не константа: тесты подменяют её (как Config.profiles_dir
+    для профилей), чтобы не трогать реальный .env репозитория.
+    """
+    return Path(__file__).resolve().parent.parent / ".env"
+
+
+def env_example_path() -> Path:
+    return Path(__file__).resolve().parent.parent / ".env.example"
+
+
+def _split_value_and_comment(rest: str) -> tuple[str, str]:
+    """rest — всё после '=' в строке KEY=rest.
+
+    Инлайн-комментарий ищем по последовательности ' #' (пробел + решётка),
+    как их оформляет .env.example — так отличаем реальный комментарий
+    от '#', который теоретически мог быть частью самого значения (URL с
+    фрагментом и т.п.). Возвращает (значение, хвост_с_комментарием) —
+    хвост включает исходные пробелы перед '#', чтобы при перезаписи
+    сохранить выравнивание.
+    """
+    idx = rest.find(" #")
+    if idx == -1:
+        return rest.strip(), ""
+    return rest[:idx].strip(), rest[idx:]
+
+
+def _set_line_value(line: str, new_value: str) -> str:
+    """Заменить только значение в строке KEY=... , не трогая комментарий."""
+    m = _KEY_LINE_RE.match(line.strip())
+    if not m:
+        return line
+    key, rest = m.group(1), m.group(2)
+    _, comment = _split_value_and_comment(rest)
+    return f"{key}={new_value}{comment}"
+
+
+def _parse_dotenv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        m = _KEY_LINE_RE.match(s)
+        if not m:
+            continue
+        value, _ = _split_value_and_comment(m.group(2))
+        # снимаем внешние кавычки, если значение целиком в них — обычная
+        # практика .env-файлов (VALUE="с пробелами")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        out[m.group(1)] = value
+    return out
+
+
+def _read_template_vars() -> list[dict[str, str]]:
+    """Имена/описания/примеры значений — источник истины: .env.example.
+
+    Комментарии над переменной (contiguous блок строк с '#', без пустой
+    строки между ними и объявлением) становятся её описанием в дашборде.
+    """
+    path = env_example_path()
+    if not path.exists():
+        return []
+    out: list[dict[str, str]] = []
+    pending: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        m = _KEY_LINE_RE.match(s) if s and not s.startswith("#") else None
+        if m:
+            default_value, _ = _split_value_and_comment(m.group(2))
+            comment = " ".join(c.lstrip("#").strip() for c in pending if c.strip())
+            out.append({"name": m.group(1), "comment": comment,
+                       "example_default": default_value})
+            pending = []
+        elif s.startswith("#"):
+            pending.append(s)
+        elif not s:
+            pending = []
+    return out
+
+
+def list_env_vars() -> list[dict[str, Any]]:
+    """Текущее состояние переменных окружения проекта — для дашборда.
+
+    Значения: из реального .env, если он есть, иначе — пример из
+    .env.example (это НЕ секреты, а разумные значения по умолчанию вроде
+    AGENT_SANDBOX=auto, их незачем скрывать). Секреты (см. ENV_SECRET_RE)
+    на чтение никогда не отдаются целиком — только факт "задано/не
+    задано", тот же принцип, что маскировка в Config.to_dict().
+    """
+    templates = _read_template_vars()
+    known_names = {t["name"] for t in templates}
+    existing = _parse_dotenv(env_file_path())
+
+    out: list[dict[str, Any]] = []
+    for t in templates:
+        name = t["name"]
+        raw_value = existing.get(name, t["example_default"])
+        secret = bool(ENV_SECRET_RE.search(name))
+        out.append({
+            "name": name, "comment": t["comment"],
+            "is_secret": secret, "is_set": bool(raw_value),
+            "value": "" if secret else raw_value,
+        })
+    # переменные, реально заданные в .env, но отсутствующие в
+    # .env.example — не прячем, показываем отдельно с пометкой custom
+    for name, val in existing.items():
+        if name in known_names:
+            continue
+        secret = bool(ENV_SECRET_RE.search(name))
+        out.append({"name": name, "comment": "(нет в .env.example)",
+                   "is_secret": secret, "is_set": bool(val),
+                   "value": "" if secret else val, "custom": True})
+    return out
+
+
+def save_env_vars(values: dict[str, str] | None = None,
+                  clear: list[str] | None = None,
+                  confirm: bool = False) -> dict[str, Any]:
+    """Записать новые значения в .env.
+
+    Изменяются ТОЛЬКО строго значения запрошенных ключей — комментарии,
+    порядок и значения остальных переменных не трогаются (см.
+    _set_line_value). Если .env ещё не существует, за основу берётся
+    .env.example — так первое сохранение не лишает пользователя всех
+    пояснений в файле.
+
+    Ключ должен быть либо описан в .env.example, либо уже реально
+    существовать в текущем .env — заводить С ДАШБОРДА произвольные новые
+    имена переменных, не относящиеся к проекту, не даём: это сузило бы
+    поверхность для случайной опечатки в имени переменной, которая потом
+    незаметно ничего не будет делать.
+    """
+    values = dict(values or {})
+    clear = list(clear or [])
+    templates = _read_template_vars()
+    known_names = {t["name"] for t in templates}
+    existing = _parse_dotenv(env_file_path())
+    known_names |= set(existing)
+
+    requested = list(values) + clear
+    unknown = [k for k in requested if k not in known_names]
+    if unknown:
+        raise WebUIError(
+            f"неизвестные переменные: {', '.join(sorted(unknown))} — через "
+            "дашборд можно менять только переменные, уже описанные в "
+            ".env.example или реально присутствующие в .env"
+        )
+
+    touches_secret = bool(clear) or any(
+        ENV_SECRET_RE.search(k) for k in values)
+    if touches_secret and not confirm:
+        raise WebUIError(
+            "изменение или очистка секрета требует явного подтверждения "
+            "(confirm=true в теле запроса) — как и отправка сообщений в "
+            "messaging, случайно отправленное изменение здесь не отменить"
+        )
+
+    if env_file_path().exists():
+        base_text = env_file_path().read_text(encoding="utf-8")
+    elif env_example_path().exists():
+        base_text = env_example_path().read_text(encoding="utf-8")
+    else:
+        base_text = ""
+
+    seen: set[str] = set()
+    out_lines: list[str] = []
+    for raw in base_text.splitlines():
+        s = raw.strip()
+        m = _KEY_LINE_RE.match(s) if s and not s.startswith("#") else None
+        if not m:
+            out_lines.append(raw)
+            continue
+        name = m.group(1)
+        seen.add(name)
+        if name in clear:
+            out_lines.append(_set_line_value(raw, ""))
+        elif name in values:
+            out_lines.append(_set_line_value(raw, values[name].strip()))
+        else:
+            out_lines.append(raw)   # не трогаем — сохраняем и инлайн-комментарий
+
+    new_names = [k for k in values if k not in seen]
+    if new_names:
+        out_lines.append("")
+        out_lines.append("# --- добавлено через дашборд ---")
+        for k in new_names:
+            out_lines.append(f"{k}={values[k].strip()}")
+
+    env_file_path().parent.mkdir(parents=True, exist_ok=True)
+    env_file_path().write_text("\n".join(out_lines).rstrip("\n") + "\n",
+                               encoding="utf-8")
+    return {"saved": sorted(set(values) | set(clear)), "restart_required": True}
 
 
 # ================================================= автономный прогон

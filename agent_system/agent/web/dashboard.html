@@ -77,6 +77,7 @@
   <nav>
     <button data-view="overview" class="active">Обзор</button>
     <button data-view="profiles">Профили</button>
+    <button data-view="env">Переменные окружения</button>
     <button data-view="runs">Прогоны</button>
     <button data-view="autorun">Автономный режим</button>
     <button data-view="memory">Память</button>
@@ -119,6 +120,27 @@
       <div class="row">
         <button id="pf-save">Сохранить</button>
         <button id="pf-reset">Очистить форму</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ -->
+  <section id="view-env" class="hidden">
+    <div class="card">
+      <h2>.env</h2>
+      <div class="err-box">Изменения вступают в силу только после
+        перезапуска сервера (<code>make serve</code> / <code>docker
+        compose restart</code>) — переменные окружения читаются один раз
+        при старте процесса. Секреты (ключи, пароли, токены) на чтение
+        никогда не показываются целиком — только факт "задано"/"пусто";
+        изменение или очистка секрета требует отдельного подтверждения.</div>
+      <table id="env-table">
+        <thead><tr><th>Переменная</th><th>Описание</th><th>Значение</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row">
+        <button id="env-save">Сохранить изменения</button>
+        <span id="env-save-hint" class="muted"></span>
       </div>
     </div>
   </section>
@@ -262,12 +284,13 @@ async function apiPost(path, body){
 }
 
 // ======================================================== навигация
-const VIEWS = ['overview','profiles','runs','autorun','memory','ontology'];
+const VIEWS = ['overview','profiles','env','runs','autorun','memory','ontology'];
 function showView(name){
   VIEWS.forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   if (name === 'overview') loadOverview();
   if (name === 'profiles') loadProfiles();
+  if (name === 'env') loadEnv();
   if (name === 'runs') loadRuns();
   if (name === 'autorun') loadAutorunView();
   if (name === 'memory') loadMemory();
@@ -384,6 +407,80 @@ async function deleteProfile(name){
 
 $('#pf-save').onclick = saveProfileForm;
 $('#pf-reset').onclick = resetProfileForm;
+
+// ================================================== переменные окружения
+async function loadEnv(){
+  try{
+    const data = await apiGet('/api/env');
+    const tb = $('#env-table tbody');
+    tb.innerHTML = '';
+    for (const v of data.vars){
+      const tr = document.createElement('tr');
+      tr.dataset.name = v.name;
+      tr.dataset.secret = v.is_secret ? '1' : '0';
+      const nameCell = esc(v.name) + (v.custom ? ' <span class="tag">custom</span>' : '');
+      let valueCell;
+      if (v.is_secret){
+        const placeholder = v.is_set ? '(задано — введите новое значение, чтобы заменить)'
+                                     : '(не задано)';
+        valueCell =
+          '<input type="password" data-role="value" placeholder="' + esc(placeholder) + '" style="width:100%">' +
+          (v.is_set ? '<label class="muted" style="display:block;margin-top:4px">' +
+                      '<input type="checkbox" data-role="clear"> очистить</label>' : '');
+      } else {
+        valueCell = '<input type="text" data-role="value" value="' + esc(v.value) + '" style="width:100%">';
+      }
+      tr.innerHTML =
+        '<td>' + nameCell + (v.is_secret ? ' <span class="tag">секрет</span>' : '') + '</td>' +
+        '<td class="muted">' + esc(v.comment || '') + '</td>' +
+        '<td>' + valueCell + '</td>' +
+        '<td>' + (v.is_set ? '<span class="verdict-compliant">задано</span>'
+                           : '<span class="muted">пусто</span>') + '</td>';
+      tb.appendChild(tr);
+    }
+  }catch(e){ showMsg('err', 'Переменные окружения: ' + e.message); }
+}
+
+async function saveEnv(){
+  const rows = $$('#env-table tbody tr');
+  const values = {}; const clear = [];
+  let touchesSecret = false;
+  for (const tr of rows){
+    const name = tr.dataset.name;
+    const isSecret = tr.dataset.secret === '1';
+    const clearBox = tr.querySelector('[data-role="clear"]');
+    const valueInput = tr.querySelector('[data-role="value"]');
+    if (clearBox && clearBox.checked){
+      clear.push(name); touchesSecret = true;
+      continue;
+    }
+    if (!valueInput) continue;
+    const val = valueInput.value;
+    if (isSecret){
+      if (val.trim() !== ''){ values[name] = val; touchesSecret = true; }
+    } else {
+      values[name] = val;
+    }
+  }
+  if (Object.keys(values).length === 0 && clear.length === 0){
+    showMsg('err', 'Нет изменений для сохранения');
+    return;
+  }
+  let confirmFlag = false;
+  if (touchesSecret){
+    confirmFlag = confirm('Вы меняете или очищаете секрет (ключ/пароль/токен) в .env. ' +
+                          'Продолжить?');
+    if (!confirmFlag) return;
+  }
+  try{
+    const res = await apiPost('/api/env', {values, clear, confirm: confirmFlag});
+    showMsg('ok', 'Сохранено: ' + (res.saved || []).join(', ') +
+           '. Перезапустите сервер, чтобы изменения вступили в силу.');
+    $('#env-save-hint').textContent = 'требуется перезапуск сервера';
+    loadEnv();
+  }catch(e){ showMsg('err', 'Не сохранено: ' + e.message); }
+}
+$('#env-save').onclick = saveEnv;
 
 // ======================================================== прогоны
 async function loadRuns(){
