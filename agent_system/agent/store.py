@@ -162,6 +162,28 @@ CREATE TABLE IF NOT EXISTS cert_check(
   created REAL
 );
 CREATE INDEX IF NOT EXISTS ix_cert_check_run ON cert_check(run_id, verdict);
+
+CREATE TABLE IF NOT EXISTS review_finding(
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER,
+  file TEXT NOT NULL,                -- путь к файлу относительно workspace
+  line_start INTEGER NOT NULL,
+  line_end INTEGER NOT NULL,
+  severity TEXT NOT NULL,            -- critical | major | minor | info (после понижения)
+  original_severity TEXT NOT NULL,   -- что заявила модель ДО проверки цитаты
+  category TEXT NOT NULL,            -- bug | security | performance | maintainability
+                                      -- | style | testing | documentation | other
+  title TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  suggestion TEXT DEFAULT '',
+  quote TEXT DEFAULT '',             -- фрагмент кода, на который ссылается находка
+  quote_verified INTEGER DEFAULT 0,  -- 1, если цитата реально найдена в файле
+  precise_location INTEGER DEFAULT 1,-- 1, если цитата на заявленных строках,
+                                      -- 0 — найдена в файле, но в другом месте
+  status TEXT DEFAULT 'open',        -- open | fixed | wontfix | acknowledged
+  created REAL
+);
+CREATE INDEX IF NOT EXISTS ix_review_finding_run ON review_finding(run_id, severity);
 """
 
 
@@ -674,6 +696,92 @@ class Store:
                                   (run_id,))
         else:
             cur = self.db.execute("DELETE FROM cert_check")
+        self.db.commit()
+        return cur.rowcount
+
+    # ---------------------------------------- code review (skills/code_review.py)
+    _VALID_SEVERITIES = {"critical", "major", "minor", "info"}
+    _VALID_CATEGORIES = {"bug", "security", "performance", "maintainability",
+                         "style", "testing", "documentation", "other"}
+    _VALID_FINDING_STATUS = {"open", "fixed", "wontfix", "acknowledged"}
+
+    def add_review_finding(self, file: str, line_start: int, line_end: int,
+                           severity: str, category: str, title: str,
+                           description: str = "", suggestion: str = "",
+                           quote: str = "", quote_verified: bool = False,
+                           precise_location: bool = True,
+                           original_severity: str | None = None,
+                           run_id: int | None = None) -> int:
+        if severity not in self._VALID_SEVERITIES:
+            raise ValueError(
+                f"severity должен быть одним из {sorted(self._VALID_SEVERITIES)}, "
+                f"получено {severity!r}"
+            )
+        if category not in self._VALID_CATEGORIES:
+            raise ValueError(
+                f"category должен быть одним из {sorted(self._VALID_CATEGORIES)}, "
+                f"получено {category!r}"
+            )
+        if not title.strip():
+            raise ValueError("title не может быть пустым")
+        cur = self.db.execute(
+            "INSERT INTO review_finding(run_id,file,line_start,line_end,severity,"
+            "original_severity,category,title,description,suggestion,quote,"
+            "quote_verified,precise_location,created) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, file.strip(), line_start, line_end, severity,
+             original_severity or severity, category, title.strip(),
+             description, suggestion, quote, int(quote_verified),
+             int(precise_location), self._now()))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def review_findings(self, run_id: int | None = None,
+                        status: str = "") -> list[dict[str, Any]]:
+        clauses, params = [], []
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(run_id)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.db.execute(
+            f"SELECT * FROM review_finding {where} "
+            "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'major' THEN 1 "
+            "WHEN 'minor' THEN 2 ELSE 3 END, file, line_start", params)
+        return [dict(r) for r in rows]
+
+    def set_review_finding_status(self, finding_id: int, status: str) -> None:
+        if status not in self._VALID_FINDING_STATUS:
+            raise ValueError(
+                f"status должен быть одним из {sorted(self._VALID_FINDING_STATUS)}, "
+                f"получено {status!r}"
+            )
+        cur = self.db.execute("UPDATE review_finding SET status=? WHERE id=?",
+                              (status, finding_id))
+        self.db.commit()
+        if cur.rowcount == 0:
+            raise ValueError(f"находка {finding_id} не найдена")
+
+    def review_summary(self, run_id: int | None = None) -> dict[str, int]:
+        findings = self.review_findings(run_id)
+        out = {s: 0 for s in self._VALID_SEVERITIES}
+        for f in findings:
+            out[f["severity"]] = out.get(f["severity"], 0) + 1
+        out["total"] = len(findings)
+        out["unverified_quotes"] = sum(
+            1 for f in findings if f["quote"] and not f["quote_verified"])
+        out["open"] = sum(1 for f in findings if f["status"] == "open")
+        return out
+
+    def clear_review_findings(self, run_id: int | None = None) -> int:
+        """Начать ревью заново — например, после переписывания кода целиком."""
+        if run_id is not None:
+            cur = self.db.execute("DELETE FROM review_finding WHERE run_id=?",
+                                  (run_id,))
+        else:
+            cur = self.db.execute("DELETE FROM review_finding")
         self.db.commit()
         return cur.rowcount
 

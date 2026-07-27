@@ -9,6 +9,7 @@ from .llm import build_llm
 from .llm.embeddings import build_embedder
 from .skills import cad_openscad
 from .skills import cert_verify
+from .skills import code_review
 from .skills import docparse
 from .skills import pdf_pipeline
 from .skills import pg_ontology
@@ -39,7 +40,7 @@ SKILLS: dict[str, Callable] = {
 
 def known_skills() -> list[str]:
     return sorted([*SKILLS, "memory", "present", "mcp", "pdf", "docparse",
-                  "pg_ontology", "messaging", "rag", "cert_verify"])
+                  "pg_ontology", "messaging", "rag", "cert_verify", "code_review"])
 
 
 
@@ -59,7 +60,7 @@ def build_agent(
 
     registry = ToolRegistry()
     extra = {"memory", "present", "mcp", "pdf", "docparse", "pg_ontology",
-            "messaging", "rag", "cert_verify"}
+            "messaging", "rag", "cert_verify", "code_review"}
     unknown = [s for s in cfg.skills if s not in SKILLS and s not in extra]
     if unknown:
         raise ValueError(
@@ -68,7 +69,8 @@ def build_agent(
         )
     for name in cfg.skills:
         if name in ("memory", "present", "mcp", "pdf", "docparse",
-                    "pg_ontology", "messaging", "rag", "cert_verify"):
+                    "pg_ontology", "messaging", "rag", "cert_verify",
+                    "code_review"):
             continue
         registry.extend(SKILLS[name](ws, cfg, confirm))
 
@@ -181,6 +183,17 @@ def build_agent(
         if store is None:
             store = Store(cfg.db)
         registry.extend(cert_verify.build(ws, store, run_id_getter or (lambda: 0)))
+
+    # code_review: аудит кода с проверяемыми находками (цитата кода
+    # сверяется с реальным файлом, как evidence_quote в cert_verify).
+    # Требует только Store — та же база, что у memory/cert_verify, чтобы
+    # находки сохранялись между шагами и переживали перезапуск. Само
+    # чтение кода/диффов — уже доступные files/shell, этот навык
+    # регистрирует и проверяет находки поверх них.
+    if "code_review" in cfg.skills:
+        if store is None:
+            store = Store(cfg.db)
+        registry.extend(code_review.build(ws, store, run_id_getter or (lambda: 0)))
 
     return Agent(
         llm=llm,
