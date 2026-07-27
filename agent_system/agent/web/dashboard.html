@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Агент — дашборд</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1a1d26; --line:#2a2f3d; --txt:#e6e8ee;
+    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --tool:#c9a227;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
+       background:var(--bg);color:var(--txt);min-height:100vh}
+  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  header b{font-weight:600}
+  nav{display:flex;gap:4px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);
+             padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+  nav button.active{background:#232733;color:var(--txt);border-color:var(--line)}
+  nav button:hover{color:var(--txt)}
+  .pill{font-size:12px;color:var(--dim);background:#232733;padding:3px 9px;border-radius:99px}
+  select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
+        border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  button{cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--acc)}
+  button.danger:hover{border-color:var(--err);color:var(--err)}
+  button:disabled{opacity:.5;cursor:default}
+  main{padding:18px;max-width:1100px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:15px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.04em}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);
+        vertical-align:top}
+  th{color:var(--dim);font-weight:600}
+  tr:hover td{background:#1f2330}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+  .stat{background:#1f2330;border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center}
+  .stat b{display:block;font-size:22px;color:var(--acc)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .row textarea, .row input[type=text]{flex:1;min-width:200px}
+  textarea{width:100%;min-height:70px;resize:vertical}
+  .tag{display:inline-block;background:#232733;border:1px solid var(--line);
+       border-radius:99px;padding:2px 8px;margin:1px;font-size:12px}
+  .verdict-compliant{color:var(--ok)}
+  .verdict-non_compliant{color:var(--err)}
+  .verdict-not_found{color:var(--tool)}
+  .verdict-needs_review{color:var(--dim)}
+  .status-active{color:var(--acc)} .status-done{color:var(--ok)}
+  .status-failed{color:var(--err)} .status-stopped{color:var(--tool)}
+  .muted{color:var(--dim)}
+  .clickable{cursor:pointer;color:var(--acc)}
+  .clickable:hover{text-decoration:underline}
+  pre.log{white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto;
+          background:#0f1116;border:1px solid var(--line);border-radius:6px;padding:10px;
+          font-size:12.5px}
+  .hidden{display:none !important}
+  .err-box{color:var(--err);background:#2a1618;border:1px solid #52252a;
+           border-radius:6px;padding:8px 12px;margin-bottom:10px}
+  .ok-box{color:var(--ok);background:#152a20;border:1px solid #1f4a34;
+          border-radius:6px;padding:8px 12px;margin-bottom:10px}
+  .field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+  .field label{color:var(--dim);font-size:12px}
+  .badge-live{display:inline-block;width:8px;height:8px;border-radius:50%;
+              background:var(--ok);margin-right:6px;animation:pulse 1.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+<header>
+  <b>Агент — дашборд</b>
+  <input id="token" type="password" placeholder="токен (если задан)" size="16">
+  <span class="pill" id="status">—</span>
+  <nav>
+    <button data-view="overview" class="active">Обзор</button>
+    <button data-view="profiles">Профили</button>
+    <button data-view="runs">Прогоны</button>
+    <button data-view="autorun">Автономный режим</button>
+    <button data-view="memory">Память</button>
+    <button data-view="ontology">Онтология</button>
+  </nav>
+</header>
+
+<main>
+  <div id="msg-area"></div>
+
+  <!-- ============================================== ОБЗОР -->
+  <section id="view-overview" class="card">
+    <h2>Состояние системы</h2>
+    <div class="grid" id="overview-grid"></div>
+  </section>
+
+  <!-- ============================================== ПРОФИЛИ -->
+  <section id="view-profiles" class="hidden">
+    <div class="card">
+      <h2>Профили</h2>
+      <table id="profiles-table">
+        <thead><tr><th>Имя</th><th>Описание</th><th>Навыки</th><th>max_steps</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2 id="profile-form-title">Новый профиль</h2>
+      <div class="field"><label>name (латиница/цифры/_/-, начинается с буквы)</label>
+        <input id="pf-name" type="text"></div>
+      <div class="field"><label>description</label>
+        <input id="pf-description" type="text"></div>
+      <div class="field"><label>keywords (через запятую)</label>
+        <input id="pf-keywords" type="text"></div>
+      <div class="field"><label>skills (через запятую)</label>
+        <input id="pf-skills" type="text"></div>
+      <div class="field"><label>max_steps</label>
+        <input id="pf-max-steps" type="text" value="30" style="max-width:100px"></div>
+      <div class="field"><label>system_prompt</label>
+        <textarea id="pf-system-prompt" style="min-height:140px"></textarea></div>
+      <div class="row">
+        <button id="pf-save">Сохранить</button>
+        <button id="pf-reset">Очистить форму</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================== ПРОГОНЫ -->
+  <section id="view-runs" class="hidden">
+    <div class="card" id="runs-list-card">
+      <h2>История прогонов</h2>
+      <table id="runs-table">
+        <thead><tr><th>#</th><th>Цель</th><th>Профиль</th><th>Статус</th>
+                   <th>Шагов</th><th>Токенов</th><th>$</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card hidden" id="run-detail-card">
+      <h2>Прогон <span id="run-detail-id"></span></h2>
+      <div id="run-detail-meta"></div>
+      <h3>План</h3>
+      <table id="run-tasks-table">
+        <thead><tr><th>#</th><th>Пункт</th><th>Статус</th><th>Результат</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>Журнал событий</h3>
+      <table id="run-events-table">
+        <thead><tr><th>Шаг</th><th>Тип</th><th>Имя</th><th>Сводка</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3 id="run-cert-title" class="hidden">Проверки сертификации</h3>
+      <table id="run-cert-table" class="hidden">
+        <thead><tr><th>Требование</th><th>Вердикт</th><th>Доказательство</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================================== АВТОНОМНЫЙ РЕЖИМ -->
+  <section id="view-autorun" class="hidden">
+    <div class="card">
+      <h2>Управление</h2>
+      <div class="field"><label>Профиль</label><select id="auto-profile"></select></div>
+      <div class="field"><label>Цель</label><textarea id="auto-goal"></textarea></div>
+      <div class="row">
+        <label class="muted">часы <input id="auto-hours" type="text" value="1" style="width:60px"></label>
+        <label class="muted">итераций <input id="auto-iters" type="text" value="50" style="width:60px"></label>
+        <button id="auto-start">Запустить</button>
+        <button id="auto-stop" class="danger" disabled>Остановить</button>
+      </div>
+      <div id="auto-status" class="pill">не запущен</div>
+    </div>
+    <div class="card">
+      <h2><span id="auto-live-dot"></span>Живой журнал</h2>
+      <pre class="log" id="auto-log">(пока пусто)</pre>
+    </div>
+  </section>
+
+  <!-- ============================================== ПАМЯТЬ -->
+  <section id="view-memory" class="hidden">
+    <div class="card">
+      <h2>Память (факты)</h2>
+      <div class="row">
+        <input id="mem-query" type="text" placeholder="поиск… (пусто — последние)">
+        <button id="mem-search">Искать</button>
+      </div>
+      <table id="mem-table">
+        <thead><tr><th>Текст</th><th>Теги</th><th>Уверенность</th><th>Прогон</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================================== ОНТОЛОГИЯ -->
+  <section id="view-ontology" class="hidden">
+    <div class="card">
+      <h2>Объекты</h2>
+      <div class="row">
+        <select id="onto-kind"><option value="">(все типы)</option></select>
+        <button id="onto-reload">Обновить</button>
+      </div>
+      <table id="onto-entities-table">
+        <thead><tr><th>Тип</th><th>Имя</th><th>Описание</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Связи</h2>
+      <table id="onto-relations-table">
+        <thead><tr><th>Субъект</th><th>Предикат</th><th>Объект</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function headers(extra){
+  const h = Object.assign({}, extra || {});
+  const t = $('#token').value.trim();
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+function showMsg(kind, text){
+  const box = document.createElement('div');
+  box.className = kind === 'err' ? 'err-box' : 'ok-box';
+  box.textContent = text;
+  const area = $('#msg-area');
+  area.innerHTML = '';
+  area.appendChild(box);
+  setTimeout(() => { if (area.contains(box)) box.remove(); }, 6000);
+}
+
+async function apiGet(path){
+  const r = await fetch(path, {headers: headers()});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+async function apiPost(path, body){
+  const r = await fetch(path, {method:'POST', headers: headers({'Content-Type':'application/json'}),
+                               body: JSON.stringify(body || {})});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+
+// ======================================================== навигация
+const VIEWS = ['overview','profiles','runs','autorun','memory','ontology'];
+function showView(name){
+  VIEWS.forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
+  $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  if (name === 'overview') loadOverview();
+  if (name === 'profiles') loadProfiles();
+  if (name === 'runs') loadRuns();
+  if (name === 'autorun') loadAutorunView();
+  if (name === 'memory') loadMemory();
+  if (name === 'ontology') loadOntology();
+}
+$$('nav button').forEach(b => b.onclick = () => showView(b.dataset.view));
+
+// ======================================================== обзор
+async function loadOverview(){
+  try{
+    const info = await apiGet('/info');
+    $('#status').textContent = info.config.provider + '/' + info.config.model
+                              + ' · ' + info.config.sandbox.mode;
+    const counts = await apiGet('/api/counts');
+    const grid = $('#overview-grid');
+    grid.innerHTML = '';
+    const labels = {runs:'прогонов', facts:'фактов памяти', entities:'объектов',
+                    relations:'связей', events:'событий', chunks:'фрагментов RAG',
+                    cert_checks:'проверок сертификации'};
+    for (const [k, v] of Object.entries(counts)){
+      const d = document.createElement('div');
+      d.className = 'stat';
+      d.innerHTML = '<b>' + v + '</b>' + esc(labels[k] || k);
+      grid.appendChild(d);
+    }
+  }catch(e){ $('#status').textContent = 'нет связи: ' + e.message; }
+}
+
+// ======================================================== профили
+let editingProfile = null;
+
+async function loadProfiles(){
+  try{
+    const data = await apiGet('/api/profiles');
+    const tb = $('#profiles-table tbody');
+    tb.innerHTML = '';
+    for (const p of data.profiles){
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="clickable" data-name="' + esc(p.file) + '">' + esc(p.file) + '</td>' +
+        '<td>' + esc(p.description || '') + '</td>' +
+        '<td>' + (p.skills || []).map(s => '<span class="tag">' + esc(s) + '</span>').join('') + '</td>' +
+        '<td>' + esc(p.max_steps || '') + '</td>' +
+        '<td><button class="danger" data-del="' + esc(p.file) + '">удалить</button></td>';
+      tb.appendChild(tr);
+    }
+    tb.querySelectorAll('[data-name]').forEach(el => el.onclick = () => editProfile(el.dataset.name));
+    tb.querySelectorAll('[data-del]').forEach(el => el.onclick = () => deleteProfile(el.dataset.del));
+    // тот же список — источник для выбора профиля в автономном режиме
+    const sel = $('#auto-profile');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">(текущий профиль сервера)</option>';
+    for (const p of data.profiles){
+      const o = document.createElement('option');
+      o.value = p.file; o.textContent = p.file;
+      sel.appendChild(o);
+    }
+    sel.value = cur;
+  }catch(e){ showMsg('err', 'Профили: ' + e.message); }
+}
+
+async function editProfile(name){
+  try{
+    const p = await apiGet('/api/profiles/' + encodeURIComponent(name));
+    editingProfile = name;
+    $('#profile-form-title').textContent = 'Профиль: ' + name;
+    $('#pf-name').value = p.name || name;
+    $('#pf-name').disabled = true;
+    $('#pf-description').value = p.description || '';
+    $('#pf-keywords').value = (p.keywords || []).join(', ');
+    $('#pf-skills').value = (p.skills || []).join(', ');
+    $('#pf-max-steps').value = p.max_steps || 30;
+    $('#pf-system-prompt').value = p.system_prompt || '';
+    window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+  }catch(e){ showMsg('err', e.message); }
+}
+
+function resetProfileForm(){
+  editingProfile = null;
+  $('#profile-form-title').textContent = 'Новый профиль';
+  $('#pf-name').disabled = false;
+  ['#pf-name','#pf-description','#pf-keywords','#pf-skills','#pf-system-prompt']
+    .forEach(s => $(s).value = '');
+  $('#pf-max-steps').value = '30';
+}
+
+async function saveProfileForm(){
+  const name = $('#pf-name').value.trim();
+  if (!name){ showMsg('err', 'Укажите имя профиля'); return; }
+  const body = {
+    name,
+    description: $('#pf-description').value.trim(),
+    keywords: $('#pf-keywords').value.split(',').map(s => s.trim()).filter(Boolean),
+    skills: $('#pf-skills').value.split(',').map(s => s.trim()).filter(Boolean),
+    max_steps: parseInt($('#pf-max-steps').value, 10) || 30,
+    system_prompt: $('#pf-system-prompt').value,
+  };
+  try{
+    await apiPost('/api/profiles', body);
+    showMsg('ok', 'Профиль ' + name + ' сохранён');
+    resetProfileForm();
+    loadProfiles();
+  }catch(e){ showMsg('err', 'Не сохранено: ' + e.message); }
+}
+
+async function deleteProfile(name){
+  if (!confirm('Удалить профиль "' + name + '"?')) return;
+  try{
+    await apiPost('/api/profiles/' + encodeURIComponent(name) + '/delete', {});
+    showMsg('ok', 'Профиль ' + name + ' удалён');
+    loadProfiles();
+  }catch(e){ showMsg('err', 'Не удалено: ' + e.message); }
+}
+
+$('#pf-save').onclick = saveProfileForm;
+$('#pf-reset').onclick = resetProfileForm;
+
+// ======================================================== прогоны
+async function loadRuns(){
+  $('#run-detail-card').classList.add('hidden');
+  try{
+    const data = await apiGet('/api/runs?limit=50');
+    const tb = $('#runs-table tbody');
+    tb.innerHTML = '';
+    for (const r of data.runs){
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="clickable" data-id="' + r.id + '">#' + r.id + '</td>' +
+        '<td>' + esc((r.goal || '').slice(0, 80)) + '</td>' +
+        '<td>' + esc(r.profile || '') + '</td>' +
+        '<td class="status-' + esc(r.status) + '">' + esc(r.status) + '</td>' +
+        '<td>' + (r.steps || 0) + '</td>' +
+        '<td>' + ((r.tok_in||0) + (r.tok_out||0)) + '</td>' +
+        '<td>' + (r.cost ? ('$' + r.cost.toFixed(4)) : '') + '</td>';
+      tb.appendChild(tr);
+    }
+    tb.querySelectorAll('[data-id]').forEach(el => el.onclick = () => loadRunDetail(el.dataset.id));
+  }catch(e){ showMsg('err', 'Прогоны: ' + e.message); }
+}
+
+async function loadRunDetail(id){
+  try{
+    const data = await apiGet('/api/runs/' + id);
+    $('#run-detail-card').classList.remove('hidden');
+    $('#run-detail-id').textContent = '#' + data.run.id;
+    $('#run-detail-meta').innerHTML =
+      '<div class="row"><span class="pill">цель: ' + esc(data.run.goal) + '</span>' +
+      '<span class="pill status-' + esc(data.run.status) + '">' + esc(data.run.status) + '</span>' +
+      '<span class="pill">профиль: ' + esc(data.run.profile || '—') + '</span></div>';
+
+    const ttb = $('#run-tasks-table tbody');
+    ttb.innerHTML = '';
+    for (const t of data.tasks){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + t.ord + '</td><td>' + esc(t.title) + '</td>' +
+                    '<td class="status-' + esc(t.status) + '">' + esc(t.status) + '</td>' +
+                    '<td>' + esc((t.result || '').slice(0, 200)) + '</td>';
+      ttb.appendChild(tr);
+    }
+
+    const etb = $('#run-events-table tbody');
+    etb.innerHTML = '';
+    for (const e of data.events){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + e.step + '</td><td>' + esc(e.kind) + '</td>' +
+                    '<td>' + esc(e.name || '') + '</td>' +
+                    '<td>' + esc((e.summary || '').slice(0, 200)) + '</td>';
+      etb.appendChild(tr);
+    }
+
+    const hasCert = data.cert_checks && data.cert_checks.length;
+    $('#run-cert-title').classList.toggle('hidden', !hasCert);
+    $('#run-cert-table').classList.toggle('hidden', !hasCert);
+    if (hasCert){
+      const ctb = $('#run-cert-table tbody');
+      ctb.innerHTML = '';
+      for (const c of data.cert_checks){
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(c.requirement) + '</td>' +
+                      '<td class="verdict-' + esc(c.verdict) + '">' + esc(c.verdict) + '</td>' +
+                      '<td>' + esc((c.evidence_quote || '').slice(0, 150)) + '</td>';
+        ctb.appendChild(tr);
+      }
+    }
+  }catch(e){ showMsg('err', 'Прогон #' + id + ': ' + e.message); }
+}
+
+// ======================================================== автономный режим
+let autoStream = null;
+
+async function refreshAutoStatus(){
+  try{
+    const st = await apiGet('/api/auto/status');
+    const running = st.state === 'running' || st.state === 'starting';
+    $('#auto-status').textContent = st.state +
+      (st.run_id ? (' · прогон #' + st.run_id) : '') +
+      (st.iteration ? (' · итерация ' + st.iteration) : '');
+    $('#auto-start').disabled = running;
+    $('#auto-stop').disabled = !running;
+    $('#auto-live-dot').innerHTML = running ? '<span class="badge-live"></span>' : '';
+  }catch(e){ /* тихо: страница могла обновиться раньше первого /info */ }
+}
+
+function appendAutoLog(line){
+  const box = $('#auto-log');
+  if (box.textContent === '(пока пусто)') box.textContent = '';
+  box.textContent += line + '\n';
+  box.scrollTop = box.scrollHeight;
+}
+
+function connectAutoStream(){
+  if (autoStream) return;
+  autoStream = fetch('/api/auto/stream', {headers: headers()}).then(async r => {
+    const rd = r.body.getReader(); const dec = new TextDecoder();
+    let buf = '';
+    while (true){
+      const {done, value} = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const ln of lines){
+        if (!ln.trim()) continue;
+        let e; try{ e = JSON.parse(ln); }catch{ continue; }
+        if (e.event === 'ping') continue;
+        if (e.event === 'tool_start') appendAutoLog('→ ' + e.name + ' ' + JSON.stringify(e.args||{}).slice(0,150));
+        else if (e.event === 'iteration') appendAutoLog('── итерация ' + e.n + ': ' + e.task);
+        else if (e.event === 'plan') appendAutoLog('план: ' + (e.items||[]).join(' | '));
+        else if (e.event === 'reflect') { if ((e.learned||[]).length) appendAutoLog('запомнил: ' + e.learned.join('; ')); }
+        else if (e.event === 'replan') appendAutoLog('⟲ план пересмотрен: ' + e.reason);
+        else if (e.event === 'error') appendAutoLog('! ошибка: ' + e.message);
+        else if (e.event === 'stopping') appendAutoLog('… получена команда остановки');
+        else if (e.event === 'done') appendAutoLog('■ завершено: ' + (e.stopped_by||'') + '\n' + (e.summary||''));
+        refreshAutoStatus();
+      }
+    }
+  }).catch(() => {}).finally(() => { autoStream = null; });
+}
+
+async function loadAutorunView(){
+  await loadProfiles();  // наполняет #auto-profile
+  await refreshAutoStatus();
+  connectAutoStream();
+}
+
+$('#auto-start').onclick = async () => {
+  const goal = $('#auto-goal').value.trim();
+  if (!goal){ showMsg('err', 'Укажите цель'); return; }
+  try{
+    const res = await apiPost('/api/auto/start', {
+      goal, profile: $('#auto-profile').value || undefined,
+      hours: parseFloat($('#auto-hours').value) || 1,
+      iterations: parseInt($('#auto-iters').value, 10) || 50,
+    });
+    showMsg('ok', 'Запущен прогон #' + res.run_id);
+    connectAutoStream();
+    refreshAutoStatus();
+  }catch(e){ showMsg('err', 'Не запущено: ' + e.message); }
+};
+$('#auto-stop').onclick = async () => {
+  try{
+    await apiPost('/api/auto/stop', {});
+    showMsg('ok', 'Остановка запрошена');
+    refreshAutoStatus();
+  }catch(e){ showMsg('err', e.message); }
+};
+
+// ======================================================== память
+async function loadMemory(){
+  try{
+    const q = $('#mem-query').value.trim();
+    const data = await apiGet('/api/facts?limit=100' + (q ? '&query=' + encodeURIComponent(q) : ''));
+    const tb = $('#mem-table tbody');
+    tb.innerHTML = '';
+    for (const f of data.facts){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(f.text) + '</td><td>' + esc(f.tags || '') + '</td>' +
+                    '<td>' + (f.confidence != null ? f.confidence.toFixed(2) : '') + '</td>' +
+                    '<td>' + esc(f.run_id || '') + '</td>';
+      tb.appendChild(tr);
+    }
+  }catch(e){ showMsg('err', 'Память: ' + e.message); }
+}
+$('#mem-search').onclick = loadMemory;
+$('#mem-query').addEventListener('keydown', e => { if (e.key === 'Enter') loadMemory(); });
+
+// ======================================================== онтология
+async function loadOntology(){
+  try{
+    const kind = $('#onto-kind').value;
+    const data = await apiGet('/api/entities' + (kind ? '?kind=' + encodeURIComponent(kind) : ''));
+    const sel = $('#onto-kind');
+    if (!sel.dataset.filled){
+      for (const k of data.kinds){
+        const o = document.createElement('option');
+        o.value = k; o.textContent = k;
+        sel.appendChild(o);
+      }
+      sel.dataset.filled = '1';
+    }
+    const tb = $('#onto-entities-table tbody');
+    tb.innerHTML = '';
+    for (const e of data.entities){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(e.kind) + '</td><td>' + esc(e.name) + '</td>' +
+                    '<td>' + esc((e.description || '').slice(0, 150)) + '</td>';
+      tb.appendChild(tr);
+    }
+    const rel = await apiGet('/api/relations');
+    const rtb = $('#onto-relations-table tbody');
+    rtb.innerHTML = '';
+    for (const r of rel.relations){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(r.subj_kind) + ':' + esc(r.subj_name) + '</td>' +
+                    '<td>' + esc(r.pred) + '</td>' +
+                    '<td>' + esc(r.obj_kind) + ':' + esc(r.obj_name) + '</td>';
+      rtb.appendChild(tr);
+    }
+  }catch(e){ showMsg('err', 'Онтология: ' + e.message); }
+}
+$('#onto-reload').onclick = loadOntology;
+$('#onto-kind').addEventListener('change', loadOntology);
+
+// ======================================================== старт
+$('#token').addEventListener('change', () => showView(
+  VIEWS.find(v => !$('#view-' + v).classList.contains('hidden')) || 'overview'));
+showView('overview');
+</script>
+</body>
+</html>

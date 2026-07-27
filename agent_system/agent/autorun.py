@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -91,7 +92,7 @@ stuck — true, если прогресса нет и нужно менять п
 class AutoResult:
     run_id: int
     iterations: int
-    stopped_by: str          # done | time | iterations | stuck | error
+    stopped_by: str          # done | time | iterations | stuck | error | stopped
     summary: str
     elapsed: float
     tokens: int = 0
@@ -108,6 +109,7 @@ class AutoRunner:
         repeat_limit: int = 3,
         replan_after_fails: int = 2,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.make_agent = agent_factory
         self.store = store
@@ -117,6 +119,12 @@ class AutoRunner:
         self.replan_after_fails = replan_after_fails
         self.on_event = on_event or (lambda k, d: None)
         self.run_id = 0
+        # Кооперативная остановка: веб-морда (agent/webui.py) запускает
+        # автономный прогон в фоновом потоке и должна уметь его прервать
+        # по кнопке "Стоп" — killать поток нельзя (оборвётся SQLite-запись
+        # на середине), поэтому проверяем флаг МЕЖДУ итерациями, там же,
+        # где уже проверяется бюджет времени.
+        self.stop_event = stop_event
 
     def _emit(self, kind: str, **data: Any) -> None:
         try:
@@ -244,6 +252,9 @@ class AutoRunner:
         while it < self.max_iterations:
             if time.time() - t0 > self.max_seconds:
                 stop = "time"
+                break
+            if self.stop_event is not None and self.stop_event.is_set():
+                stop = "stopped"
                 break
             task = self.store.next_task(self.run_id)
             if not task:

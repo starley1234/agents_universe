@@ -677,3 +677,59 @@ class Store:
         self.db.commit()
         return cur.rowcount
 
+    # ---------------------------------------------- веб-морда (webui.py)
+    # Read-only выборки для дашборда конфигов/логов: агент сам эти методы
+    # не использует, они существуют ТОЛЬКО ради отображения состояния
+    # человеку — поэтому без пагинации на курсорах (лимит сверху хватает
+    # для одного файла на одну машину, тот же принцип, что у LIKE_SCAN).
+    def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM run ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def list_facts(self, limit: int = 100, query: str = "") -> list[dict[str, Any]]:
+        """Обёртка над recall для дашборда: пустой запрос -> последние N."""
+        return self.recall(query, limit=limit)
+
+    def list_entities(self, kind: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        if kind:
+            rows = self.db.execute(
+                "SELECT * FROM entity WHERE kind=? ORDER BY id DESC LIMIT ?",
+                (kind, limit))
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM entity ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def list_relations(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT r.id, sa.kind AS subj_kind, sa.name AS subj_name, "
+            "r.pred, sb.kind AS obj_kind, sb.name AS obj_name, r.created "
+            "FROM relation r "
+            "JOIN entity sa ON sa.id=r.subj JOIN entity sb ON sb.id=r.obj "
+            "ORDER BY r.id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def entity_kinds(self) -> list[str]:
+        return [r[0] for r in self.db.execute(
+            "SELECT DISTINCT kind FROM entity ORDER BY kind")]
+
+    def run_events(self, run_id: int, limit: int = 500) -> list[dict[str, Any]]:
+        """Полный (не только последние, как recent_events) журнал одного
+
+        прогона в хронологическом порядке — для страницы "детали прогона"
+        в дашборде.
+        """
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM event WHERE run_id=? ORDER BY id LIMIT ?",
+            (run_id, limit))]
+
+    def counts(self) -> dict[str, int]:
+        """Сводка для главной страницы дашборда: сколько чего накоплено."""
+        out = {}
+        for name, table in (("runs", "run"), ("facts", "fact"),
+                            ("entities", "entity"), ("relations", "relation"),
+                            ("events", "event"), ("chunks", "chunk"),
+                            ("cert_checks", "cert_check")):
+            out[name] = int(self.db.execute(
+                f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        return out
