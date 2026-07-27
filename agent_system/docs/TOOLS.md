@@ -147,7 +147,7 @@ python3 -m agent --auto --hours 8 --max-usd 5 "цель"
 
 ```bash
 python3 tests/test_tools.py      # 91 проверка
-make test                        # 723 проверки
+make test                        # 748 проверок
 ```
 
 Каждая критичная проверка подтверждена **диверсией** — код ломался

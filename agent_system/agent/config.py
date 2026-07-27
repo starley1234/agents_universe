@@ -57,6 +57,8 @@ class Config:
     python_timeout: int = 60            # предел одного запуска, секунд
     # --- связь с внешним миром (навык comms) ---
     comms: CommsConfig = field(default_factory=CommsConfig)
+    # --- разбор вопроса двумя моделями (--debate) ---
+    debate: dict = field(default_factory=dict)
     # --- маршрутизация моделей: дешёвая на рутину, сильная на сложное ---
     model_cheap: str = ""               # пусто = маршрутизация выключена
     model_strong: str = ""
@@ -114,6 +116,8 @@ class Config:
                         if not k.startswith("_")}
         comms_data = {k: v for k, v in (data.pop("comms", {}) or {}).items()
                       if not k.startswith("_")}
+        debate_data = {k: v for k, v in (data.pop("debate", {}) or {}).items()
+                       if not k.startswith("_")}
         mcp_data = data.pop("mcp", {}) or {}
         profile_name = data.pop("profile", None)
         # Ключи с подчёркиванием — комментарии автора конфига, а не поля.
@@ -137,6 +141,7 @@ class Config:
             raise ValueError(
                 f"Неизвестные ключи в разделе comms: {', '.join(unknown_comms)}")
         cfg.comms = CommsConfig(**comms_data)
+        cfg.debate = debate_data
         cfg.mcp = configs_from_dict(mcp_data.get("servers", mcp_data))
 
         # профиль — база; всё, что задано явно ниже, его перекрывает

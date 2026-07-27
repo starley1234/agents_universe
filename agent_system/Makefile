@@ -1,13 +1,14 @@
-.PHONY: help test test-e2e check build build-sandbox serve clean install auto do runs
+.PHONY: help test test-e2e check smoke build build-sandbox serve clean install auto do runs
 
 # Тесты находятся сами: добавили файл tests/test_*.py — он попадёт в прогон.
 # Перечисление вручную приводило к тому, что новый тест забывали вписать.
 TESTS := $(sort $(filter-out tests/test_e2e.py,$(wildcard tests/test_*.py)))
 
 help:
-	@echo "make test          — все тесты (~723 проверки, ~40 с)"
+	@echo "make test          — все тесты (~837 проверок, ~40 с)"
 	@echo "make test-e2e      — сквозной тест на настоящих сокетах"
-	@echo "make check         — самопроверка окружения"
+	@echo "make check         — самопроверка окружения (модель не трогает)"
+	@echo "make smoke         — дымовой тест ЖИВОЙ модели: тянет ли инструменты"
 	@echo "make do TASK=...   — простой режим: роль выбирается сама"
 	@echo "make auto GOAL=... — автономный прогон (HOURS=1, USD=0)"
 	@echo "make runs          — история прогонов"
@@ -38,6 +39,9 @@ test-e2e:
 
 check:
 	@python3 -m agent --check
+
+smoke:
+	@python3 -m agent --smoke $(if $(MODEL),-m $(MODEL),)
 
 do:
 	@python3 -m agent --do "$(TASK)"

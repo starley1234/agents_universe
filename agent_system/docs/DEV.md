@@ -169,7 +169,7 @@ python3 -m agent --runs 7      # план, расход, журнал прого
 
 ```bash
 python3 tests/test_dev.py     # 73 проверки
-make test                     # 723 проверки
+make test                     # 748 проверок
 ```
 
 | что ломали | что упало |

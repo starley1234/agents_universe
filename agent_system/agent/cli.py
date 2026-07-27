@@ -5,6 +5,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from .autorun import AutoRunner
@@ -282,6 +283,173 @@ def cmd_do(cfg: Config, task: str, verbose: bool, color: bool,
     return cmd_run(cfg, task, verbose, color)
 
 
+def cmd_debate(cfg: Config, question: str, rounds: int, max_usd: float,
+               models: str, verbose: bool, color: bool,
+               resume: int = 0, summarize: bool = False) -> int:
+    """Разбор вопроса двумя моделями под присмотром арбитра."""
+    from .debate import STANCE_A, STANCE_B, Debate
+    from .llm import build_llm
+
+    tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
+    store = Store(cfg.db)
+    d = getattr(cfg, "debate", {}) or {}
+
+    def pick(key: str, fallback: str) -> str:
+        return d.get(key) or fallback
+
+    names = [x.strip() for x in models.split(",") if x.strip()]
+    m_a = names[0] if names else pick("model_a", cfg.model)
+    m_b = names[1] if len(names) > 1 else pick("model_b", cfg.model)
+    m_arb = names[2] if len(names) > 2 else pick("model_arbiter", m_b)
+
+    common = dict(base_url=cfg.base_url, api_key=cfg.api_key,
+                  temperature=cfg.temperature)
+    llm_a = build_llm(cfg.provider, m_a, **common)
+    llm_b = build_llm(cfg.provider, m_b, **common)
+    llm_arb = build_llm(cfg.provider, m_arb, **common)
+
+    # Исполнитель: обычный агент с инструментами. Профиль подбирается
+    # по тексту вопроса — «проверь STL» уйдёт в cad, «найди» в rag.
+    def executor(task: str) -> str:
+        pick_p = choose_profile(task, Config.list_profiles())
+        use = replace_profile(cfg, pick_p.profile) if pick_p.profile \
+            else replace_profile(cfg, cfg.profile) if cfg.profile \
+            else Config(**{**cfg.__dict__})
+        # Проверка факта почти всегда требует счёта или чтения файла.
+        # Тема может не распознаться («посчитай 300000/5000» не про CAD и
+        # не про документы) — тогда профиль не выбран, и без этой строки
+        # исполнитель приходил БЕЗ run_python и отвечал «инструмента нет».
+        # Поймано живым прогоном.
+        use.skills = sorted(set(use.skills) | {"files", "python"})
+        use.max_steps = min(use.max_steps, 12)
+        print(tint(C_ACC, f"\n  ⚙ проверка: {task[:70]}"
+                          + (f" [роль {pick_p.profile}]" if pick_p.profile
+                             else "")))
+        agent = build_agent(use, confirm=ask_confirm)
+        res = agent.run(task)
+        return res.answer[:1500]
+
+    NAMES = {"a": "A", "b": "B", "arbiter": "арбитр", "executor": "проверка"}
+    COLORS = {"a": C_OK, "b": C_ACC, "arbiter": C_DIM, "executor": C_DIM}
+
+    def on_event(kind, data):
+        if kind == "start":
+            print(tint(C_OK, f"\n▶ разбор #{data['debate_id']}: "
+                             f"{data['question']}"))
+            print(tint(C_DIM, f"  A: {data['model_a']} · B: {data['model_b']}"
+                              f" · арбитр: {data['model_arbiter']}"))
+        elif kind == "resume":
+            print(tint(C_OK, f"\n▶ продолжаем разбор #{data['debate_id']}"))
+        elif kind == "round":
+            print(tint(C_DIM, f"\n── круг {data['n']} из {data['of']}"))
+        elif kind == "turn":
+            who = NAMES.get(data["role"], data["role"])
+            col = COLORS.get(data["role"], C_DIM)
+            print(tint(col, f"\n{who}:"))
+            print(f"  {data['text'][:900]}")
+        elif kind == "arbiter":
+            print(tint(C_ACC, f"\n  ⚖ арбитр: {data['decision']} — "
+                              f"{data['reason'][:120]}"))
+        elif kind == "warn":
+            print(tint(C_ERR, f"  ⚠ {data['message']}"))
+        elif kind == "arbiter_unparsed":
+            print(tint(C_ERR, "  ⚠ ответ арбитра не разобран"))
+
+    deb = Debate(
+        llm_a, llm_b, llm_arb, store,
+        stance_a=d.get("prompt_a") or STANCE_A,
+        stance_b=d.get("prompt_b") or STANCE_B,
+        rounds=rounds or int(d.get("rounds", 12)),
+        arbiter_every=int(d.get("arbiter_every", 3)),
+        max_usd=max_usd,
+        max_minutes=float(d.get("max_minutes", 30)),
+        executor=executor,
+        max_executor_calls=int(d.get("max_executor_calls", 5)),
+        on_event=on_event)
+
+    try:
+        res = deb.run(question, resume=resume)
+    except KeyboardInterrupt:
+        print(tint(C_ERR, "\nпрервано"))
+        if deb.debate_id:
+            store.finish_debate(deb.debate_id, "stopped")
+            print(f"Продолжить: python3 -m agent --debate "
+                  f"--resume {deb.debate_id}")
+        return 130
+
+    print("\n" + "─" * 60)
+    print(res.summary())
+    print("─" * 60)
+
+    # Протокол пишем ВСЕГДА: вердикт в две строки через неделю ничего не
+    # объяснит, а ход рассуждения и проверенные факты — объяснят.
+    from .protocol import build_protocol
+    try:
+        text = build_protocol(store, res.debate_id,
+                              llm_arb if summarize else None)
+        out = Path(cfg.workspace) / f"протокол-разбора-{res.debate_id}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        print(tint(C_OK, f"Протокол: {out}"))
+    except Exception as exc:               # протокол не важнее разбора
+        print(tint(C_ERR, f"Протокол не собран: {exc}"))
+
+    print(tint(C_DIM, f"Продолжить: python3 -m agent --debate --resume "
+                      f"{res.debate_id}"))
+    return 0 if res.status == "done" else 1
+
+
+def cmd_protocol(cfg: Config, debate_id: int, summarize: bool,
+                 color: bool) -> int:
+    """Пересобрать протокол по уже прошедшему разбору."""
+    from .protocol import build_protocol
+    from .llm import build_llm
+
+    tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
+    store = Store(cfg.db)
+    llm = None
+    if summarize:
+        d = getattr(cfg, "debate", {}) or {}
+        llm = build_llm(cfg.provider, d.get("model_arbiter") or cfg.model,
+                        base_url=cfg.base_url, api_key=cfg.api_key,
+                        temperature=cfg.temperature)
+    try:
+        text = build_protocol(store, debate_id, llm)
+    except ValueError as exc:
+        print(f"{C_ERR}{exc}{C_OFF}", file=sys.stderr)
+        return 1
+    out = Path(cfg.workspace) / f"протокол-разбора-{debate_id}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(text)
+    print(tint(C_DIM, f"\nСохранено: {out}"))
+    return 0
+
+
+def cmd_debates(cfg: Config, color: bool) -> int:
+    """Список разборов."""
+    tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
+    store = Store(cfg.db)
+    rows = store.debates(30)
+    if not rows:
+        print(f"В базе {cfg.db} разборов нет")
+        return 0
+    mark = {"done": C_OK, "active": C_ACC}
+    print(f"Разборы в {cfg.db}\n" + "─" * 72)
+    for r in rows:
+        when = time.strftime("%d.%m %H:%M",
+                             time.localtime(r["started"] or 0))
+        st = tint(mark.get(r["status"], C_ERR), f"{r['status']:<13}")
+        print(f"#{r['id']:<4} {when}  {st} {r['question'][:42]}")
+        cost = float(r.get("cost") or 0)
+        print(tint(C_DIM, f"      кругов {r['rounds']}, "
+                          f"токенов {int(r.get('tok_out') or 0):,}"
+                          + (f", ${cost:.4f}" if cost > 0 else "")))
+        if r["verdict"]:
+            print(tint(C_DIM, f"      → {r['verdict'][:100]}"))
+    return 0
+
+
 def cmd_runs(cfg: Config, run_id: int, limit: int, color: bool) -> int:
     """История прогонов. Данные копились в базе, смотреть их было нечем."""
     tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
@@ -413,6 +581,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="показывать мысли и вывод инструментов")
     ap.add_argument("--no-color", action="store_true")
     ap.add_argument("--check", action="store_true", help="самопроверка и выход")
+    ap.add_argument("--smoke", action="store_true",
+                    help="дымовой тест ЖИВОЙ модели: тянет ли инструменты")
+    ap.add_argument("--only", default="",
+                    help="в --smoke: прогнать только задачи с этим словом")
     ap.add_argument("--auto", action="store_true",
                     help="автономный режим: часы работы без человека")
     ap.add_argument("--hours", type=float, help="бюджет времени, часов")
@@ -427,6 +599,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="простой режим: роль и режим выбираются сами")
     ap.add_argument("-y", "--yes", action="store_true",
                     help="не переспрашивать в простом режиме")
+    ap.add_argument("--debate", action="store_true",
+                    help="разбор вопроса двумя моделями с арбитром")
+    ap.add_argument("--debates", action="store_true",
+                    help="список разборов")
+    ap.add_argument("--rounds", type=int, default=0,
+                    help="в --debate: предел кругов")
+    ap.add_argument("--protocol", type=int, metavar="N",
+                    help="пересобрать протокол разбора №N")
+    ap.add_argument("--summarize", action="store_true",
+                    help="в протоколе: связный пересказ моделью")
+    ap.add_argument("--models", default="",
+                    help="в --debate: модель_a,модель_b,арбитр")
     ap.add_argument("--route", action="store_true",
                     help="в --auto: каждый пункт плана своему агенту")
     args = ap.parse_args(argv)
@@ -450,6 +634,29 @@ def main(argv: list[str] | None = None) -> int:
     color = not args.no_color and sys.stdout.isatty()
     if args.check:
         return cmd_check(cfg)
+    if args.smoke:
+        from .smoke import smoke
+        # Инструменты нужны все ходовые: без них проверять нечего.
+        if not {"files", "python"} <= set(cfg.skills):
+            cfg.skills = sorted(set(cfg.skills) | {"files", "python",
+                                                   "memory"})
+        mark, _ = smoke(cfg, args.verbose, args.only)
+        return 0 if mark == "ГОДИТСЯ" else (1 if mark ==
+                                            "ГОДИТСЯ С ОГОВОРКАМИ" else 2)
+    if args.protocol:
+        return cmd_protocol(cfg, args.protocol, args.summarize, color)
+    if args.debates:
+        return cmd_debates(cfg, color)
+    if args.debate:
+        goal = " ".join(args.task)
+        if not goal and not args.resume:
+            print(f"{C_ERR}Для --debate нужен вопрос{C_OFF}", file=sys.stderr)
+            return 2
+        return cmd_debate(cfg, goal, args.rounds,
+                          args.max_usd if args.max_usd is not None
+                          else cfg.max_usd,
+                          args.models, args.verbose, color,
+                          args.resume or 0, args.summarize)
     if args.runs is not None:
         return cmd_runs(cfg, args.runs, 20, color)
     if args.do:

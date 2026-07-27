@@ -109,6 +109,47 @@ CREATE TABLE IF NOT EXISTS event(
   sig TEXT,                          -- подпись действия: ловим повторы
   created REAL
 );
+-- Дискуссия двух моделей: отдельные таблицы, чтобы не путать с прогонами.
+-- Прогон — это работа по плану, дискуссия — обмен доводами; общего у них
+-- только расход денег.
+CREATE TABLE IF NOT EXISTS debate(
+  id INTEGER PRIMARY KEY,
+  question TEXT NOT NULL,
+  status TEXT DEFAULT 'active',   -- active|done|no_consensus|budget|stuck
+  model_a TEXT, model_b TEXT, model_arbiter TEXT,
+  rounds INTEGER DEFAULT 0,
+  tok_in INTEGER DEFAULT 0, tok_out INTEGER DEFAULT 0,
+  cost REAL DEFAULT 0,
+  verdict TEXT,
+  started REAL, finished REAL
+);
+
+CREATE TABLE IF NOT EXISTS branch(
+  id INTEGER PRIMARY KEY,
+  debate_id INTEGER NOT NULL,
+  parent_id INTEGER,              -- NULL = основная ветка
+  assumption TEXT,                -- при каком предположении идём
+  status TEXT DEFAULT 'active',
+  verdict TEXT, created REAL
+);
+
+CREATE TABLE IF NOT EXISTS turn(
+  id INTEGER PRIMARY KEY,
+  debate_id INTEGER NOT NULL,
+  branch_id INTEGER,
+  round INTEGER,
+  role TEXT NOT NULL,             -- a|b|arbiter|executor
+  model TEXT,
+  text TEXT NOT NULL,
+  sig TEXT,                       -- подпись довода: ловим топтание
+  tokens INTEGER DEFAULT 0,
+  cost REAL DEFAULT 0,
+  created REAL
+);
+CREATE INDEX IF NOT EXISTS ix_turn_debate ON turn(debate_id, round);
+CREATE INDEX IF NOT EXISTS ix_turn_sig ON turn(debate_id, sig);
+CREATE INDEX IF NOT EXISTS ix_branch_debate ON branch(debate_id);
+
 CREATE INDEX IF NOT EXISTS ix_event_run ON event(run_id, step);
 CREATE INDEX IF NOT EXISTS ix_event_sig ON event(run_id, sig);
 CREATE INDEX IF NOT EXISTS ix_task_run ON task(run_id, status);
@@ -487,6 +528,94 @@ class Store:
         sql += " ORDER BY id LIMIT ?"
         args.append(limit)
         return [dict(r) for r in self.db.execute(sql, args)]
+
+    # ------------------------------------------------------- дискуссия
+    def start_debate(self, question: str, model_a: str = "",
+                     model_b: str = "", model_arbiter: str = "") -> int:
+        cur = self.db.execute(
+            "INSERT INTO debate(question,model_a,model_b,model_arbiter,started)"
+            " VALUES(?,?,?,?,?)",
+            (question, model_a, model_b, model_arbiter, self._now()))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def add_turn(self, debate_id: int, role: str, text: str,
+                 round_no: int = 0, model: str = "", sig: str = "",
+                 tokens: int = 0, cost: float = 0.0,
+                 branch_id: int | None = None) -> int:
+        cur = self.db.execute(
+            "INSERT INTO turn(debate_id,branch_id,round,role,model,text,sig,"
+            "tokens,cost,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (debate_id, branch_id, round_no, role, model, text, sig,
+             tokens, cost, self._now()))
+        self.db.execute(
+            "UPDATE debate SET rounds=MAX(rounds,?), cost=cost+?, "
+            "tok_in=tok_in+?, tok_out=tok_out+? WHERE id=?",
+            (round_no, cost, 0, tokens, debate_id))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def turns(self, debate_id: int, branch_id: int | None = None,
+              role: str = "") -> list[dict[str, Any]]:
+        sql = "SELECT * FROM turn WHERE debate_id=?"
+        args: list[Any] = [debate_id]
+        if branch_id is not None:
+            sql += " AND branch_id IS ?"
+            args.append(branch_id)
+        if role:
+            sql += " AND role=?"
+            args.append(role)
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.db.execute(sql, args)]
+
+    def sig_repeats(self, debate_id: int, sig: str,
+                    branch_id: int | None = None) -> int:
+        """Сколько раз довод с такой подписью уже звучал."""
+        if not sig:
+            return 0
+        sql = "SELECT COUNT(*) FROM turn WHERE debate_id=? AND sig=?"
+        args: list[Any] = [debate_id, sig]
+        if branch_id is not None:
+            sql += " AND branch_id IS ?"
+            args.append(branch_id)
+        return int(self.db.execute(sql, args).fetchone()[0])
+
+    def finish_debate(self, debate_id: int, status: str,
+                      verdict: str = "") -> None:
+        self.db.execute(
+            "UPDATE debate SET status=?, verdict=?, finished=? WHERE id=?",
+            (status, verdict[:4000], self._now(), debate_id))
+        self.db.commit()
+
+    def get_debate(self, debate_id: int) -> dict[str, Any] | None:
+        r = self.db.execute("SELECT * FROM debate WHERE id=?",
+                            (debate_id,)).fetchone()
+        return dict(r) if r else None
+
+    def debates(self, limit: int = 20) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM debate ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def add_branch(self, debate_id: int, assumption: str,
+                   parent_id: int | None = None) -> int:
+        cur = self.db.execute(
+            "INSERT INTO branch(debate_id,parent_id,assumption,created) "
+            "VALUES(?,?,?,?)",
+            (debate_id, parent_id, assumption, self._now()))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def branches(self, debate_id: int) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM branch WHERE debate_id=? ORDER BY id",
+            (debate_id,))]
+
+    def finish_branch(self, branch_id: int, status: str,
+                      verdict: str = "") -> None:
+        self.db.execute(
+            "UPDATE branch SET status=?, verdict=? WHERE id=?",
+            (status, verdict[:2000], branch_id))
+        self.db.commit()
 
     def recent_events(self, run_id: int, limit: int = 12) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute(

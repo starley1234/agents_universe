@@ -12,7 +12,7 @@ ssh user@сервер && cd ~/agent_system
 ## 2. Проверить
 
 ```bash
-make test          # 723 проверки, ~40 с
+make test          # 837 проверок, ~40 с
 ```
 
 Всё зелёное — система рабочая.
@@ -177,7 +177,7 @@ python3 -m agent --auto --resume 1
 
 | команда | что делает |
 |---|---|
-| `make test` | 723 проверки |
+| `make test` | 837 проверок |
 | `python3 -m agent --check` | диагностика |
 | `python3 -m agent "задача"` | разовый запуск |
 | `python3 -m agent --auto -P autonomous --hours 8 "цель"` | автономно |
