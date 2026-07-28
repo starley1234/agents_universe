@@ -1,7 +1,7 @@
 .PHONY: help test check serve install clean
 
 help:
-	@echo "make test    — все тесты (259 проверок, нужен PostgreSQL/pgserver)"
+	@echo "make test    — все тесты (274 проверки, нужен PostgreSQL/pgserver)"
 	@echo "make check   — самопроверка окружения (импорт, конфиг)"
 	@echo "make serve   — поднять HTTP API/дашборд на localhost:8090"
 	@echo "make maintenance — один цикл фонового обслуживания вручную"

@@ -48,9 +48,26 @@ class Config:
     llm_retry_base: float = 1.0
 
     # --- эмбеддинги (векторная mid/long-term память) ---
-    embedding_provider: str = "hash"    # hash | openai | local
+    # provider: hash (офлайн по умолчанию) | openai | local | lmstudio.
+    # lmstudio — синоним local в реестре эмбеддингов (тот же протокол
+    # /v1/embeddings, что и OpenAI) — используйте, если хотите явно
+    # обозначить в конфиге, что модель развёрнута в LM Studio.
+    embedding_provider: str = "hash"    # hash | openai | local | lmstudio
     embedding_model: str = "hash-256"
     embedding_dim: int = 256            # фиксирует vector(dim) в схеме БД
+    # Адрес и ключ ВНЕШНЕГО сервера эмбеддингов (например, LM Studio на
+    # другой машине: http://192.168.1.50:1234/v1). Если не заданы —
+    # берутся умолчания провайдера (для "local"/"lmstudio" — переменная
+    # окружения LOCAL_BASE_URL/LOCAL_API_KEY или localhost:11434, для
+    # "openai" — OPENAI_BASE_URL/OPENAI_API_KEY). Явное значение здесь
+    # ПЕРЕБИВАЕТ то, что использует основная чат-модель — эмбеддинги и
+    # диалоговая модель нередко живут на разных серверах.
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    # Таймаут HTTP-запроса к серверу эмбеддингов, секунды. LM Studio на
+    # слабом железе может считать эмбеддинги ощутимо дольше, чем облачный
+    # API — отдельная настройка вместо жёстко зашитых 60 с в драйвере.
+    embedding_timeout: int = 60
 
     # --- трёхуровневая память ---
     # Порог контекстного окна модели, ниже которого включается агрессивная
@@ -91,6 +108,25 @@ class Config:
             )
         return self.db_dsn
 
+    def resolve_embedding(self) -> tuple[str, str, str | None, str | None, int]:
+        """Провайдер/модель/base_url/ключ/таймаут для эмбеддингов.
+
+        Явно заданный embedding_base_url (обычно — адрес ВНЕШНЕГО сервера
+        вроде LM Studio, отдельного от диалоговой модели) передаётся как
+        есть; пустая строка превращается в None, чтобы build_embedder()
+        применил умолчание провайдера (переменные окружения
+        LOCAL_BASE_URL/OPENAI_BASE_URL и т.п., см. maos/llm/embeddings.py).
+        """
+        return (self.embedding_provider, self.embedding_model,
+               self.embedding_base_url or None, self.embedding_api_key or None,
+               self.embedding_timeout)
+
+    #: поля-секреты: разрешены ТОЛЬКО из переменных окружения, никогда
+    #: из JSON-конфига — тот же принцип, что у messaging.* в agent_system
+    #: (MessagingConfig.from_dict фильтрует пароли/токены). Конфиг можно
+    #: класть в git, не боясь утечки ключа внешнего сервера эмбеддингов.
+    _SECRET_FIELDS = ("api_token", "embedding_api_key")
+
     @classmethod
     def load(cls, path: str | None = None, **overrides: Any) -> "Config":
         data: dict[str, Any] = {}
@@ -99,8 +135,11 @@ class Config:
             if not p.exists():
                 raise FileNotFoundError(f"Конфиг {path} не найден")
             data = json.loads(p.read_text(encoding="utf-8"))
-        # ключи-комментарии с префиксом "_" игнорируются, как в agent_system
-        data = {k: v for k, v in data.items() if v is not None and not k.startswith("_")}
+        # ключи-комментарии с префиксом "_" игнорируются, как в agent_system;
+        # поля-секреты из JSON тоже отбрасываются — только из окружения.
+        data = {k: v for k, v in data.items()
+               if v is not None and not k.startswith("_")
+               and k not in cls._SECRET_FIELDS}
         cfg = cls(**data)
 
         env_map = {
@@ -109,6 +148,8 @@ class Config:
             "default_cloud_model": "DEFAULT_CLOUD_MODEL",
             "embedding_provider": "MAOS_EMBEDDING_PROVIDER",
             "embedding_model": "MAOS_EMBEDDING_MODEL",
+            "embedding_base_url": "MAOS_EMBEDDING_BASE_URL",
+            "embedding_api_key": "MAOS_EMBEDDING_API_KEY",
             "tts_provider": "TTS_PROVIDER",
             "tts_default_voice": "TTS_DEFAULT_VOICE",
             "host": "MAOS_HOST",
@@ -122,6 +163,8 @@ class Config:
             cfg.port = int(os.environ["MAOS_PORT"])
         if os.getenv("MAOS_EMBEDDING_DIM"):
             cfg.embedding_dim = int(os.environ["MAOS_EMBEDDING_DIM"])
+        if os.getenv("MAOS_EMBEDDING_TIMEOUT"):
+            cfg.embedding_timeout = int(os.environ["MAOS_EMBEDDING_TIMEOUT"])
 
         for k, v in overrides.items():
             if v is not None and hasattr(cfg, k):
@@ -134,6 +177,8 @@ class Config:
             d["db_dsn"] = _mask_dsn(d["db_dsn"])
         if d.get("api_token"):
             d["api_token"] = "***"
+        if d.get("embedding_api_key"):
+            d["embedding_api_key"] = "***"
         return d
 
 

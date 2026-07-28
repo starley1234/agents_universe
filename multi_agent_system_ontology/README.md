@@ -46,7 +46,7 @@ cp .env.example .env
 # DB_DSN=postgresql://maos:maos@localhost:5432/maos
 
 export $(grep -v '^#' .env | xargs)   # или используйте python-dotenv
-make test       # 259 проверок — нужен pgserver (embedded Postgres для тестов)
+make test       # 274 проверки — нужен pgserver (embedded Postgres для тестов)
 make serve      # http://127.0.0.1:8090/dashboard
 ```
 
@@ -99,6 +99,41 @@ OpenRouter сами часто содержат `:` (например, суфф�
   похожих (по косинусному сходству) квантов, а не вся история.
 - **Long-term** — граф `onto_entity`/`onto_relation`: `Agent -> WorkOn
   -> Project` и подобное, с семантическим поиском по эмбеддингам.
+
+## Модель эмбеддингов на внешнем сервере (например, LM Studio)
+
+Эмбеддинги (для mid-term памяти и семантического роутера) можно считать
+СОВЕРШЕННО ОТДЕЛЬНЫМ сервером от диалоговой LLM — частый сценарий:
+чат-модель в облаке, а эмбеддинги — локально в LM Studio на своей
+машине (дешевле и не тратит контекст облачного провайдера на векторизацию).
+
+Настраивается через `Config`/переменные окружения:
+
+```bash
+MAOS_EMBEDDING_PROVIDER=lmstudio   # синоним "local" — тот же протокол /v1/embeddings
+MAOS_EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5
+MAOS_EMBEDDING_BASE_URL=http://192.168.1.50:1234/v1
+MAOS_EMBEDDING_API_KEY=            # обычно не нужен для локального LM Studio
+MAOS_EMBEDDING_DIM=768             # размерность вектора модели — фиксирует
+                                    # схему БД (vector(768)), см. ниже
+MAOS_EMBEDDING_TIMEOUT=60          # секунд; слабое железо считает эмбеддинги
+                                    # дольше, чем облачный API
+```
+
+`embedding_base_url`/`embedding_api_key` в `Config` — секреты и адрес
+приватной сети, поэтому доступны ТОЛЬКО через переменные окружения (как
+все ключи в системе, `Config.load()` отбрасывает эти поля, если они
+случайно оказались в JSON-конфиге) и маскируются в `Config.to_dict()`.
+Если `MAOS_EMBEDDING_BASE_URL` не задан, провайдеры `local`/`lmstudio`/
+`llamacpp`/`vllm`/`ollama` используют общий `LOCAL_BASE_URL` (тот же,
+что для диалоговой модели) — раздельный адрес нужен только когда
+эмбеддинги реально живут на другом сервере.
+
+**Важно про `MAOS_EMBEDDING_DIM`**: колонка `vector(dim)` в схеме
+PostgreSQL фиксируется при первом подключении `Store`. Смена модели
+эмбеддингов на другую размерность требует новой базы/схемы (ограничение
+pgvector, не наше) — задайте `MAOS_EMBEDDING_DIM` под конкретную модель
+ДО первого запуска (у `nomic-embed-text` — 768, у `hash` по умолчанию — 256).
 
 ## Semantic Router (ТЗ п.5)
 
@@ -176,14 +211,14 @@ maos/
   tts/provider.py        — интерфейс TTS (без реализации звука)
   api/server.py          — HTTP API на stdlib (без внешних зависимостей)
   web/dashboard.html      — Admin Panel + Chat UI + Graph Visualization
-tests/                   — 259 проверок, реальный embedded Postgres+pgvector
+tests/                   — 274 проверки, реальный embedded Postgres+pgvector
                           (pgserver) и реальные HTTP-серверы, без моков
 ```
 
 ## Тесты
 
 ```bash
-make test   # 259 проверок, ~10 секунд
+make test   # 274 проверки, ~10 секунд
 ```
 
 Философия тестов — как в `agent_system`: реальная инфраструктура

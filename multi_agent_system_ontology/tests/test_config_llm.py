@@ -267,6 +267,89 @@ def main() -> int:
     except Exception:
         check("build_embedder с неизвестным провайдером кидает ошибку", True)
 
+    section("Config.resolve_embedding: внешний сервер эмбеддингов (LM Studio)")
+    cfg_emb = Config(
+        embedding_provider="lmstudio",
+        embedding_model="text-embedding-nomic-embed-text-v1.5",
+        embedding_base_url="http://192.168.1.50:1234/v1",
+        embedding_api_key="lm-studio-secret",
+        embedding_dim=768, embedding_timeout=45)
+    provider, model, base_url, api_key, timeout = cfg_emb.resolve_embedding()
+    check("provider верный", provider == "lmstudio")
+    check("model верная", model == "text-embedding-nomic-embed-text-v1.5")
+    check("base_url — адрес внешнего сервера", base_url == "http://192.168.1.50:1234/v1")
+    check("api_key передан как есть", api_key == "lm-studio-secret")
+    check("timeout передан как есть", timeout == 45)
+
+    cfg_emb_default = Config(embedding_provider="hash")
+    _, _, base_url_d, api_key_d, _ = cfg_emb_default.resolve_embedding()
+    check("без явного base_url -> None (используются умолчания провайдера)",
+         base_url_d is None)
+    check("без явного api_key -> None", api_key_d is None)
+
+    section("Config: embedding_api_key — секрет, не читается из JSON")
+    import tempfile as _tempfile
+    tf2 = _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    json.dump({"embedding_api_key": "leaked-from-json",
+              "embedding_base_url": "http://example.local/v1"}, tf2)
+    tf2.close()
+    try:
+        cfg_from_json = Config.load(tf2.name)
+        check("embedding_api_key из JSON НЕ попал в конфиг",
+             cfg_from_json.embedding_api_key == "")
+        check("embedding_base_url (не секрет) из JSON применился",
+             cfg_from_json.embedding_base_url == "http://example.local/v1")
+    finally:
+        os.unlink(tf2.name)
+
+    section("Config.to_dict: embedding_api_key маскируется")
+    d_emb = cfg_emb.to_dict()
+    check("embedding_api_key замаскирован", d_emb["embedding_api_key"] == "***")
+    check("embedding_base_url НЕ маскируется (не секрет, а адрес)",
+         d_emb["embedding_base_url"] == "http://192.168.1.50:1234/v1")
+
+    section("build_embedder: алиас lmstudio реально бьёт по внешнему base_url")
+    embed_srv = _Server()
+    embed_calls = []
+
+    class EmbeddingHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n).decode("utf-8"))
+            embed_calls.append(body)
+            vecs = [[0.1, 0.2, 0.3] for _ in body["input"]]
+            out = json.dumps({"data": [{"index": i, "embedding": v}
+                                       for i, v in enumerate(vecs)]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    embed_httpd = ThreadingHTTPServer(("127.0.0.1", 0), EmbeddingHandler)
+    embed_port = embed_httpd.server_address[1]
+    embed_thread = threading.Thread(target=embed_httpd.serve_forever, daemon=True)
+    embed_thread.start()
+    try:
+        cfg_lm = Config(embedding_provider="lmstudio", embedding_model="nomic-embed",
+                        embedding_base_url=f"http://127.0.0.1:{embed_port}/v1",
+                        embedding_api_key="secret-key")
+        p, m, bu, ak, to = cfg_lm.resolve_embedding()
+        emb_lm = build_embedder(p, m, base_url=bu, api_key=ak, timeout=to)
+        vec = emb_lm.embed_one("текст для векторизации на внешнем сервере")
+        check("реальный HTTP-запрос дошёл до фейкового LM Studio", len(embed_calls) == 1)
+        check("вектор получен от внешнего сервера", vec == [0.1, 0.2, 0.3])
+        check("модель эмбеддера верная", emb_lm.model == "nomic-embed")
+        check("base_url эмбеддера — внешний сервер",
+             emb_lm.base_url == f"http://127.0.0.1:{embed_port}/v1")
+    finally:
+        embed_httpd.shutdown()
+        embed_httpd.server_close()
+        embed_srv.close()
+
     print(f"\n{'─' * 40}\nитого: {PASS} ok, {FAIL} fail")
     return 1 if FAIL else 0
 

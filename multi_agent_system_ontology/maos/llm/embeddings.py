@@ -127,24 +127,49 @@ class HashEmbedder(BaseEmbedder):
 
 _REGISTRY: dict[str, type[BaseEmbedder]] = {
     "openai": OpenAIEmbedder,
-    "local": OpenAIEmbedder,   # llama.cpp/vLLM /v1/embeddings — тот же протокол
+    "local": OpenAIEmbedder,   # llama.cpp/vLLM/LM Studio /v1/embeddings — тот же протокол
     "hash": HashEmbedder,
 }
 
+#: алиасы: "lmstudio" (и другие частые имена локальных серверов) — это
+#: тот же провайдер "local" с точки зрения протокола (OpenAI-совместимый
+#: /v1/embeddings), просто более понятное имя в конфиге для тех, кто
+#: явно развернул модель в LM Studio, а не в llama.cpp/vLLM/Ollama.
+_EMBEDDING_ALIASES = {"lmstudio": "local", "llamacpp": "local", "vllm": "local",
+                      "ollama": "local"}
 
-def build_embedder(provider: str, model: str, **kwargs: Any) -> BaseEmbedder:
-    key = (provider or "").strip().lower()
+
+def build_embedder(provider: str, model: str, base_url: str | None = None,
+                   api_key: str | None = None, timeout: int | None = None,
+                   **kwargs: Any) -> BaseEmbedder:
+    """Собрать эмбеддер по имени провайдера.
+
+    base_url/api_key — адрес и ключ ВНЕШНЕГО сервера эмбеддингов (LM
+    Studio, свой vLLM и т.п.), если он отличается от того, что использует
+    основная диалоговая модель — см. Config.embedding_base_url/
+    embedding_api_key и Config.resolve_embedding(). Если не переданы —
+    используются переменные окружения LOCAL_BASE_URL/LOCAL_API_KEY
+    (для local/lmstudio/llamacpp/vllm/ollama) как разумное умолчание.
+    """
+    key = _EMBEDDING_ALIASES.get((provider or "").strip().lower(),
+                                 (provider or "").strip().lower())
     if key not in _REGISTRY:
         raise EmbeddingError(
             f"Неизвестный провайдер эмбеддингов {provider!r}. Доступны: "
-            f"{', '.join(sorted(_REGISTRY))}"
+            f"{', '.join(sorted(set(_REGISTRY) | set(_EMBEDDING_ALIASES)))}"
         )
     cls = _REGISTRY[key]
     clean = {k: v for k, v in kwargs.items() if v is not None}
-    if key == "local" and "base_url" not in clean:
+    if base_url:
+        clean["base_url"] = base_url
+    elif key == "local" and "base_url" not in clean:
         clean["base_url"] = os.getenv("LOCAL_BASE_URL", "http://localhost:11434/v1")
-    if key == "local" and "api_key" not in clean:
+    if api_key:
+        clean["api_key"] = api_key
+    elif key == "local" and "api_key" not in clean:
         clean["api_key"] = os.getenv("LOCAL_API_KEY")
+    if timeout:
+        clean["timeout"] = timeout
     return cls(model=model, **clean)
 
 

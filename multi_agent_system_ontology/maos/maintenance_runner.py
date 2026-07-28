@@ -31,8 +31,9 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = Config.load(args.config)
     store = Store(cfg.require_dsn(), dim=cfg.embedding_dim)
-    embedder = build_embedder(cfg.embedding_provider, cfg.embedding_model,
-                              dim=cfg.embedding_dim)
+    provider, model, base_url, api_key, timeout = cfg.resolve_embedding()
+    embedder = build_embedder(provider, model, dim=cfg.embedding_dim,
+                              base_url=base_url, api_key=api_key, timeout=timeout)
 
     def on_event(kind: str, data: dict) -> None:
         print(f"[maintenance] {kind}: {data}")

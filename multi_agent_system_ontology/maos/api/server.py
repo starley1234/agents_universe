@@ -47,8 +47,9 @@ _SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def _make_embedder(cfg: Config):
-    return build_embedder(cfg.embedding_provider, cfg.embedding_model,
-                          dim=cfg.embedding_dim)
+    provider, model, base_url, api_key, timeout = cfg.resolve_embedding()
+    return build_embedder(provider, model, dim=cfg.embedding_dim,
+                          base_url=base_url, api_key=api_key, timeout=timeout)
 
 
 class Handler(BaseHTTPRequestHandler):
