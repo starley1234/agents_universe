@@ -26,9 +26,11 @@ agent_system/workspace/
 
 ## Рантайм-артефакты multi_agent_system_ontology: MAOS требует внешний
 ## PostgreSQL и ничего не пишет на диск сам по себе, кроме случайных
-## временных данных embedded Postgres при локальных экспериментах.
+## временных данных embedded Postgres при локальных экспериментах и
+## режиме быстрого старта (make quickstart -> .maos_quickstart_pgdata/).
 multi_agent_system_ontology/**/pgdata/
 multi_agent_system_ontology/**/.pgserver/
+multi_agent_system_ontology/.maos_quickstart_pgdata/
 
 ## Прочий мусор ОС/редакторов
 .DS_Store

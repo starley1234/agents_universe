@@ -271,6 +271,22 @@ def main() -> int:
         check("неизвестный GET маршрут -> 404", code24 == 404)
         code25, _ = ctx.post("/v1/nonexistent", {})
         check("неизвестный POST маршрут -> 404", code25 == 404)
+
+        section("Онбординг: /v1/onboarding/status и /v1/onboarding/seed")
+        code26, data26 = ctx.get("/v1/onboarding/status")
+        check("onboarding/status -> 200", code26 == 200)
+        check("coder уже создан ранее — demo_missing короче полного набора",
+             "coder" not in data26["demo_missing"])
+        code27, data27 = ctx.post("/v1/onboarding/seed", {})
+        check("onboarding/seed -> 200", code27 == 200)
+        check("после посева demo_missing пуст", data27["status"]["demo_missing"] == [])
+        code28, data28 = ctx.post("/v1/onboarding/seed", {})
+        check("повторный посев идемпотентен (ничего не создал)",
+             data28["created"] == [])
+        code29, data29 = ctx.get("/v1/agents")
+        demo_slugs = {"coder", "writer", "analyst"}
+        check("демо-агенты реально видны в общем списке /v1/agents",
+             demo_slugs <= {a["slug"] for a in data29["agents"]})
     finally:
         ctx.close()
 

@@ -30,12 +30,46 @@
 ## Требования
 
 - Python 3.10+
-- PostgreSQL 14+ с расширением `pgvector` — **обязателен**, приложение
-  не запустится без `DB_DSN` (см. `maos/config.py`).
-- `pip install -r requirements.txt` (`psycopg[binary]`, для тестов ещё
-  `pgserver` — embedded Postgres, не нужен для продакшена).
+- PostgreSQL 14+ с расширением `pgvector` — **обязателен** для обычного
+  запуска (`make serve`), приложение не стартует без `DB_DSN` (см.
+  `maos/config.py`). Для режима быстрого старта (`make quickstart`)
+  устанавливать PostgreSQL вручную НЕ нужно — см. ниже.
+- `pip install -r requirements.txt` (`psycopg[binary]`, `pgserver` —
+  embedded PostgreSQL, нужен и для тестов, и для `make quickstart`).
 
-## Быстрый старт
+## Режим быстрого старта — одна команда, без установки PostgreSQL
+
+Самый быстрый способ познакомиться с MAOS:
+
+```bash
+cd multi_agent_system_ontology
+pip install -r requirements.txt
+make quickstart
+```
+
+Одна команда: поднимает embedded PostgreSQL+pgvector (через `pgserver`,
+кластер лежит в `.maos_quickstart_pgdata/` рядом), создаёт схему, сеет
+трёх демо-агентов (`coder`/`writer`/`analyst` — с готовыми промптами и
+описаниями для роутера) и запускает сервер — сразу открывайте
+**http://127.0.0.1:8090/dashboard**. Дашборд сам покажет приветственный
+баннер, если база пуста, и предложит создать демо-агентов кнопкой (тот
+же посев, что и `make quickstart`, доступен и без него через
+`POST /v1/onboarding/seed` — полезно на уже существующей "боевой" базе,
+если хочется быстро увидеть, как всё работает).
+
+Это режим **для знакомства и локальной разработки**, а не для
+продакшена: embedded-кластер живёт в подпапке рабочей директории без
+репликации и отдельного бэкапа. Для продакшена — обычный `make serve` с
+настоящим `DB_DSN` (см. ниже); архитектурное требование "PostgreSQL+
+pgvector обязателен" при этом не меняется — quickstart просто поднимает
+такой же Postgres внутри того же процесса.
+
+```bash
+make quickstart --no-seed        # без демо-агентов, только пустая база
+python3 -m maos.quickstart --port 9000 --pgdata /tmp/my_pgdata
+```
+
+## Обычный запуск (с собственным PostgreSQL)
 
 ```bash
 cd multi_agent_system_ontology
@@ -46,7 +80,7 @@ cp .env.example .env
 # DB_DSN=postgresql://maos:maos@localhost:5432/maos
 
 export $(grep -v '^#' .env | xargs)   # или используйте python-dotenv
-make test       # 274 проверки — нужен pgserver (embedded Postgres для тестов)
+make test       # 348 проверок — нужен pgserver (embedded Postgres для тестов)
 make serve      # http://127.0.0.1:8090/dashboard
 ```
 
@@ -175,11 +209,38 @@ POST /v1/chain/start           — {"goal","agents":[slug,...]}
 GET  /v1/chain/<id>            — статус+шаги цепочки
 GET  /v1/chains                — история цепочек
 POST /v1/maintenance/run       — один цикл фонового обслуживания вручную
+GET  /v1/onboarding/status     — пуста ли база / каких демо-агентов не хватает
+POST /v1/onboarding/seed       — создать демо-агентов (идемпотентно)
 ```
 
 Токен: если задан `MAOS_API_TOKEN`, все маршруты кроме `/health` и
 `/dashboard` требуют `Authorization: Bearer <token>`. Сервер отказывается
 слушать не-localhost без токена.
+
+## Веб-интерфейс (дашборд)
+
+`maos/web/dashboard.html` — один файл на vanilla JS, без сборки:
+
+- **Обзор** — статистика памяти (агенты, диалоги, кванты, граф),
+  расход по моделям `provider::model`; приветственный баннер с
+  пошаговым онбордингом и кнопкой создания демо-агентов, если база
+  пуста или часть демо-личностей отсутствует.
+- **Агенты** — карточки вместо голой таблицы: аватар/цвет по slug,
+  статус включён/выключен, форма создания/редактирования с подсказками
+  под каждым полем (что оно даёт для роутинга, LLM, голоса).
+- **Чат** — мультиагентный, с явным выбором агента или авто-роутингом;
+  под каждым ответом видно, какая модель (`provider::model`) реально
+  отвечала, метод роутинга и предупреждение о fallback на локальную
+  модель, если облако было недоступно. `Ctrl+Enter` отправляет
+  сообщение, не отпуская клавиатуру.
+- **Цепочки** — запуск детерминированной `Agent_A -> Agent_B` по списку
+  slug'ов, таблица шагов со статусами, история прошлых запусков.
+- **Граф** — визуализация онтологии на canvas (круговая раскладка,
+  цвет узла — по типу сущности).
+
+Индикатор в шапке (зелёная/красная точка) показывает, жив ли сервис,
+обновляется каждые 15 секунд без перезагрузки страницы. Токен
+запрашивается один раз в поле шапки и применяется ко всем запросам.
 
 ## TTS (ТЗ п.8) — только интерфейс в этой сборке
 
@@ -208,17 +269,20 @@ maos/
   agents/runtime.py      — AgentRuntime: один ход диалога от лица агента
   maintenance/           — distill/dedup/synthesize_graph, run_forever
   maintenance_runner.py  — CLI: python3 -m maos.maintenance_runner [--once]
+  demo_seed.py            — идемпотентный посев демо-агентов (быстрый старт)
+  quickstart.py           — CLI: python3 -m maos.quickstart (embedded Postgres)
   tts/provider.py        — интерфейс TTS (без реализации звука)
   api/server.py          — HTTP API на stdlib (без внешних зависимостей)
-  web/dashboard.html      — Admin Panel + Chat UI + Graph Visualization
-tests/                   — 274 проверки, реальный embedded Postgres+pgvector
+  web/dashboard.html      — Admin Panel + Chat UI + Graph Visualization,
+                          с приветственным онбордингом для пустой базы
+tests/                   — 348 проверок, реальный embedded Postgres+pgvector
                           (pgserver) и реальные HTTP-серверы, без моков
 ```
 
 ## Тесты
 
 ```bash
-make test   # 274 проверки, ~10 секунд
+make test   # 348 проверок, ~10 секунд
 ```
 
 Философия тестов — как в `agent_system`: реальная инфраструктура

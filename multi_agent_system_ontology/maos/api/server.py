@@ -19,6 +19,13 @@
   POST   /v1/chain/start          — {"goal", "agents": [slug, ...]}
   GET    /v1/chain/<id>           — статус+шаги цепочки
   POST   /v1/maintenance/run      — запустить один цикл обслуживания вручную
+  GET    /v1/onboarding/status    — пуста ли база / есть ли демо-агенты
+                                    (для приветственного баннера дашборда)
+  POST   /v1/onboarding/seed      — создать демо-агентов на РЕАЛЬНО
+                                    подключённой базе (не только в
+                                    quickstart-режиме — полезно и на
+                                    "боевом" DB_DSN, если хочется быстро
+                                    посмотреть, как всё работает)
 
 Токен: если задан MAOS_API_TOKEN (или cfg.api_token), требуется заголовок
 Authorization: Bearer <token>. Без него сервер слушает только localhost —
@@ -35,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from ..demo_seed import demo_agents_status, seed_demo_agents
 from ..llm.embeddings import build_embedder
 from ..maintenance.service import MaintenanceService
 from ..memory.store import Store, StoreError
@@ -182,6 +190,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send(200, {"chain": chain, "steps": st.chain_steps(chain_id)})
             return
+        if path == "/v1/onboarding/status":
+            with self._store() as st:
+                self._send(200, demo_agents_status(st))
+            return
         self._send(404, {"error": f"нет маршрута {path}"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -291,6 +303,13 @@ class Handler(BaseHTTPRequestHandler):
                                  "deduped": report.deduped,
                                  "merged_entities": report.merged_entities,
                                  "errors": report.errors})
+            return
+        if path == "/v1/onboarding/seed":
+            with self._store() as st:
+                embedder = _make_embedder(self.cfg)
+                created = seed_demo_agents(st, self.cfg, embedder)
+                self._send(200, {"created": created,
+                                 "status": demo_agents_status(st)})
             return
         self._send(404, {"error": f"нет маршрута {path}"})
 

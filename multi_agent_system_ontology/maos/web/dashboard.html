@@ -6,73 +6,137 @@
 <title>MAOS — Multi-Agent Ontology System</title>
 <style>
   :root{
-    --bg:#12141a; --panel:#1a1d26; --line:#2a2f3d; --txt:#e6e8ee;
-    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --tool:#c9a227;
+    --bg:#0f1117; --panel:#171a23; --panel2:#1d212c; --line:#2a2f3d; --txt:#e6e8ee;
+    --dim:#8b91a3; --acc:#4a9eff; --acc-dim:#2a4a70; --ok:#3ecf8e; --err:#ff6b6b;
+    --warn:#e0b341; --tool:#c9a227;
   }
   *{box-sizing:border-box}
-  body{margin:0;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
+  body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+       ui-monospace,SFMono-Regular,Consolas,monospace;
        background:var(--bg);color:var(--txt);min-height:100vh}
-  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
-         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5}
-  header b{font-weight:600}
+  header{padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+  header b{font-weight:700;font-size:15px}
+  header .logo{display:flex;align-items:center;gap:8px}
+  header .logo .dot{width:9px;height:9px;border-radius:50%;background:var(--dim);
+                    transition:background .3s}
+  header .logo .dot.online{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  header .logo .dot.offline{background:var(--err)}
   nav{display:flex;gap:4px;flex-wrap:wrap}
   nav button{background:transparent;border:1px solid transparent;color:var(--dim);
-             padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
-  nav button.active{background:#232733;color:var(--txt);border-color:var(--line)}
-  nav button:hover{color:var(--txt)}
-  .pill{font-size:12px;color:var(--dim);background:#232733;padding:3px 9px;border-radius:99px}
+             padding:7px 13px;border-radius:8px;cursor:pointer;font:inherit;font-size:13px;
+             display:flex;align-items:center;gap:6px;transition:all .15s}
+  nav button.active{background:var(--acc-dim);color:var(--txt);border-color:var(--acc)}
+  nav button:hover:not(.active){color:var(--txt);background:#232733}
+  .spacer{flex:1}
+  .pill{font-size:12px;color:var(--dim);background:#232733;padding:4px 10px;border-radius:99px;
+        display:flex;align-items:center;gap:6px;white-space:nowrap}
   select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
-        border:1px solid var(--line);border-radius:6px;padding:6px 10px}
-  button{cursor:pointer}
-  button:hover:not(:disabled){border-color:var(--acc)}
+        border:1px solid var(--line);border-radius:8px;padding:7px 11px}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--acc)}
+  button{cursor:pointer;font-weight:500;transition:all .15s}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button.primary{background:var(--acc);color:#08111c;border-color:var(--acc);font-weight:600}
+  button.primary:hover:not(:disabled){filter:brightness(1.1);color:#08111c}
   button.danger:hover{border-color:var(--err);color:var(--err)}
-  button:disabled{opacity:.5;cursor:default}
-  main{padding:18px;max-width:1100px;margin:0 auto}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-        padding:16px;margin-bottom:16px}
-  .card h2{margin:0 0 12px;font-size:15px;color:var(--dim);font-weight:600;
-           text-transform:uppercase;letter-spacing:.04em}
+  button:disabled{opacity:.45;cursor:default}
+  main{padding:20px;max-width:1180px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:18px;margin-bottom:18px}
+  .card h2{margin:0 0 4px;font-size:15px;color:var(--txt);font-weight:700}
+  .card .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);
         vertical-align:top}
-  th{color:var(--dim);font-weight:600}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;
+     letter-spacing:.03em}
   tr:hover td{background:#1f2330}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
-  .stat{background:#1f2330;border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center}
-  .stat b{display:block;font-size:22px;color:var(--acc)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+        padding:14px 10px;text-align:center}
+  .stat b{display:block;font-size:24px;color:var(--acc);font-weight:700;margin-bottom:2px}
+  .stat span{color:var(--dim);font-size:11.5px}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
   .row textarea, .row input[type=text]{flex:1;min-width:200px}
   textarea{width:100%;min-height:70px;resize:vertical}
   .tag{display:inline-block;background:#232733;border:1px solid var(--line);
-       border-radius:99px;padding:2px 8px;margin:1px;font-size:12px}
+       border-radius:99px;padding:3px 10px;margin:2px 4px 2px 0;font-size:11.5px;color:var(--dim)}
   .muted{color:var(--dim)}
   .clickable{cursor:pointer;color:var(--acc)}
   .clickable:hover{text-decoration:underline}
   pre.log{white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto;
-          background:#0f1116;border:1px solid var(--line);border-radius:6px;padding:10px;
+          background:#0a0c11;border:1px solid var(--line);border-radius:8px;padding:12px;
           font-size:12.5px}
   .hidden{display:none !important}
   .err-box{color:var(--err);background:#2a1618;border:1px solid #52252a;
-           border-radius:6px;padding:8px 12px;margin-bottom:10px}
+           border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px}
   .ok-box{color:var(--ok);background:#152a20;border:1px solid #1f4a34;
-          border-radius:6px;padding:8px 12px;margin-bottom:10px}
-  .field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
-  .field label{color:var(--dim);font-size:12px}
-  .avatar{width:28px;height:28px;border-radius:50%;background:#232733;display:inline-block;
-          text-align:center;line-height:28px;margin-right:6px;font-size:13px}
-  .chat-msg{margin-bottom:10px;padding:8px 12px;border-radius:8px;background:#1f2330;
-            border:1px solid var(--line)}
-  .chat-msg.user{background:#1a2436}
-  .chat-msg .meta{color:var(--dim);font-size:11px;margin-bottom:4px}
-  canvas#graphCanvas{width:100%;height:420px;background:#0f1116;border:1px solid var(--line);
-                     border-radius:6px}
+          border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px}
+  .warn-box{color:var(--warn);background:#2a2416;border:1px solid #52451f;
+            border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:13px}
+  .field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+  .field label{color:var(--dim);font-size:12px;font-weight:600}
+  .field .hint{color:var(--dim);font-size:11.5px;font-weight:400;margin-top:2px}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width: 720px){ .two-col{grid-template-columns:1fr} }
+  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--acc),#7b5cff);
+          display:inline-flex;align-items:center;justify-content:center;
+          font-weight:700;font-size:14px;color:#08111c;flex-shrink:0}
+  .agent-card{display:flex;gap:12px;padding:14px;background:var(--panel2);
+              border:1px solid var(--line);border-radius:10px;margin-bottom:10px;
+              align-items:flex-start}
+  .agent-card .body{flex:1;min-width:0}
+  .agent-card .name{font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px}
+  .agent-card .desc{color:var(--dim);font-size:12.5px;margin:4px 0 8px}
+  .agent-card .meta{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--dim)}
+  .agent-card .actions{display:flex;gap:8px;flex-shrink:0}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10.5px;
+         font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+  .badge.on{background:#152a20;color:var(--ok)}
+  .badge.off{background:#2a1618;color:var(--err)}
+  .chat-wrap{display:flex;flex-direction:column;height:520px}
+  .chat-log{flex:1;overflow:auto;padding:6px 2px;margin-bottom:10px}
+  .chat-msg{margin-bottom:12px;padding:10px 14px;border-radius:10px;background:var(--panel2);
+            border:1px solid var(--line);max-width:82%}
+  .chat-msg.user{background:#16233a;margin-left:auto;border-color:#274266}
+  .chat-msg.agent{margin-right:auto}
+  .chat-msg .meta{color:var(--dim);font-size:11px;margin-bottom:5px;display:flex;gap:8px;
+                  align-items:center;flex-wrap:wrap}
+  .chat-msg .meta .fallback{color:var(--warn)}
+  .chat-empty{color:var(--dim);text-align:center;padding:40px 10px;font-size:13px}
+  canvas#graphCanvas{width:100%;height:440px;background:#0a0c11;border:1px solid var(--line);
+                     border-radius:8px;cursor:grab}
+  .onboarding{background:linear-gradient(135deg,#182238,#151a26);border:1px solid var(--acc-dim);
+              border-radius:12px;padding:22px;margin-bottom:18px}
+  .onboarding h2{font-size:18px;margin:0 0 6px}
+  .onboarding p{color:var(--dim);margin:0 0 16px;font-size:13.5px;line-height:1.6}
+  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;
+         margin-bottom:16px}
+  .step{background:#12151d;border:1px solid var(--line);border-radius:10px;padding:14px}
+  .step .num{display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--acc);
+             color:#08111c;align-items:center;justify-content:center;font-weight:700;
+             font-size:12px;margin-bottom:8px}
+  .step h3{margin:0 0 4px;font-size:13.5px}
+  .step p{margin:0;color:var(--dim);font-size:12px;line-height:1.5}
+  code{background:#0a0c11;border:1px solid var(--line);border-radius:5px;padding:1px 6px;
+       font-size:12px;color:var(--acc)}
+  .copybox{display:flex;align-items:center;gap:8px;background:#0a0c11;border:1px solid var(--line);
+           border-radius:8px;padding:8px 12px;margin:8px 0}
+  .copybox code{background:none;border:none;padding:0;flex:1;overflow-x:auto;white-space:nowrap}
+  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel2);border:1px solid var(--acc);
+         color:var(--txt);padding:10px 16px;border-radius:8px;font-size:13px;z-index:50;
+         box-shadow:0 4px 20px rgba(0,0,0,.4);opacity:0;transition:opacity .25s;pointer-events:none}
+  .toast.show{opacity:1}
+  .empty-hint{color:var(--dim);font-size:13px;padding:20px;text-align:center}
+  a{color:var(--acc)}
 </style>
 </head>
 <body>
 <header>
-  <b>MAOS</b>
-  <input id="token" type="password" placeholder="токен (если задан)" size="16">
-  <span class="pill" id="status">—</span>
+  <div class="logo"><span class="dot" id="statusDot"></span><b>MAOS</b></div>
+  <input id="token" type="password" placeholder="токен (если задан)" size="14"
+         title="Authorization: Bearer <token> — нужен, если сервер запущен с MAOS_API_TOKEN">
+  <span class="pill" id="status">проверка…</span>
   <nav>
     <button data-view="overview" class="active">Обзор</button>
     <button data-view="agents">Агенты</button>
@@ -80,72 +144,89 @@
     <button data-view="chain">Цепочки</button>
     <button data-view="graph">Граф</button>
   </nav>
+  <div class="spacer"></div>
+  <span class="pill" id="dbPill" title="строка подключения к PostgreSQL (замаскирована)">DB: —</span>
 </header>
 <main>
+
+<div id="onboardingBanner" class="hidden"></div>
 
 <section id="view-overview">
   <div class="card">
     <h2>Статистика памяти</h2>
+    <p class="sub">Агенты, диалоги, кванты памяти и граф онтологии — общая картина системы</p>
     <div class="grid" id="statsGrid"><div class="stat muted">загрузка…</div></div>
   </div>
   <div class="card">
-    <h2>Расход по моделям (provider::model)</h2>
+    <h2>Расход по моделям</h2>
+    <p class="sub">Метка <code>provider::model</code> у каждого ответа — видно, какая модель реально отвечала (и сколько это стоило)</p>
     <table id="modelsTable"><thead><tr><th>Модель</th><th>Сообщений</th><th>Токенов</th></tr></thead>
     <tbody></tbody></table>
+    <div id="modelsEmpty" class="empty-hint hidden">Пока нет ни одного ответа — начните диалог во вкладке «Чат»</div>
   </div>
 </section>
 
 <section id="view-agents" class="hidden">
   <div class="card">
-    <h2>Создать / обновить агента</h2>
-    <div class="field"><label>slug (латиница, уникален)</label>
-      <input id="a-slug" type="text" placeholder="coder"></div>
-    <div class="field"><label>Имя</label><input id="a-name" type="text" placeholder="Coder"></div>
+    <h2 id="agentFormTitle">Создать агента</h2>
+    <p class="sub">Личность агента: имя, описание (влияет на автоматический выбор в чате), голос, модель</p>
+    <div class="two-col">
+      <div class="field"><label>slug</label>
+        <input id="a-slug" type="text" placeholder="coder">
+        <span class="hint">латиница/цифры/-/_, уникален, не меняется после создания</span></div>
+      <div class="field"><label>Имя</label><input id="a-name" type="text" placeholder="Coder"></div>
+    </div>
     <div class="field"><label>Описание (для роутинга)</label>
-      <textarea id="a-desc" placeholder="Пишет и правит код на Python"></textarea></div>
+      <textarea id="a-desc" placeholder="Пишет и правит код на Python"></textarea>
+      <span class="hint">Чем точнее описание — тем увереннее semantic router выберет этого агента без ручного указания</span></div>
     <div class="field"><label>Ключевые слова</label>
-      <input id="a-keywords" type="text" placeholder="код python баги"></div>
-    <div class="field"><label>Аватар (URL или base64)</label>
-      <input id="a-avatar" type="text" placeholder="https://..."></div>
-    <div class="row">
+      <input id="a-keywords" type="text" placeholder="код python баги">
+      <span class="hint">подстраховка, если у агента ещё нет эмбеддинга описания</span></div>
+    <div class="two-col">
+      <div class="field"><label>Аватар (URL или base64)</label>
+        <input id="a-avatar" type="text" placeholder="https://..."></div>
+      <div class="field"><label>LLM (provider::model)</label>
+        <input id="a-llm-ref" type="text" placeholder="local::llama3">
+        <span class="hint">пусто = гибридный роутинг по умолчанию (local/cloud)</span></div>
+    </div>
+    <div class="two-col">
       <div class="field"><label>Голос: провайдер</label>
         <select id="a-voice-provider">
           <option value="">none</option><option value="openai">openai</option>
           <option value="elevenlabs">elevenlabs</option><option value="piper">piper</option>
         </select></div>
-      <div class="field"><label>Голос: id</label><input id="a-voice-id" type="text"></div>
+      <div class="field"><label>Голос: id</label><input id="a-voice-id" type="text" placeholder="alloy"></div>
     </div>
-    <div class="field"><label>LLM (provider::model, пусто = глобальный дефолт)</label>
-      <input id="a-llm-ref" type="text" placeholder="local::llama3"></div>
     <div class="field"><label>Системный промпт</label>
-      <textarea id="a-prompt" placeholder="Ты полезный ассистент..."></textarea></div>
+      <textarea id="a-prompt" placeholder="Ты полезный ассистент..." style="min-height:100px"></textarea></div>
     <div class="row">
-      <button id="a-save">Сохранить</button>
+      <button id="a-save" class="primary">Сохранить</button>
+      <button id="a-cancel" class="hidden">Отменить редактирование</button>
       <span id="a-msg"></span>
     </div>
   </div>
   <div class="card">
     <h2>Агенты</h2>
-    <table id="agentsTable">
-      <thead><tr><th>Аватар</th><th>Slug</th><th>Имя</th><th>LLM</th><th>Голос</th>
-             <th>Вкл</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <p class="sub" id="agentsCount">—</p>
+    <div id="agentsList"></div>
   </div>
 </section>
 
 <section id="view-chat" class="hidden">
   <div class="card">
     <h2>Мультиагентный чат</h2>
+    <p class="sub">Видно, какой агент отвечает и какая модель реально сгенерировала ответ</p>
     <div class="row">
       <select id="c-agent"><option value="">— авто (semantic router) —</option></select>
       <input id="c-conv" type="text" placeholder="conversation_id (пусто = новый)" size="8">
       <button id="c-new">Новый диалог</button>
     </div>
-    <div id="c-log"></div>
-    <div class="row">
-      <textarea id="c-input" placeholder="Сообщение..."></textarea>
-      <button id="c-send">Отправить</button>
+    <div class="chat-wrap">
+      <div id="c-log" class="chat-log"><div class="chat-empty">Диалог пуст — напишите что-нибудь ниже</div></div>
+      <div class="row">
+        <textarea id="c-input" placeholder="Сообщение... (Ctrl+Enter — отправить)" style="min-height:50px"></textarea>
+        <button id="c-send" class="primary">Отправить</button>
+      </div>
     </div>
   </div>
 </section>
@@ -153,32 +234,53 @@
 <section id="view-chain" class="hidden">
   <div class="card">
     <h2>Детерминированная цепочка Agent_A → Agent_B</h2>
-    <div class="field"><label>Цель</label><input id="ch-goal" type="text"></div>
-    <div class="field"><label>Агенты по порядку (через запятую, slug)</label>
-      <input id="ch-agents" type="text" placeholder="researcher,writer"></div>
-    <div class="row"><button id="ch-start">Запустить</button><span id="ch-msg"></span></div>
-    <table id="ch-steps"><thead><tr><th>#</th><th>Агент</th><th>Статус</th><th>Ответ</th></tr></thead>
+    <p class="sub">Заранее заданная последовательность агентов — без «мета-агента», решающего на лету</p>
+    <div class="field"><label>Цель</label><input id="ch-goal" type="text" placeholder="Подготовить обзор рынка и написать отчёт"></div>
+    <div class="field"><label>Агенты по порядку</label>
+      <input id="ch-agents" type="text" placeholder="researcher,writer">
+      <span class="hint">slug'и через запятую — каждый следующий получает ответ предыдущего</span></div>
+    <div class="row"><button id="ch-start" class="primary">Запустить цепочку</button><span id="ch-msg"></span></div>
+    <table id="ch-steps" class="hidden"><thead><tr><th>#</th><th>Агент</th><th>Статус</th><th>Ответ</th></tr></thead>
       <tbody></tbody></table>
   </div>
   <div class="card">
     <h2>История цепочек</h2>
     <table id="ch-history"><thead><tr><th>id</th><th>Цель</th><th>Статус</th></tr></thead>
       <tbody></tbody></table>
+    <div id="ch-history-empty" class="empty-hint hidden">Ещё не запускалось ни одной цепочки</div>
   </div>
 </section>
 
 <section id="view-graph" class="hidden">
   <div class="card">
     <h2>Граф онтологии</h2>
-    <canvas id="graphCanvas" width="1000" height="420"></canvas>
-    <p class="muted">Узлы — сущности (kind:name), рёбра — предикаты связей.</p>
+    <p class="sub">Long-term память: сущности и связи между ними (<code>Agent → WorkOn → Project</code> и т.п.)</p>
+    <canvas id="graphCanvas" width="1100" height="440"></canvas>
+    <div id="graphEmpty" class="empty-hint hidden">Граф пуст — сущности появятся по мере накопления фактов</div>
   </div>
 </section>
 
 </main>
+<div class="toast" id="toast"></div>
 <script>
 const VIEWS = ["overview","agents","chat","chain","graph"];
+const AGENT_COLORS = ["#4a9eff","#3ecf8e","#e0b341","#ff6b6b","#c586ff","#5ce1e6"];
+function colorFor(slug){
+  let h = 0;
+  for (const c of String(slug)) h = (h*31 + c.charCodeAt(0)) >>> 0;
+  return AGENT_COLORS[h % AGENT_COLORS.length];
+}
 function token(){ return document.getElementById('token').value.trim(); }
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function copyToClipboard(text){
+  navigator.clipboard?.writeText(text).then(()=>showToast('скопировано')).catch(()=>{});
+}
 async function api(path, opts={}){
   const headers = opts.headers || {};
   const t = token();
@@ -189,6 +291,9 @@ async function api(path, opts={}){
   if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
   return data;
 }
+function esc(s){
+  return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
 function setActiveView(name){
   for (const v of VIEWS){
     document.getElementById('view-'+v).classList.toggle('hidden', v!==name);
@@ -196,6 +301,7 @@ function setActiveView(name){
   document.querySelectorAll('nav button').forEach(b=>{
     b.classList.toggle('active', b.dataset.view===name);
   });
+  location.hash = name;
   if (name==='overview') loadOverview();
   if (name==='agents') loadAgents();
   if (name==='chat') loadChatAgents();
@@ -206,9 +312,82 @@ document.querySelectorAll('nav button').forEach(b=>{
   b.addEventListener('click', ()=>setActiveView(b.dataset.view));
 });
 
+// -------------------------------------------------------------- health/info
 async function checkHealth(){
-  try{ await api('/health'); document.getElementById('status').textContent = 'онлайн'; }
-  catch(e){ document.getElementById('status').textContent = 'офлайн'; }
+  const dot = document.getElementById('statusDot');
+  const pill = document.getElementById('status');
+  try{
+    await api('/health');
+    dot.className = 'dot online';
+    pill.textContent = 'сервис онлайн';
+  }catch(e){
+    dot.className = 'dot offline';
+    pill.textContent = 'сервис недоступен';
+  }
+  try{
+    const info = await api('/info');
+    document.getElementById('dbPill').textContent = 'DB: ' + (info.config.db_dsn || '—');
+  }catch(e){
+    document.getElementById('dbPill').textContent = 'DB: нет доступа (нужен токен?)';
+  }
+}
+
+// ------------------------------------------------------------- onboarding
+async function loadOnboarding(){
+  const el = document.getElementById('onboardingBanner');
+  try{
+    const status = await api('/v1/onboarding/status');
+    if (!status.is_empty && status.demo_missing.length === 0){
+      el.classList.add('hidden');
+      el.innerHTML = '';
+      return;
+    }
+    el.classList.remove('hidden');
+    if (status.total_agents === 0){
+      el.innerHTML = `
+        <div class="onboarding">
+          <h2>👋 Добро пожаловать в MAOS</h2>
+          <p>В базе пока нет ни одного агента. Быстрее всего начать — создать
+             трёх демо-агентов (Coder / Writer / Analyst) одной кнопкой и сразу
+             попробовать чат с автоматическим выбором роли.</p>
+          <div class="steps">
+            <div class="step"><span class="num">1</span><h3>Демо-агенты</h3>
+              <p>Готовые личности с промптами и описаниями для роутера</p></div>
+            <div class="step"><span class="num">2</span><h3>Открыть Чат</h3>
+              <p>Написать сообщение — MAOS сам выберет подходящего агента</p></div>
+            <div class="step"><span class="num">3</span><h3>Своя личность</h3>
+              <p>Во вкладке «Агенты» создать собственную роль под задачу</p></div>
+          </div>
+          <div class="row">
+            <button class="primary" id="ob-seed">Создать демо-агентов</button>
+            <button id="ob-dismiss">Скрыть</button>
+            <span id="ob-msg"></span>
+          </div>
+        </div>`;
+    } else {
+      el.innerHTML = `
+        <div class="warn-box">
+          Не хватает части демо-агентов: ${status.demo_missing.map(s=>`<code>${esc(s)}</code>`).join(', ')}.
+          <button id="ob-seed" style="margin-left:8px">Досоздать</button>
+        </div>`;
+    }
+    document.getElementById('ob-seed')?.addEventListener('click', async ()=>{
+      const msg = document.getElementById('ob-msg');
+      try{
+        const r = await api('/v1/onboarding/seed', {method:'POST', body:'{}'});
+        showToast(r.created.length ? `создано: ${r.created.join(', ')}` : 'уже всё создано');
+        await loadOnboarding();
+        loadOverview();
+        if (!document.getElementById('view-agents').classList.contains('hidden')) loadAgents();
+        if (!document.getElementById('view-chat').classList.contains('hidden')) loadChatAgents();
+      }catch(e){ if (msg) msg.textContent = e.message; }
+    });
+    document.getElementById('ob-dismiss')?.addEventListener('click', ()=>{
+      el.classList.add('hidden');
+    });
+  }catch(e){
+    el.classList.add('hidden');
+  }
 }
 
 // ---------------------------------------------------------------- overview
@@ -226,54 +405,80 @@ async function loadOverview(){
     for (const [label, val] of items){
       const d = document.createElement('div');
       d.className = 'stat';
-      d.innerHTML = `<b>${val}</b>${label}`;
+      d.innerHTML = `<b>${val}</b><span>${label}</span>`;
       grid.appendChild(d);
     }
     const tbody = document.querySelector('#modelsTable tbody');
     tbody.innerHTML = '';
-    for (const row of (s.tokens_by_model||[])){
+    const models = s.tokens_by_model || [];
+    document.getElementById('modelsEmpty').classList.toggle('hidden', models.length > 0);
+    document.getElementById('modelsTable').classList.toggle('hidden', models.length === 0);
+    for (const row of models){
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${row.provider_model}</td><td>${row.messages}</td><td>${row.tokens}</td>`;
+      tr.innerHTML = `<td><code>${esc(row.provider_model)}</code></td><td>${row.messages}</td><td>${row.tokens.toLocaleString()}</td>`;
       tbody.appendChild(tr);
     }
   }catch(e){
     document.getElementById('statsGrid').innerHTML =
-      `<div class="err-box">${e.message}</div>`;
+      `<div class="err-box">${esc(e.message)}</div>`;
   }
+  loadOnboarding();
 }
 
 // ------------------------------------------------------------------ agents
+let editingSlug = null;
+
 async function loadAgents(){
   try{
     const data = await api('/v1/agents');
-    const tbody = document.querySelector('#agentsTable tbody');
-    tbody.innerHTML = '';
-    for (const a of data.agents){
-      const tr = document.createElement('tr');
-      const initial = (a.name||'?').slice(0,1).toUpperCase();
-      tr.innerHTML = `<td><span class="avatar">${a.avatar ? '' : initial}</span></td>
-        <td>${a.slug}</td><td>${a.name}</td><td>${a.llm_ref || '<span class="muted">дефолт</span>'}</td>
-        <td>${a.voice_provider || '<span class="muted">нет</span>'}</td>
-        <td>${a.enabled ? 'да' : 'нет'}</td>
-        <td><span class="clickable" data-edit="${a.slug}">править</span> ·
-            <span class="clickable" data-del="${a.slug}">удалить</span></td>`;
-      tbody.appendChild(tr);
+    const list = document.getElementById('agentsList');
+    document.getElementById('agentsCount').textContent =
+      data.agents.length ? `${data.agents.length} агент(ов)` : 'агентов пока нет';
+    if (!data.agents.length){
+      list.innerHTML = '<div class="empty-hint">Создайте первого агента формой выше — или используйте демо-агентов на вкладке «Обзор»</div>';
+      return;
     }
-    tbody.querySelectorAll('[data-edit]').forEach(el=>{
+    list.innerHTML = '';
+    for (const a of data.agents){
+      const initial = (a.name||'?').slice(0,1).toUpperCase();
+      const card = document.createElement('div');
+      card.className = 'agent-card';
+      card.innerHTML = `
+        <div class="avatar" style="background:${a.avatar ? 'none' : colorFor(a.slug)}">
+          ${a.avatar ? `<img src="${esc(a.avatar)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">` : initial}
+        </div>
+        <div class="body">
+          <div class="name">${esc(a.name)} <span class="badge ${a.enabled?'on':'off'}">${a.enabled?'включён':'выключен'}</span></div>
+          <div class="desc">${esc(a.description) || '<span class="muted">без описания</span>'}</div>
+          <div class="meta">
+            <span>slug: <code>${esc(a.slug)}</code></span>
+            <span>LLM: <code>${esc(a.llm_ref) || 'дефолт'}</code></span>
+            <span>голос: ${a.voice_provider ? esc(a.voice_provider) : '<span class="muted">нет</span>'}</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button data-edit="${esc(a.slug)}">Править</button>
+          <button data-del="${esc(a.slug)}" class="danger">Удалить</button>
+        </div>`;
+      list.appendChild(card);
+    }
+    list.querySelectorAll('[data-edit]').forEach(el=>{
       el.addEventListener('click', ()=>editAgent(el.dataset.edit));
     });
-    tbody.querySelectorAll('[data-del]').forEach(el=>{
+    list.querySelectorAll('[data-del]').forEach(el=>{
       el.addEventListener('click', ()=>deleteAgent(el.dataset.del));
     });
   }catch(e){
-    document.querySelector('#agentsTable tbody').innerHTML =
-      `<tr><td colspan="7" class="err-box">${e.message}</td></tr>`;
+    document.getElementById('agentsList').innerHTML =
+      `<div class="err-box">${esc(e.message)}</div>`;
   }
 }
 async function editAgent(slug){
   try{
     const data = await api('/v1/agents/'+slug);
     const a = data.agent;
+    editingSlug = slug;
+    document.getElementById('agentFormTitle').textContent = 'Редактировать: ' + a.name;
     document.getElementById('a-slug').value = a.slug;
     document.getElementById('a-slug').disabled = true;
     document.getElementById('a-name').value = a.name;
@@ -284,18 +489,36 @@ async function editAgent(slug){
     document.getElementById('a-voice-id').value = a.voice_id;
     document.getElementById('a-llm-ref').value = a.llm_ref;
     document.getElementById('a-prompt').value = a.system_prompt;
+    document.getElementById('a-cancel').classList.remove('hidden');
+    document.getElementById('a-msg').textContent = '';
+    window.scrollTo({top:0, behavior:'smooth'});
   }catch(e){ document.getElementById('a-msg').textContent = e.message; }
 }
+function resetAgentForm(){
+  editingSlug = null;
+  document.getElementById('agentFormTitle').textContent = 'Создать агента';
+  document.getElementById('a-slug').disabled = false;
+  document.getElementById('a-cancel').classList.add('hidden');
+  ['a-slug','a-name','a-desc','a-keywords','a-avatar','a-voice-id','a-llm-ref','a-prompt']
+    .forEach(id=>document.getElementById(id).value='');
+  document.getElementById('a-voice-provider').value = '';
+}
+document.getElementById('a-cancel').addEventListener('click', resetAgentForm);
 async function deleteAgent(slug){
   if (!confirm('Удалить агента ' + slug + '?')) return;
-  try{ await api('/v1/agents/'+slug+'/delete', {method:'POST', body:'{}'}); loadAgents(); }
-  catch(e){ alert(e.message); }
+  try{
+    await api('/v1/agents/'+slug+'/delete', {method:'POST', body:'{}'});
+    showToast('агент удалён');
+    loadAgents();
+  }
+  catch(e){ showToast('ошибка: ' + e.message); }
 }
 document.getElementById('a-save').addEventListener('click', async ()=>{
   const msg = document.getElementById('a-msg');
   const slugInput = document.getElementById('a-slug');
   const slug = slugInput.value.trim();
-  const isEdit = slugInput.disabled;
+  const isEdit = !!editingSlug;
+  if (!slug){ msg.textContent = 'slug обязателен'; msg.className='err-box'; return; }
   const payload = {
     slug, name: document.getElementById('a-name').value.trim(),
     description: document.getElementById('a-desc').value,
@@ -310,9 +533,7 @@ document.getElementById('a-save').addEventListener('click', async ()=>{
     if (isEdit){ await api('/v1/agents/'+slug, {method:'POST', body:JSON.stringify(payload)}); }
     else { await api('/v1/agents', {method:'POST', body:JSON.stringify(payload)}); }
     msg.textContent = 'сохранено'; msg.className='ok-box';
-    slugInput.disabled = false;
-    ['a-slug','a-name','a-desc','a-keywords','a-avatar','a-voice-id','a-llm-ref','a-prompt']
-      .forEach(id=>document.getElementById(id).value='');
+    resetAgentForm();
     loadAgents();
   }catch(e){ msg.textContent = e.message; msg.className='err-box'; }
 });
@@ -332,18 +553,23 @@ async function loadChatAgents(){
 }
 document.getElementById('c-new').addEventListener('click', ()=>{
   document.getElementById('c-conv').value='';
-  document.getElementById('c-log').innerHTML='';
+  document.getElementById('c-log').innerHTML='<div class="chat-empty">Диалог пуст — напишите что-нибудь ниже</div>';
 });
-document.getElementById('c-send').addEventListener('click', async ()=>{
+async function sendChatMessage(){
   const input = document.getElementById('c-input');
   const text = input.value.trim();
   if (!text) return;
   const log = document.getElementById('c-log');
+  const emptyHint = log.querySelector('.chat-empty');
+  if (emptyHint) emptyHint.remove();
   const userDiv = document.createElement('div');
   userDiv.className = 'chat-msg user';
-  userDiv.innerHTML = `<div class="meta">вы</div>${text}`;
+  userDiv.innerHTML = `<div class="meta">вы</div>${esc(text)}`;
   log.appendChild(userDiv);
   input.value = '';
+  log.scrollTop = log.scrollHeight;
+  const sendBtn = document.getElementById('c-send');
+  sendBtn.disabled = true;
   const payload = {message: text};
   const convId = document.getElementById('c-conv').value.trim();
   if (convId) payload.conversation_id = parseInt(convId, 10);
@@ -353,9 +579,14 @@ document.getElementById('c-send').addEventListener('click', async ()=>{
     const data = await api('/v1/chat', {method:'POST', body: JSON.stringify(payload)});
     document.getElementById('c-conv').value = data.conversation_id;
     const agDiv = document.createElement('div');
-    agDiv.className = 'chat-msg';
-    agDiv.innerHTML = `<div class="meta">${data.agent_slug} · ${data.provider_model}` +
-      (data.used_fallback ? ' · fallback' : '') + `</div>${data.answer}`;
+    agDiv.className = 'chat-msg agent';
+    agDiv.style.borderLeft = `3px solid ${colorFor(data.agent_slug)}`;
+    agDiv.innerHTML = `<div class="meta">
+        <b style="color:${colorFor(data.agent_slug)}">${esc(data.agent_slug)}</b>
+        <code>${esc(data.provider_model)}</code>
+        <span class="muted">роутинг: ${esc(data.route_method)}</span>
+        ${data.used_fallback ? '<span class="fallback">⚠ fallback на локальную модель</span>' : ''}
+      </div>${esc(data.answer)}`;
     log.appendChild(agDiv);
     log.scrollTop = log.scrollHeight;
   }catch(e){
@@ -363,7 +594,13 @@ document.getElementById('c-send').addEventListener('click', async ()=>{
     errDiv.className = 'err-box';
     errDiv.textContent = e.message;
     log.appendChild(errDiv);
+  }finally{
+    sendBtn.disabled = false;
   }
+}
+document.getElementById('c-send').addEventListener('click', sendChatMessage);
+document.getElementById('c-input').addEventListener('keydown', (e)=>{
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendChatMessage(); }
 });
 
 // ------------------------------------------------------------------- chain
@@ -372,42 +609,56 @@ async function loadChainView(){
     const data = await api('/v1/chains');
     const tbody = document.querySelector('#ch-history tbody');
     tbody.innerHTML = '';
+    document.getElementById('ch-history-empty').classList.toggle('hidden', data.chains.length > 0);
+    document.getElementById('ch-history').classList.toggle('hidden', data.chains.length === 0);
     for (const c of data.chains){
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${c.id}</td><td>${c.goal}</td><td>${c.status}</td>`;
+      tr.innerHTML = `<td>${c.id}</td><td>${esc(c.goal)}</td><td>${statusBadge(c.status)}</td>`;
       tbody.appendChild(tr);
     }
   }catch(e){}
 }
+function statusBadge(status){
+  const cls = {done:'on', failed:'off', active:'on', stopped:'off', pending:'off'}[status] || 'off';
+  return `<span class="badge ${cls}">${esc(status)}</span>`;
+}
 document.getElementById('ch-start').addEventListener('click', async ()=>{
   const msg = document.getElementById('ch-msg');
+  const btn = document.getElementById('ch-start');
   const goal = document.getElementById('ch-goal').value.trim();
   const agents = document.getElementById('ch-agents').value.trim()
     .split(',').map(s=>s.trim()).filter(Boolean);
   if (!agents.length){ msg.textContent = 'укажите хотя бы одного агента'; return; }
   msg.textContent = 'выполняется…';
+  btn.disabled = true;
   try{
     const data = await api('/v1/chain/start',
       {method:'POST', body: JSON.stringify({goal, agents})});
     msg.textContent = 'статус: ' + data.status;
     const chainData = await api('/v1/chain/' + data.chain_run_id);
-    const tbody = document.querySelector('#ch-steps tbody');
+    const table = document.getElementById('ch-steps');
+    table.classList.remove('hidden');
+    const tbody = table.querySelector('tbody');
     tbody.innerHTML = '';
     for (const s of chainData.steps){
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${s.ord}</td><td>${s.agent_slug}</td><td>${s.status}</td>
-        <td>${(s.answer||s.error||'').slice(0,300)}</td>`;
+      tr.innerHTML = `<td>${s.ord}</td><td>${esc(s.agent_slug)}</td><td>${statusBadge(s.status)}</td>
+        <td>${esc((s.answer||s.error||'').slice(0,300))}</td>`;
       tbody.appendChild(tr);
     }
     loadChainView();
   }catch(e){ msg.textContent = e.message; }
+  finally{ btn.disabled = false; }
 });
 
 // -------------------------------------------------------------------- graph
 async function loadGraph(){
   try{
     const data = await api('/v1/graph');
-    drawGraph(data.nodes||[], data.edges||[]);
+    const nodes = data.nodes || [], edges = data.edges || [];
+    document.getElementById('graphEmpty').classList.toggle('hidden', nodes.length > 0);
+    document.getElementById('graphCanvas').classList.toggle('hidden', nodes.length === 0);
+    drawGraph(nodes, edges);
   }catch(e){}
 }
 function drawGraph(nodes, edges){
@@ -415,36 +666,45 @@ function drawGraph(nodes, edges){
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0,0,W,H);
-  if (!nodes.length){
-    ctx.fillStyle = '#8b91a3'; ctx.fillText('нет данных', 20, 20);
-    return;
-  }
-  // простая круговая раскладка — детерминированная, без физики,
-  // читаемая для небольшого числа узлов онтологии
+  if (!nodes.length) return;
   const pos = {};
   nodes.forEach((n, i)=>{
-    const angle = (2*Math.PI*i)/nodes.length;
-    pos[n.id] = [W/2 + Math.cos(angle)*(W/2-80), H/2 + Math.sin(angle)*(H/2-60)];
+    const angle = (2*Math.PI*i)/nodes.length - Math.PI/2;
+    const r = Math.min(W,H)/2 - 70;
+    pos[n.id] = [W/2 + Math.cos(angle)*r, H/2 + Math.sin(angle)*r];
   });
   ctx.strokeStyle = '#2a2f3d';
   ctx.fillStyle = '#8b91a3';
+  ctx.font = '11px sans-serif';
+  ctx.lineWidth = 1.2;
   for (const e of edges){
     const a = pos[e.source], b = pos[e.target];
     if (!a || !b) continue;
     ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.fillStyle = '#6b7280';
     ctx.fillText(e.pred, (a[0]+b[0])/2, (a[1]+b[1])/2);
   }
   for (const n of nodes){
     const [x,y] = pos[n.id];
-    ctx.fillStyle = '#4a9eff';
-    ctx.beginPath(); ctx.arc(x, y, 6, 0, 2*Math.PI); ctx.fill();
+    const c = colorFor(n.kind);
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, 2*Math.PI); ctx.fill();
     ctx.fillStyle = '#e6e8ee';
-    ctx.fillText(`${n.kind}:${n.name}`, x+8, y+4);
+    ctx.font = '12px sans-serif';
+    ctx.fillText(`${n.kind}:${n.name}`, x+10, y+4);
   }
 }
 
+// ------------------------------------------------------------------- init
+document.getElementById('token').addEventListener('change', ()=>{
+  checkHealth();
+  const active = document.querySelector('nav button.active');
+  if (active) setActiveView(active.dataset.view);
+});
+const startView = (location.hash || '').replace('#','');
 checkHealth();
-loadOverview();
+setActiveView(VIEWS.includes(startView) ? startView : 'overview');
+setInterval(checkHealth, 15000);
 </script>
 </body>
 </html>
