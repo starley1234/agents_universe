@@ -63,12 +63,39 @@
   .plan button{padding:2px 8px;font-size:12px}
   .muted{color:var(--dim)}
   h3{margin:14px 0 6px;font-size:14px;font-weight:600}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+        padding:14px;margin-bottom:14px}
+  .card textarea{width:100%;resize:vertical}
+  .card .row{display:flex;gap:8px;align-items:center;margin-top:8px;
+             flex-wrap:wrap}
+  .card label{color:var(--dim);font-size:12px;display:flex;gap:4px;
+              align-items:center}
+  .job{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+       padding:11px 13px;margin-bottom:9px;display:flex;gap:12px;
+       align-items:flex-start}
+  .job .body{flex:1;min-width:0}
+  .job .goal{word-break:break-word}
+  .job .meta{color:var(--dim);font-size:12px;margin-top:4px}
+  .job .now{margin-top:6px;font-size:13px}
+  .job .decision{margin-top:4px;font-size:12px;color:var(--ask);
+                 background:#241a33;border-left:2px solid var(--ask);
+                 padding:4px 8px;border-radius:0 4px 4px 0}
+  .badge{font-size:11px;padding:2px 9px;border-radius:99px;white-space:nowrap;
+         background:#232733}
+  .badge.queued{color:var(--dim)}
+  .badge.running{color:var(--acc);border:1px solid var(--acc)}
+  .badge.done{color:var(--ok)}
+  .badge.failed,.badge.stopped{color:var(--err)}
+  .live{display:inline-block;width:7px;height:7px;border-radius:50%;
+        background:var(--acc);margin-right:5px;animation:p 1.2s infinite}
+  @keyframes p{50%{opacity:.25}}
 </style>
 </head>
 <body>
 <header>
   <b>Агент</b>
-  <button class="tab on" data-view="work">Работа</button>
+  <button class="tab on" data-view="jobs">Задания</button>
+  <button class="tab" data-view="work">Диалог</button>
   <button class="tab" data-view="runs">Прогоны</button>
   <select id="profile" title="Роль агента"></select>
   <input id="ws" placeholder="рабочая папка" size="16">
@@ -78,7 +105,34 @@
   <button id="clear">Очистить</button>
 </header>
 
-<div id="work" class="view on"></div>
+<div id="jobs" class="view on">
+  <div class="card">
+    <b>Поставить задание и закрыть вкладку</b>
+    <div class="muted" style="margin:6px 0 10px">
+      Работает фоновый исполнитель на сервере. Задание переживёт
+      закрытие браузера, выход из SSH и перезагрузку сервера.
+      Не успеет за один подход — продолжит сам, пока не доделает.
+      Оркестратор по ходу решает, какого агента подключить:
+      сменит исполнителя, добавит шаг, назначит проверку.
+    </div>
+    <textarea id="jgoal" rows="3"
+      placeholder="Например: разобрать договоры из in/, собрать реестр в xlsx и прислать мне на почту"></textarea>
+    <div class="row">
+      <select id="jprofile" title="Кто выполняет"></select>
+      <label title="сколько работать за один подход; не успеет — продолжит">
+        часов <input id="jhours" type="number" value="2" min="0.1"
+             step="0.5" style="width:64px"></label>
+      <label>предел $ <input id="jusd" type="number" value="0" min="0"
+             step="0.5" style="width:64px" title="0 — без предела"></label>
+      <input id="jnotify" placeholder="сообщить: почта или tg:id"
+             style="flex:1;min-width:150px">
+      <button id="jadd">В работу</button>
+    </div>
+    <div id="jhint" class="muted" style="margin-top:8px"></div>
+  </div>
+  <div id="jlist"></div>
+</div>
+<div id="work" class="view"></div>
 <div id="runs" class="view"></div>
 
 <footer>
@@ -255,6 +309,125 @@ async function run(){
   }
 }
 
+/* ─────────────── задания: поставил и забыл ─────────────── */
+const JST = {queued: 'в очереди', running: 'работает', done: 'готово',
+             failed: 'ошибка', stopped: 'снято'};
+// Задание, вернувшееся на следующий подход, тоже «в очереди» — но
+// человеку важно видеть, что работа продолжается, а не началась заново.
+function jword(j){
+  return j.status === 'queued' && j.rounds ? 'продолжит' : JST[j.status];
+}
+
+async function addJob(){
+  const goal = $('#jgoal').value.trim();
+  if (!goal){ $('#jgoal').focus(); return; }
+  $('#jadd').disabled = true;
+  try{
+    const d = await api('/jobs', {method:'POST', body: JSON.stringify({
+      goal, profile: $('#jprofile').value,
+      hours: parseFloat($('#jhours').value) || 1,
+      max_usd: parseFloat($('#jusd').value) || 0,
+      notify: $('#jnotify').value.trim()})});
+    $('#jgoal').value = '';
+    $('#jhint').textContent = `Задание #${d.id} принято — ${d.reason}. `
+      + `Можно закрыть вкладку: сервер доведёт работу до конца.`;
+    loadJobs();
+  }catch(e){
+    $('#jhint').textContent = 'Не принято: ' + e.message;
+  }finally{ $('#jadd').disabled = false; }
+}
+
+async function stopJob(id){
+  try{
+    await api('/jobs/stop', {method:'POST', body: JSON.stringify({id})});
+    loadJobs();
+  }catch(e){ alert('Не снять: ' + e.message); }
+}
+
+function ago(ts){
+  if (!ts) return '';
+  const s = Math.max(0, Date.now()/1000 - ts);
+  if (s < 60) return `${Math.round(s)} с назад`;
+  if (s < 3600) return `${Math.round(s/60)} мин назад`;
+  if (s < 86400) return `${(s/3600).toFixed(1)} ч назад`;
+  return `${Math.round(s/86400)} дн назад`;
+}
+
+async function loadJobs(){
+  let d;
+  try{ d = await api('/jobs'); }
+  catch(e){ $('#jlist').innerHTML =
+    `<div class="msg err">Не загрузить очередь: ${escapeHtml(e.message)}</div>`;
+    return; }
+  const list = $('#jlist');
+  if (!d.jobs || !d.jobs.length){
+    list.innerHTML = '<div class="muted">Заданий пока нет. '
+      + 'Поставьте первое — и займитесь своими делами.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  d.jobs.forEach(j => {
+    const el = document.createElement('div');
+    el.className = 'job';
+    const live = j.status === 'running' ? '<span class="live"></span>' : '';
+    const when = j.status === 'running'
+      ? `начато ${ago(j.started)}` + (j.heartbeat
+          ? `, отклик ${ago(j.heartbeat)}` : '')
+      : (j.finished ? `завершено ${ago(j.finished)}`
+                    : `поставлено ${ago(j.created)}`);
+    const parts = [when];
+    if (j.profile) parts.push(`роль ${escapeHtml(j.profile)}`);
+    if (j.hours) parts.push(`до ${j.hours} ч`);
+    if (j.max_usd > 0) parts.push(`≤ $${j.max_usd}`);
+    if (j.rounds) parts.push(`подход ${j.rounds}/${j.max_rounds}`);
+    if (j.progress) parts.push(`сделано ${j.progress}`);
+    if (j.status === 'queued' && j.next_at * 1000 > Date.now())
+      parts.push(`продолжит через ${Math.round(j.next_at - Date.now()/1000)} с`);
+    if (j.notify) parts.push(`сообщит: ${escapeHtml(j.notify)}`);
+
+    // Что происходит прямо сейчас — главное для того, кто ушёл и
+    // вернулся. Без этого веб показывает серую полоску часами.
+    const n = j.now || {};
+    let now = '';
+    if (n.step){
+      const who = n.agent ? `<b style="color:var(--acc)">${escapeHtml(n.agent)}</b> · ` : '';
+      now = `<div class="now">${n.doing ? '▶' : '⏱'} ${who}`
+          + `${escapeHtml(n.step)}`
+          + (n.total ? ` <span class="muted">(${n.done}/${n.total})</span>` : '')
+          + `</div>`;
+    }
+    if (n.decision)
+      now += `<div class="decision">⚙ оркестратор: ${escapeHtml(n.decision)}</div>`;
+
+    el.innerHTML =
+      `<span class="badge ${j.status}">${live}${jword(j) || j.status}</span>`
+      + `<div class="body"><div class="goal">#${j.id} `
+      + `${escapeHtml(j.goal)}</div>`
+      + now
+      + `<div class="meta">${parts.join(' · ')}</div>`
+      + (j.result ? `<div class="meta" style="white-space:pre-wrap">`
+                    + `${escapeHtml(String(j.result).slice(0,400))}</div>` : '')
+      + `</div>`;
+    const acts = document.createElement('div');
+    if (j.status === 'queued' || j.status === 'running'){
+      const b = document.createElement('button');
+      b.textContent = 'снять'; b.onclick = () => stopJob(j.id);
+      acts.appendChild(b);
+    }
+    if (j.run_id){
+      const b = document.createElement('button');
+      b.textContent = 'ход работы';
+      b.onclick = () => {
+        document.querySelector('.tab[data-view="runs"]').click();
+        openRun(j.run_id);
+      };
+      acts.appendChild(b);
+    }
+    el.appendChild(acts);
+    list.appendChild(el);
+  });
+}
+
 /* ─────────────── прогоны ─────────────── */
 const MARK = {open:'[ ]', doing:'[~]', done:'[x]', failed:'[!]',
               skipped:'[-]', blocked:'[?]'};
@@ -358,11 +531,19 @@ async function openRun(id){
     runsView.appendChild(h);
     const pre = document.createElement('pre');
     pre.style.cssText = 'font-size:12px;color:var(--dim);white-space:pre-wrap';
-    pre.textContent = d.events.map(e => {
+    // Решение оркестратора — не рядовая строка журнала: по нему видно,
+    // почему работа пошла иначе, чем планировалось.
+    pre.innerHTML = d.events.map(e => {
       const t = e.created ? new Date(e.created*1000)
                   .toLocaleTimeString('ru-RU') : '';
-      return `${t}  ${e.kind.padEnd(7)} ${(e.name||'').slice(0,22).padEnd(22)} ` +
-             `${(e.summary||'').slice(0,70)}`;
+      const line = `${t}  ${e.kind.padEnd(11)} `
+        + `${escapeHtml((e.name||'').slice(0,22).padEnd(22))} `
+        + `${escapeHtml((e.summary||'').slice(0,70))}`;
+      if (e.kind === 'orchestrate')
+        return `<span style="color:var(--ask)">⚙ ${line}</span>`;
+      if (e.kind === 'error')
+        return `<span style="color:var(--err)">${line}</span>`;
+      return line;
     }).join('\n');
     runsView.appendChild(pre);
   }
@@ -385,11 +566,19 @@ async function loadInfo(){
     const o = document.createElement('option');
     o.value = ''; o.textContent = '(выбрать самому)';
     sel.appendChild(o);
+    const jsel = $('#jprofile');
+    jsel.innerHTML = '';
+    const jo = document.createElement('option');
+    jo.value = ''; jo.textContent = '(подобрать самому)';
+    jsel.appendChild(jo);
     (d.profiles || []).forEach(p => {
       const x = document.createElement('option');
       x.value = p; x.textContent = p;
       if (p === d.config.profile) x.selected = true;
       sel.appendChild(x);
+      const y = document.createElement('option');
+      y.value = p; y.textContent = p;
+      jsel.appendChild(y);
     });
     if (!d.config.profile) o.selected = true;
   }catch(e){
@@ -404,8 +593,18 @@ document.querySelectorAll('.tab').forEach(b => {
     b.classList.add('on');
     $('#' + b.dataset.view).classList.add('on');
     if (b.dataset.view === 'runs') loadRuns();
+    if (b.dataset.view === 'jobs') loadJobs();
   };
 });
+$('#jadd').onclick = addJob;
+$('#jgoal').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addJob();
+});
+// Обновляем очередь сама: человек видит, как идёт работа, не нажимая
+// ничего. Ради этого экрана всё и затевалось.
+setInterval(() => {
+  if ($('#jobs').classList.contains('on')) loadJobs();
+}, 5000);
 $('#send').onclick = run;
 $('#stop').onclick = () => controller && controller.abort();
 $('#clear').onclick = () => { work.innerHTML = ''; shownAsks.clear(); };
@@ -414,6 +613,7 @@ $('#task').addEventListener('keydown', e => {
 });
 $('#token').addEventListener('change', loadInfo);
 loadInfo();
+loadJobs();
 // Вопрос мог остаться висеть после перезагрузки вкладки — подбираем.
 poller = setInterval(pollAsks, 3000);
 pollAsks();

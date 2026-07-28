@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from .core import Agent
 from .dispatch import choose_profile
+from .orchestrator import Orchestrator
 from .llm.base import price_of
 from .store import Store
 
@@ -162,6 +163,7 @@ class AutoRunner:
         known_profiles: list[str] | None = None,
         decompose: bool = False,
         profile_hints: dict[str, str] | None = None,
+        orchestrator: "Orchestrator | None" = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self.make_agent = agent_factory
@@ -183,6 +185,9 @@ class AutoRunner:
         # плоского списка строк.
         self.decompose = decompose
         self.profile_hints = profile_hints or {}
+        # Оркестратор решает после шага, что делать дальше. Без него
+        # работа идёт строго по плану, как раньше.
+        self.boss = orchestrator
 
     def _agent_for(self, profile: str | None) -> Agent:
         """Агент под профиль. Фабрика может его не принимать — тогда
@@ -321,6 +326,72 @@ class AutoRunner:
                              f"{reason}; было {dropped}, стало {len(titles)}")
         self._emit("replan", reason=reason, items=titles, dropped=dropped)
         return True
+
+    def _orchestrate(self, task: dict[str, Any], result: str,
+                     status: str, reason: str) -> bool:
+        """Спросить оркестратора и выполнить решение.
+
+        Возвращает True, если он велел закончить прогон.
+        """
+        goal = self.store.get_run(self.run_id)["goal"]
+        plan = self.store.tasks(self.run_id)
+        facts = [f["text"] for f in self.store.recall(goal, limit=6)]
+        d = self.boss.decide(goal, task, result, status, plan, facts, reason)
+
+        if d.action == "дальше":
+            if d.why:
+                self._emit("orchestrate", action="дальше", why=d.why)
+            return False
+
+        self._emit("orchestrate", action=d.action, why=d.why,
+                   explain=d.explain())
+        self.store.log_event(self.run_id, 0, "orchestrate", d.action,
+                             d.why[:200])
+
+        if d.action == "сменить":
+            # Пункт возвращается в работу другому исполнителю: провал
+            # мог быть не в задаче, а в том, кому её дали.
+            self.store.set_task_profile(task["id"], d.who)
+            self.store.set_task(task["id"], "open",
+                                f"передан агенту {d.who}: {d.why[:150]}")
+            self.boss.note_reassign(task["id"])
+            self.last_profile = None      # объявим передачу заново
+            return False
+
+        if d.action == "проверить":
+            # Сверка — отдельный шаг, а не переделка: результат остаётся,
+            # но другой агент его перепроверит.
+            ids = self.store.add_steps(self.run_id, [{
+                "title": f"проверить результат шага «{task['title'][:60]}»",
+                "profile": d.who,
+                "check": "подтвердить или опровергнуть числами"}])
+            self.boss.note_added(len(ids))
+            return False
+
+        if d.action == "добавить":
+            ids = self.store.add_steps(self.run_id, d.steps)
+            self.boss.note_added(len(ids))
+            self._emit("plan_grew", items=[s["title"] for s in d.steps])
+            return False
+
+        if d.action == "пропустить":
+            by_id = {t["id"]: t for t in plan}
+            for tid in d.items:
+                t = by_id.get(tid)
+                if t and t["status"] in ("open", "doing"):
+                    self.store.set_task(tid, "skipped",
+                                        f"снят оркестратором: {d.why[:150]}")
+            return False
+
+        if d.action == "закончить":
+            # Оставшиеся пункты закрываем явно, чтобы в итоге было видно,
+            # что они не забыты, а признаны ненужными.
+            for t in plan:
+                if t["status"] in ("open", "doing"):
+                    self.store.set_task(t["id"], "skipped",
+                                        f"не нужен: {d.why[:150]}")
+            return True
+        return False
 
     def _context(self, task: dict[str, Any], warn: str) -> str:
         extra = ""
@@ -526,10 +597,25 @@ class AutoRunner:
                 self._emit("parent_done", task=parent["title"],
                            result=parent["result"])
 
-            if self._reflect(task, res.answer):
-                stuck_streak += 1
-            else:
-                stuck_streak = 0
+            stuck_now = self._reflect(task, res.answer)
+            stuck_streak = stuck_streak + 1 if stuck_now else 0
+
+            # Оркестратор смотрит на РЕЗУЛЬТАТ и решает, что дальше.
+            # До этого план исполнялся механически: знание, добытое на
+            # третьем шаге, никак не влияло на четвёртый.
+            if self.boss is not None:
+                fresh2 = [t for t in self.store.tasks(self.run_id)
+                          if t["id"] == task["id"]][0]
+                done_n = sum(1 for t in self.store.tasks(self.run_id)
+                             if t["status"] == "done")
+                why = self.boss.reason(fresh2, res.answer,
+                                       fresh2["status"], done_n, stuck_now)
+                if why:
+                    if self._orchestrate(task, res.answer, fresh2["status"],
+                                         why):
+                        stop = "done"
+                        break
+                    stuck_streak = 0
 
             # Плохой план чиним перепланированием, а не упорством.
             fails = sum(1 for t in self.store.tasks(self.run_id)
@@ -587,6 +673,8 @@ class AutoRunner:
                f"${self.max_usd:.2f}. План не доделан — продолжить можно "
                f"командой --resume {self.run_id} с большим --max-usd."
                if stop == "budget" else "")
+            + (f"\n{self.boss.report()}" if self.boss
+               and self.boss.report() else "")
             + ask_block + dead_block
         )
         self._emit("finish", summary=summary, stopped_by=stop)

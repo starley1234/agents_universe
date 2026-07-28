@@ -130,7 +130,7 @@ def cmd_chat(cfg: Config, verbose: bool, color: bool) -> int:
 def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
              resume: int | None, verbose: bool, color: bool,
              max_usd: float = 0.0, route: bool = False,
-             decompose: bool = False) -> int:
+             decompose: bool = False, orchestrate: bool = False) -> int:
     """Автономный прогон: часы работы без человека."""
     tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
     store = Store(cfg.db)
@@ -174,6 +174,11 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
             c = data.get("cost", 0)
             print(tint(C_DIM, f"  расход: {data['tokens']:,} токенов"
                               + (f", ${c:.4f}" if c else "")))
+        elif kind == "orchestrate":
+            print(tint(C_ACC, f"\n⚙ оркестратор: {data.get('explain') or data['action']}"))
+        elif kind == "plan_grew":
+            for t in data.get("items", []):
+                print(tint(C_ACC, f"   + {t}"))
         elif kind == "split":
             print(tint(C_ACC, f"\n⑂ пункт разбит на подшаги: {data['task']}"))
             for t in data.get("items", []):
@@ -221,12 +226,26 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
             tint(C_ERR, f"  ! сбой связи ({why[:60]}), повтор {n} через {delay:.0f} с"))
         return a
 
+    boss = None
+    if orchestrate:
+        from .llm import build_llm
+        from .orchestrator import Orchestrator
+        # Оркестратору нужна модель посильнее: он принимает решения,
+        # а не выполняет работу. Берём сильную из маршрутизации, если
+        # она задана, иначе основную.
+        model = getattr(cfg, "model_strong", "") or cfg.model
+        boss = Orchestrator(
+            build_llm(cfg.provider, model, base_url=cfg.base_url,
+                      api_key=cfg.api_key, temperature=cfg.temperature),
+            Config.profile_hints())
+
     runner = AutoRunner(factory, store, max_hours=hours,
                         max_iterations=iters, max_usd=max_usd,
                         route_tasks=route or decompose,
                         known_profiles=Config.list_profiles(),
                         decompose=decompose,
                         profile_hints=Config.profile_hints(),
+                        orchestrator=boss,
                         on_event=on_event)
 
     # run_id появляется внутри runner — прокидываем его инструментам памяти
@@ -311,8 +330,11 @@ def cmd_do(cfg: Config, task: str, verbose: bool, color: bool,
         # задача почти всегда состоит из разнородных пунктов.
         # В простом режиме декомпозиция включена: длинная задача почти
         # всегда состоит из разнородных шагов с зависимостями.
+        # В простом режиме оркестратор включён: человек поставил задачу
+        # и ушёл — решать по ходу больше некому.
         return cmd_auto(cfg, task, hours, iters, None, verbose, color,
-                        max_usd, route=True, decompose=True)
+                        max_usd, route=True, decompose=True,
+                        orchestrate=True)
     return cmd_run(cfg, task, verbose, color)
 
 
@@ -483,6 +505,94 @@ def cmd_debates(cfg: Config, color: bool) -> int:
     return 0
 
 
+def cmd_job(cfg: Config, goal: str, hours: float, max_usd: float,
+            notify: str, color: bool, rounds_limit: int = 20) -> int:
+    """Поставить задание в очередь и выйти. Работать будет исполнитель."""
+    tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
+    store = Store(cfg.db)
+    profile = cfg.profile or ""
+    pick = choose_profile(goal, Config.list_profiles())
+    if not profile and pick.profile:
+        profile = pick.profile
+    jid = store.add_job(goal, profile=profile, hours=hours,
+                        max_usd=max_usd, notify=notify,
+                        max_rounds=rounds_limit)
+    waiting = len(store.jobs(status="queued"))
+    print(tint(C_OK, f"Задание #{jid} принято"))
+    print(f"  {pick.explain()}")
+    print(f"  подходов: до {rounds_limit}")
+    print(f"  бюджет: {hours} ч на подход"
+          + (f", ${max_usd:.2f}" if max_usd > 0 else "")
+          + (f", сообщу на {notify}" if notify else ""))
+    print(tint(C_DIM, f"  в очереди: {waiting}"))
+    print()
+    print("Можно закрывать терминал. Если за подход работа не кончится,")
+    print("исполнитель продолжит её сам — и так до готовности.")
+    print(tint(C_DIM, "  состояние:  python3 -m agent --jobs"))
+    print(tint(C_DIM, "  исполнитель: systemctl status agent-worker"))
+    return 0
+
+
+def cmd_jobs(cfg: Config, stop_id: int, color: bool) -> int:
+    """Очередь заданий."""
+    tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
+    store = Store(cfg.db)
+    if stop_id:
+        ok = store.stop_job(stop_id)
+        print(f"Задание #{stop_id} " + ("снято" if ok else
+              "уже завершено или не найдено"))
+        return 0 if ok else 1
+
+    store.revive_stale_jobs()
+    rows = store.jobs(30)
+    if not rows:
+        print("Заданий нет. Поставить: python3 -m agent --job \"цель\"")
+        return 0
+    col = {"queued": C_DIM, "running": C_ACC, "done": C_OK,
+           "failed": C_ERR, "stopped": C_ERR}
+    word = {"queued": "в очереди", "running": "работает", "done": "готово",
+            "failed": "ошибка", "stopped": "снято"}
+    print(f"Задания в {cfg.db}\n" + "─" * 72)
+    for j in rows:
+        st = tint(col.get(j["status"], C_DIM),
+                  f"{word.get(j['status'], j['status']):<10}")
+        print(f"#{j['id']:<4} {st} {j['goal'][:48]}")
+        bits = []
+        if j["profile"]:
+            bits.append(f"роль {j['profile']}")
+        if j["run_id"]:
+            bits.append(f"прогон #{j['run_id']}")
+        if j["rounds"]:
+            bits.append(f"подход {j['rounds']}/{j['max_rounds']}")
+        if j["progress"]:
+            bits.append(f"сделано {j['progress']}")
+        if j["status"] == "queued" and j["next_at"] and \
+                j["next_at"] > time.time():
+            bits.append(f"продолжит через "
+                        f"{int(j['next_at'] - time.time())} с")
+        if j["status"] == "running" and j["heartbeat"]:
+            bits.append(f"отклик {int(time.time() - j['heartbeat'])} с назад")
+        if bits:
+            print(tint(C_DIM, "      " + ", ".join(bits)))
+        # Что делается прямо сейчас и кем — важнее сухого «работает».
+        now = j.get("now") or {}
+        if now.get("step"):
+            who = f"{now['agent']} · " if now.get("agent") else ""
+            mark = "▶" if now.get("doing") else "⏱"
+            tail = (f"  ({now['done']}/{now['total']})"
+                    if now.get("total") else "")
+            print(tint(C_ACC, f"      {mark} {who}{now['step'][:60]}{tail}"))
+        if now.get("decision"):
+            print(tint(C_ACC, f"      ⚙ оркестратор: "
+                              f"{now['decision'][:90]}"))
+        if j["result"]:
+            first = str(j["result"]).strip().splitlines()[0]
+            print(tint(C_DIM, f"      → {first[:100]}"))
+    print("─" * 72)
+    print(tint(C_DIM, "снять задание: python3 -m agent --jobs-stop N"))
+    return 0
+
+
 def cmd_runs(cfg: Config, run_id: int, limit: int, color: bool) -> int:
     """История прогонов. Данные копились в базе, смотреть их было нечем."""
     tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
@@ -650,6 +760,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="в --debate: модель_a,модель_b,арбитр")
     ap.add_argument("--route", action="store_true",
                     help="в --auto: каждый пункт плана своему агенту")
+    ap.add_argument("--job", action="store_true",
+                    help="поставить задание в очередь и выйти "
+                         "(работает фоновый исполнитель)")
+    ap.add_argument("--jobs", action="store_true", help="очередь заданий")
+    ap.add_argument("--jobs-stop", type=int, metavar="N", dest="jobs_stop",
+                    help="снять задание из очереди")
+    ap.add_argument("--rounds-limit", type=int, default=20,
+                    dest="rounds_limit",
+                    help="в --job: предел подходов к работе (по умолчанию 20)")
+    ap.add_argument("--notify", default="",
+                    help="куда сообщить о готовности: почта или tg:id")
+    ap.add_argument("--orchestrate", action="store_true",
+                    help="в --auto: оркестратор решает после каждого шага, "
+                         "кого подключить дальше")
     ap.add_argument("--decompose", action="store_true",
                     help="в --auto: разбить задачу на шаги с исполнителями "
                          "и порядком выполнения")
@@ -685,6 +809,17 @@ def main(argv: list[str] | None = None) -> int:
                                             "ГОДИТСЯ С ОГОВОРКАМИ" else 2)
     if args.protocol:
         return cmd_protocol(cfg, args.protocol, args.summarize, color)
+    if args.jobs or args.jobs_stop:
+        return cmd_jobs(cfg, args.jobs_stop or 0, color)
+    if args.job:
+        goal = " ".join(args.task)
+        if not goal:
+            print(f"{C_ERR}Для --job нужна задача{C_OFF}", file=sys.stderr)
+            return 2
+        return cmd_job(cfg, goal, args.hours or cfg.max_hours,
+                       args.max_usd if args.max_usd is not None
+                       else cfg.max_usd, args.notify, color,
+                       args.rounds_limit)
     if args.debates:
         return cmd_debates(cfg, color)
     if args.debate:
@@ -720,7 +855,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.resume, args.verbose, color,
                         args.max_usd if args.max_usd is not None
                         else cfg.max_usd,
-                        args.route, args.decompose)
+                        args.route, args.decompose, args.orchestrate)
     try:
         if args.task:
             return cmd_run(cfg, " ".join(args.task), args.verbose, color)

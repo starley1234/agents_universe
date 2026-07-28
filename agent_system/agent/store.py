@@ -157,6 +157,31 @@ CREATE INDEX IF NOT EXISTS ix_turn_debate ON turn(debate_id, round);
 CREATE INDEX IF NOT EXISTS ix_turn_sig ON turn(debate_id, sig);
 CREATE INDEX IF NOT EXISTS ix_branch_debate ON branch(debate_id);
 
+-- Очередь заданий: поставил и забыл. Задание переживает выход из SSH,
+-- закрытие браузера и перезагрузку сервера — работает фоновый
+-- исполнитель, а не терминал пользователя.
+CREATE TABLE IF NOT EXISTS job(
+  id INTEGER PRIMARY KEY,
+  goal TEXT NOT NULL,
+  profile TEXT DEFAULT '',
+  status TEXT DEFAULT 'queued',  -- queued|running|done|failed|stopped
+  run_id INTEGER,                -- прогон, в котором выполняется
+  hours REAL DEFAULT 1.0,
+  max_usd REAL DEFAULT 0,
+  decompose INTEGER DEFAULT 1,
+  notify TEXT DEFAULT '',        -- куда сообщить о готовности
+  attempts INTEGER DEFAULT 0,    -- сколько раз брали в работу
+  rounds INTEGER DEFAULT 0,      -- сколько подходов к работе сделано
+  max_rounds INTEGER DEFAULT 20, -- предел подходов: не вечный двигатель
+  progress TEXT DEFAULT '',      -- сколько пунктов было сделано в прошлый раз
+  next_at REAL DEFAULT 0,        -- когда можно продолжить (пауза после сбоя)
+  worker TEXT DEFAULT '',        -- кто взял: host:pid
+  heartbeat REAL,                -- когда исполнитель отметился живым
+  result TEXT,
+  created REAL, started REAL, finished REAL
+);
+CREATE INDEX IF NOT EXISTS ix_job_status ON job(status, id);
+
 CREATE INDEX IF NOT EXISTS ix_event_run ON event(run_id, step);
 CREATE INDEX IF NOT EXISTS ix_event_sig ON event(run_id, sig);
 CREATE INDEX IF NOT EXISTS ix_task_run ON task(run_id, status);
@@ -815,6 +840,164 @@ class Store:
             "UPDATE branch SET status=?, verdict=? WHERE id=?",
             (status, verdict[:2000], branch_id))
         self.db.commit()
+
+    # ------------------------------------------------------- очередь
+    def add_job(self, goal: str, profile: str = "", hours: float = 1.0,
+                max_usd: float = 0.0, decompose: bool = True,
+                notify: str = "", max_rounds: int = 20) -> int:
+        cur = self.db.execute(
+            "INSERT INTO job(goal,profile,hours,max_usd,decompose,notify,"
+            "max_rounds,created) VALUES(?,?,?,?,?,?,?,?)",
+            (goal.strip(), profile, hours, max_usd, int(decompose), notify,
+             max(1, max_rounds), self._now()))
+        self.db.commit()
+        return int(cur.lastrowid)
+
+    def take_job(self, worker: str) -> dict[str, Any] | None:
+        """Взять задание в работу. Атомарно: две копии исполнителя не
+        должны взять одно и то же.
+
+        UPDATE ... WHERE status='queued' выполняется одной операцией,
+        поэтому второй исполнитель получит rowcount=0 и пойдёт дальше.
+        """
+        # next_at: после неудачного подхода задание отдыхает. Иначе
+        # исполнитель молотит его в цикле, сжигая деньги на одном и том
+        # же месте.
+        row = self.db.execute(
+            "SELECT id FROM job WHERE status='queued' "
+            "AND COALESCE(next_at,0) <= ? ORDER BY id LIMIT 1",
+            (self._now(),)).fetchone()
+        if not row:
+            return None
+        cur = self.db.execute(
+            "UPDATE job SET status='running', worker=?, started=?, "
+            "heartbeat=?, attempts=attempts+1 "
+            "WHERE id=? AND status='queued'",
+            (worker, self._now(), self._now(), row["id"]))
+        self.db.commit()
+        if cur.rowcount == 0:
+            return None            # успел другой исполнитель
+        return self.get_job(int(row["id"]))
+
+    def beat_job(self, job_id: int, run_id: int | None = None) -> None:
+        """Отметиться живым. По этой отметке видно зависшее задание."""
+        if run_id:
+            self.db.execute("UPDATE job SET heartbeat=?, run_id=? WHERE id=?",
+                            (self._now(), run_id, job_id))
+        else:
+            self.db.execute("UPDATE job SET heartbeat=? WHERE id=?",
+                            (self._now(), job_id))
+        self.db.commit()
+
+    def continue_job(self, job_id: int, result: str, progress: str,
+                     delay: float = 0.0) -> bool:
+        """Вернуть задание в очередь для СЛЕДУЮЩЕГО подхода.
+
+        Кончилось время, исчерпан бюджет шага, агент забуксовал — работа
+        не закончена, но и не провалена. Раньше такое помечалось
+        «failed» и бросалось: «поставил и забыл» превращалось в «поставил
+        и проверяй». Теперь задание продолжится с того же прогона.
+
+        Возвращает False, если подходы исчерпаны.
+        """
+        row = self.get_job(job_id)
+        if row is None:
+            return False
+        rounds = int(row["rounds"] or 0) + 1
+        if rounds >= int(row["max_rounds"] or 20):
+            self.db.execute(
+                "UPDATE job SET status='failed', rounds=?, result=?, "
+                "finished=? WHERE id=?",
+                (rounds, f"{result}\n\nПодходы исчерпаны ({rounds}): "
+                 "работа не доведена до конца.", self._now(), job_id))
+            self.db.commit()
+            return False
+        self.db.execute(
+            "UPDATE job SET status='queued', rounds=?, result=?, "
+            "progress=?, next_at=?, worker='' WHERE id=?",
+            (rounds, result, progress, self._now() + max(0.0, delay), job_id))
+        self.db.commit()
+        return True
+
+    def finish_job(self, job_id: int, status: str, result: str = "") -> None:
+        self.db.execute(
+            "UPDATE job SET status=?, result=?, finished=? WHERE id=?",
+            (status, result[:4000], self._now(), job_id))
+        self.db.commit()
+
+    def get_job(self, job_id: int) -> dict[str, Any] | None:
+        r = self.db.execute("SELECT * FROM job WHERE id=?",
+                            (job_id,)).fetchone()
+        return dict(r) if r else None
+
+    def jobs(self, limit: int = 30, status: str = "") -> list[dict[str, Any]]:
+        sql = "SELECT * FROM job"
+        args: list[Any] = []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        rows = [dict(r) for r in self.db.execute(sql, args)]
+        # Человеку, поставившему задание и ушедшему, важно не «running»,
+        # а ЧТО именно сейчас делается и кем. Без этого веб показывает
+        # серую полоску часами.
+        for row in rows:
+            row["now"] = self.job_now(row) if row["run_id"] else {}
+        return rows
+
+    def job_now(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Что происходит по заданию прямо сейчас: шаг, агент, решения."""
+        rid = job.get("run_id")
+        if not rid:
+            return {}
+        tasks = self.tasks(rid)
+        doing = next((t for t in tasks if t["status"] == "doing"), None)
+        nxt = doing or next((t for t in tasks if t["status"] == "open"), None)
+        last = self.db.execute(
+            "SELECT name, summary, created FROM event WHERE run_id=? "
+            "AND kind='orchestrate' ORDER BY id DESC LIMIT 1",
+            (rid,)).fetchone()
+        return {
+            "step": (nxt or {}).get("title", ""),
+            "agent": (nxt or {}).get("profile", ""),
+            "doing": bool(doing),
+            "done": sum(1 for t in tasks if t["status"] in ("done", "skipped")),
+            "total": len(tasks),
+            "decision": (f"{last['name']}: {last['summary']}"
+                         if last else ""),
+        }
+
+    def stop_job(self, job_id: int) -> bool:
+        """Снять задание. Работающее пометится и остановится на шаге."""
+        cur = self.db.execute(
+            "UPDATE job SET status='stopped', finished=? "
+            "WHERE id=? AND status IN ('queued','running')",
+            (self._now(), job_id))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def revive_stale_jobs(self, older_than: float = 300.0) -> int:
+        """Вернуть в очередь задания, чей исполнитель умер.
+
+        Сервер перезагрузили или процесс убили — задание осталось
+        «running» навсегда. Ждать вечно нельзя: по отсутствию отметки
+        видно, что за ним никого нет.
+        """
+        edge = self._now() - older_than
+        cur = self.db.execute(
+            "UPDATE job SET status='queued', worker='' "
+            "WHERE status='running' AND COALESCE(heartbeat,0) < ? "
+            "AND attempts < 3", (edge,))
+        # Трижды падавшее задание не гоняем по кругу: скорее всего,
+        # дело в нём самом, а не в случайном сбое.
+        self.db.execute(
+            "UPDATE job SET status='failed', finished=?, "
+            "result='исполнитель не отвечает, попытки исчерпаны' "
+            "WHERE status='running' AND COALESCE(heartbeat,0) < ? "
+            "AND attempts >= 3", (self._now(), edge))
+        self.db.commit()
+        return cur.rowcount
 
     def recent_events(self, run_id: int, limit: int = 12) -> list[dict[str, Any]]:
         return [dict(r) for r in self.db.execute(

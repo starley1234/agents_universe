@@ -8,6 +8,9 @@
   POST /dispatch        — какой профиль возьмёт задачу и почему
   GET  /questions       — вопросы агента, ждущие ответа
   POST /answer          — {"id": 1, "text": "…"} — ответить агенту
+  POST /jobs            — поставить задание в очередь («поставил и забыл»)
+  GET  /jobs            — очередь и её состояние
+  POST /jobs/stop       — снять задание
   GET  /runs            — история прогонов
   GET  /runs/N          — прогон целиком: план, расход, журнал
   POST /plan            — {"run_id": N, "task_id": M, "status": "done"}
@@ -112,6 +115,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
+        if self.path == "/jobs":
+            store = Store(self.cfg.db)
+            try:
+                store.revive_stale_jobs()
+                self._send(200, {"jobs": store.jobs(30)})
+            finally:
+                store.close()
+            return
         if self.path == "/questions":
             self._send(200, {"questions": self.box.pending()})
             return
@@ -135,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
         if self.path not in ("/run", "/run/stream", "/answer", "/plan",
-                             "/dispatch"):
+                             "/dispatch", "/jobs", "/jobs/stop"):
             self._send(404, {"error": f"нет маршрута {self.path}"})
             return
 
@@ -144,6 +155,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "ожидается JSON в теле запроса"})
             return
 
+        if self.path == "/jobs":
+            self._add_job(data)
+            return
+        if self.path == "/jobs/stop":
+            store = Store(self.cfg.db)
+            try:
+                ok = store.stop_job(int(data.get("id", 0)))
+            finally:
+                store.close()
+            self._send(200 if ok else 404,
+                       {"status": "ok"} if ok else
+                       {"error": "задание уже завершено или его нет"})
+            return
         if self.path == "/answer":
             self._answer(data)
             return
@@ -169,6 +193,34 @@ class Handler(BaseHTTPRequestHandler):
             self._run_plain(cfg, task)
         else:
             self._run_stream(cfg, task)
+
+    def _add_job(self, data: dict[str, Any]) -> None:
+        """Поставить задание в очередь. Работать будет фоновый
+        исполнитель — вкладку можно закрыть."""
+        goal = (data.get("goal") or data.get("task") or "").strip()
+        if not goal:
+            self._send(400, {"error": "поле 'goal' обязательно"})
+            return
+        profile = (data.get("profile") or "").strip()
+        if not profile:
+            pick = choose_profile(goal, Config.list_profiles())
+            profile = pick.profile or ""
+            reason = pick.explain()
+        else:
+            reason = "выбрано человеком"
+        store = Store(self.cfg.db)
+        try:
+            jid = store.add_job(
+                goal, profile=profile,
+                hours=float(data.get("hours") or 1.0),
+                max_usd=float(data.get("max_usd") or 0.0),
+                decompose=bool(data.get("decompose", True)),
+                notify=str(data.get("notify") or ""))
+            waiting = len(store.jobs(status="queued"))
+        finally:
+            store.close()
+        self._send(200, {"id": jid, "profile": profile, "reason": reason,
+                         "queued": waiting})
 
     def _answer(self, data: dict[str, Any]) -> None:
         try:

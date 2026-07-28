@@ -1,17 +1,20 @@
-.PHONY: help test test-e2e check smoke build build-sandbox serve clean install auto do runs
+.PHONY: help test test-e2e check smoke job jobs worker build build-sandbox serve clean install auto do runs
 
 # Тесты находятся сами: добавили файл tests/test_*.py — он попадёт в прогон.
 # Перечисление вручную приводило к тому, что новый тест забывали вписать.
 TESTS := $(sort $(filter-out tests/test_e2e.py,$(wildcard tests/test_*.py)))
 
 help:
-	@echo "make test          — все тесты (~949 проверок, ~40 с)"
+	@echo "make test          — все тесты (~1087 проверок, ~40 с)"
 	@echo "make test-e2e      — сквозной тест на настоящих сокетах"
 	@echo "make check         — самопроверка окружения (модель не трогает)"
 	@echo "make smoke         — дымовой тест ЖИВОЙ модели: тянет ли инструменты"
 	@echo "make do TASK=...   — простой режим: роль выбирается сама"
 	@echo "make auto GOAL=... — автономный прогон (HOURS=1, USD=0)"
 	@echo "make runs          — история прогонов"
+	@echo "make job TASK=...  — поставить задание и забыть (HOURS=, NOTIFY=)"
+	@echo "make jobs          — очередь заданий"
+	@echo "make worker        — фоновый исполнитель (обычно под systemd)"
 	@echo "make serve         — веб-интерфейс (PORT=8081 сменить порт)"
 	@echo "make build-sandbox — образ песочницы (для sandbox=docker)"
 	@echo "make build         — образ агента"
@@ -52,6 +55,15 @@ auto:
 
 runs:
 	@python3 -m agent --runs
+
+job:
+	@python3 -m agent --job "$(TASK)" $(if $(HOURS),--hours $(HOURS),) $(if $(NOTIFY),--notify $(NOTIFY),)
+
+jobs:
+	@python3 -m agent --jobs
+
+worker:
+	@python3 -m agent.worker
 
 serve:
 	@python3 -m agent.server $(if $(PORT),--port $(PORT),) $(if $(HOST),--host $(HOST),)
