@@ -80,6 +80,28 @@ def list_profiles_full() -> list[dict[str, Any]]:
     return out
 
 
+def list_pipelines_full() -> list[dict[str, Any]]:
+    """Все определения конвейеров целиком — имя, описание, список стадий
+
+    (имя + профиль каждой) для отображения в дашборде без отдельного
+    запроса на каждый конвейер.
+    """
+    from .pipeline import list_pipelines, load_pipeline_def, PipelineError
+
+    out = []
+    for name in list_pipelines():
+        try:
+            data = load_pipeline_def(name)
+        except PipelineError:
+            continue
+        out.append({
+            "name": name, "description": data.get("description", ""),
+            "stages": [{"name": s["name"], "profile": s.get("profile", "")}
+                      for s in data["stages"]],
+        })
+    return out
+
+
 def save_profile(name: str, fields: dict[str, Any]) -> dict[str, Any]:
     """Сохранить (создать или обновить) профиль — ТОЛЬКО известные поля.
 
@@ -505,3 +527,143 @@ class AutorunManager:
             raise WebUIError("автономный прогон сейчас не выполняется")
         ev.set()
         self._broadcast("stopping", {})
+
+
+class PipelineManager:
+    """Управляет НЕСКОЛЬКИМИ параллельными конвейерами (agent/pipeline.py)
+
+    одновременно — в отличие от AutorunManager (ровно один автономный
+    прогон на процесс), это безопасно: каждая стадия конвейера пишет в
+    СВОЙ отдельный run_id (Store.start_run на каждую стадию), конвейеры
+    не разделяют между собой next_task/resume, поэтому два конвейера,
+    работающих параллельно, не наступают друг другу на состояние — они
+    просто параллельно добавляют строки в pipeline_run/pipeline_stage/run
+    с разными id.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # pipeline_run_id -> {"thread", "stop_event", "status", "subscribers", "history"}
+        self._entries: dict[int, dict[str, Any]] = {}
+
+    def _entry(self, pipeline_run_id: int) -> dict[str, Any]:
+        with self._lock:
+            entry = self._entries.get(pipeline_run_id)
+        if entry is None:
+            raise WebUIError(f"конвейер #{pipeline_run_id} неизвестен процессу "
+                            "(перезапуск сервера сбрасывает список активных, "
+                            "но история в Store сохраняется)")
+        return entry
+
+    def status(self, pipeline_run_id: int) -> dict[str, Any]:
+        entry = self._entry(pipeline_run_id)
+        with entry["lock"]:
+            return dict(entry["status"])
+
+    def list_active(self) -> list[int]:
+        with self._lock:
+            return [pid for pid, e in self._entries.items()
+                   if e["thread"].is_alive()]
+
+    def subscribe(self, pipeline_run_id: int) -> tuple[queue.Queue, list[dict[str, Any]]]:
+        entry = self._entry(pipeline_run_id)
+        q: queue.Queue = queue.Queue(maxsize=2000)
+        with entry["lock"]:
+            entry["subscribers"].append(q)
+            backlog = list(entry["history"])
+        return q, backlog
+
+    def unsubscribe(self, pipeline_run_id: int, q: queue.Queue) -> None:
+        try:
+            entry = self._entry(pipeline_run_id)
+        except WebUIError:
+            return
+        with entry["lock"]:
+            if q in entry["subscribers"]:
+                entry["subscribers"].remove(q)
+
+    def start(self, cfg: Config, pipeline_name: str, goal: str) -> int:
+        from .pipeline import PipelineRunner, PipelineError, load_pipeline_def
+
+        goal = (goal or "").strip()
+        if not goal:
+            raise WebUIError("нужна цель (goal)")
+        try:
+            load_pipeline_def(pipeline_name)   # валидация ДО запуска потока
+        except PipelineError as exc:
+            raise WebUIError(str(exc)) from exc
+
+        entry: dict[str, Any] = {
+            "lock": threading.Lock(),
+            "status": {"state": "starting", "name": pipeline_name, "goal": goal},
+            "subscribers": [],
+            "history": [],
+            "stop_event": threading.Event(),
+        }
+        ready = threading.Event()
+        holder: dict[str, int] = {"pipeline_run_id": 0}
+
+        def _broadcast(kind: str, data: dict[str, Any]) -> None:
+            payload = {"event": kind, **data}
+            with entry["lock"]:
+                entry["history"].append(payload)
+                if len(entry["history"]) > 200:
+                    entry["history"] = entry["history"][-200:]
+                subs = list(entry["subscribers"])
+            for q in subs:
+                try:
+                    q.put_nowait(payload)
+                except queue.Full:
+                    pass
+
+        def on_event(kind: str, data: dict[str, Any]) -> None:
+            _broadcast(kind, data)
+            with entry["lock"]:
+                if kind == "pipeline_start":
+                    holder["pipeline_run_id"] = data.get("pipeline_run_id", 0)
+                    entry["status"]["pipeline_run_id"] = holder["pipeline_run_id"]
+                    entry["status"]["state"] = "running"
+                    ready.set()
+                elif kind == "stage_start":
+                    entry["status"]["stage"] = data.get("stage")
+                elif kind == "pipeline_finish":
+                    entry["status"]["state"] = "done"
+                    entry["status"]["status"] = data.get("status")
+
+        def worker() -> None:
+            store = Store(cfg.db)
+            try:
+                runner = PipelineRunner(cfg, store, on_event=on_event,
+                                        stop_event=entry["stop_event"])
+                runner.run(pipeline_name, goal)
+            except Exception as exc:
+                with entry["lock"]:
+                    entry["status"]["state"] = "error"
+                    entry["status"]["error"] = str(exc)
+                _broadcast("error", {"message": str(exc)})
+                ready.set()
+            finally:
+                store.close()
+
+        t = threading.Thread(target=worker, daemon=True)
+        entry["thread"] = t
+        t.start()
+        ready.wait(timeout=15)
+
+        pid = holder["pipeline_run_id"]
+        with self._lock:
+            if pid:
+                self._entries[pid] = entry
+            else:
+                # ошибка случилась до pipeline_start (например, сбой Store) —
+                # используем отрицательный временный id, чтобы вызывающий
+                # код всё равно мог прочитать status()/подписаться на поток
+                pid = -(len(self._entries) + 1)
+                self._entries[pid] = entry
+        return pid
+
+    def stop(self, pipeline_run_id: int) -> None:
+        entry = self._entry(pipeline_run_id)
+        if not entry["thread"].is_alive():
+            raise WebUIError(f"конвейер #{pipeline_run_id} уже не выполняется")
+        entry["stop_event"].set()

@@ -80,6 +80,7 @@
     <button data-view="env">Переменные окружения</button>
     <button data-view="runs">Прогоны</button>
     <button data-view="autorun">Автономный режим</button>
+    <button data-view="pipelines">Конвейеры</button>
     <button data-view="memory">Память</button>
     <button data-view="ontology">Онтология</button>
   </nav>
@@ -196,6 +197,41 @@
     </div>
   </section>
 
+  <!-- ============================================== КОНВЕЙЕРЫ (ОРКЕСТРАЦИЯ) -->
+  <section id="view-pipelines" class="hidden">
+    <div class="card">
+      <h2>Запуск конвейера</h2>
+      <div class="err-box">Конвейер — детерминированная последовательность
+        стадий из <code>agent/pipelines/&lt;имя&gt;.json</code>. Каждая
+        стадия — обычный прогон агента под своим профилем; порядок и
+        профили заданы заранее в файле, ни одна стадия не "руководит"
+        другой во время выполнения. Ответ каждой стадии можно подставить
+        в задачу последующей через <code>{имя_стадии}</code> в определении.</div>
+      <div class="field"><label>Конвейер</label><select id="pipeline-select"></select></div>
+      <div id="pipeline-stages-preview" class="muted"></div>
+      <div class="field"><label>Цель ({goal})</label><textarea id="pipeline-goal"></textarea></div>
+      <div class="row">
+        <button id="pipeline-start">Запустить</button>
+      </div>
+      <div id="pipeline-run-status" class="pill">не запущен</div>
+    </div>
+    <div class="card">
+      <h2>Ход выполнения</h2>
+      <table id="pipeline-progress-table">
+        <thead><tr><th>#</th><th>Стадия</th><th>Профиль</th><th>Статус</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <pre class="log" id="pipeline-log">(запустите конвейер, чтобы увидеть журнал)</pre>
+    </div>
+    <div class="card">
+      <h2>История запусков конвейеров</h2>
+      <table id="pipeline-runs-table">
+        <thead><tr><th>#</th><th>Конвейер</th><th>Цель</th><th>Статус</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- ============================================== ПАМЯТЬ -->
   <section id="view-memory" class="hidden">
     <div class="card">
@@ -284,7 +320,7 @@ async function apiPost(path, body){
 }
 
 // ======================================================== навигация
-const VIEWS = ['overview','profiles','env','runs','autorun','memory','ontology'];
+const VIEWS = ['overview','profiles','env','runs','autorun','pipelines','memory','ontology'];
 function showView(name){
   VIEWS.forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
@@ -293,6 +329,7 @@ function showView(name){
   if (name === 'env') loadEnv();
   if (name === 'runs') loadRuns();
   if (name === 'autorun') loadAutorunView();
+  if (name === 'pipelines') loadPipelinesView();
   if (name === 'memory') loadMemory();
   if (name === 'ontology') loadOntology();
 }
@@ -629,6 +666,137 @@ $('#auto-stop').onclick = async () => {
     showMsg('ok', 'Остановка запрошена');
     refreshAutoStatus();
   }catch(e){ showMsg('err', e.message); }
+};
+
+// ==================================================== конвейеры (оркестрация)
+let currentPipelineRunId = null;
+let pipelineStream = null;
+
+async function loadPipelinesView(){
+  try{
+    const data = await apiGet('/api/pipelines');
+    const sel = $('#pipeline-select');
+    const cur = sel.value;
+    sel.innerHTML = '';
+    for (const p of data.pipelines){
+      const o = document.createElement('option');
+      o.value = p.name;
+      o.textContent = p.name + (p.description ? ' — ' + p.description : '');
+      o.dataset.stages = JSON.stringify(p.stages);
+      sel.appendChild(o);
+    }
+    if (cur) sel.value = cur;
+    renderPipelineStagesPreview();
+  }catch(e){ showMsg('err', 'Конвейеры: ' + e.message); }
+  await loadPipelineRunsTable();
+}
+
+function renderPipelineStagesPreview(){
+  const sel = $('#pipeline-select');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt){ $('#pipeline-stages-preview').textContent = ''; return; }
+  const stages = JSON.parse(opt.dataset.stages || '[]');
+  $('#pipeline-stages-preview').textContent =
+    'Стадии: ' + stages.map(s => s.name + ' (' + (s.profile || '—') + ')').join(' → ');
+}
+$('#pipeline-select').addEventListener('change', renderPipelineStagesPreview);
+
+function appendPipelineLog(line){
+  const box = $('#pipeline-log');
+  if (box.textContent.startsWith('(')) box.textContent = '';
+  box.textContent += line + '\n';
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderPipelineProgress(stages){
+  const tb = $('#pipeline-progress-table tbody');
+  tb.innerHTML = '';
+  stages.forEach((s, i) => {
+    const tr = document.createElement('tr');
+    const statusClass = {done:'status-done', failed:'status-failed',
+                         running:'status-active', pending:'muted',
+                         skipped:'muted'}[s.status] || '';
+    tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(s.name) + '</td>' +
+                  '<td>' + esc(s.profile || '—') + '</td>' +
+                  '<td class="' + statusClass + '">' + esc(s.status) + '</td>' +
+                  '<td>' + (s.error ? esc(s.error.slice(0, 100)) : '') + '</td>';
+    tb.appendChild(tr);
+  });
+}
+
+async function loadPipelineRunsTable(){
+  try{
+    const data = await apiGet('/api/pipeline_runs?limit=20');
+    const tb = $('#pipeline-runs-table tbody');
+    tb.innerHTML = '';
+    for (const r of data.runs){
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td class="clickable" data-id="' + r.id + '">#' + r.id + '</td>' +
+                    '<td>' + esc(r.name) + '</td>' +
+                    '<td>' + esc((r.goal || '').slice(0, 60)) + '</td>' +
+                    '<td class="status-' + esc(r.status) + '">' + esc(r.status) + '</td>';
+      tb.appendChild(tr);
+    }
+    tb.querySelectorAll('[data-id]').forEach(el => el.onclick = () => watchPipeline(parseInt(el.dataset.id, 10)));
+  }catch(e){ showMsg('err', 'История конвейеров: ' + e.message); }
+}
+
+async function watchPipeline(pid){
+  currentPipelineRunId = pid;
+  $('#pipeline-log').textContent = '(подключение к потоку конвейера #' + pid + ')';
+  try{
+    const details = await apiGet('/api/pipeline/' + pid);
+    renderPipelineProgress(details.stages);
+    $('#pipeline-run-status').textContent = 'конвейер #' + pid + ': ' + details.run.status;
+  }catch(e){ /* конвейер мог завершиться раньше — не критично */ }
+  connectPipelineStream(pid);
+}
+
+function connectPipelineStream(pid){
+  if (pipelineStream) return;   // один стрим за раз в этой вкладке
+  pipelineStream = fetch('/api/pipeline/' + pid + '/stream', {headers: headers()}).then(async r => {
+    const rd = r.body.getReader(); const dec = new TextDecoder();
+    let buf = '';
+    while (true){
+      const {done, value} = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const ln of lines){
+        if (!ln.trim()) continue;
+        let e; try{ e = JSON.parse(ln); }catch{ continue; }
+        if (e.event === 'ping') continue;
+        if (e.event === 'pipeline_start') appendPipelineLog('▶ конвейер #' + e.pipeline_run_id + ': ' + e.stages.join(' → '));
+        else if (e.event === 'stage_start') appendPipelineLog('── стадия ' + e.stage + ' (' + (e.profile || '—') + ')');
+        else if (e.event === 'stage_done') appendPipelineLog('  ✓ стадия ' + e.stage + ' завершена');
+        else if (e.event === 'stage_failed') appendPipelineLog('  ✗ стадия ' + e.stage + ' провалена: ' + (e.error || ''));
+        else if (e.event === 'stage_skipped') appendPipelineLog('  … стадия ' + e.stage + ' пропущена');
+        else if (e.event === 'tool_start') appendPipelineLog('  → ' + (e.name || '') + ' ' + JSON.stringify(e.args || {}).slice(0, 100));
+        else if (e.event === 'pipeline_finish') appendPipelineLog('■ конвейер завершён: ' + e.status);
+        else if (e.event === 'error') appendPipelineLog('! ошибка: ' + (e.message || ''));
+        if (currentPipelineRunId === pid){
+          try{
+            const details = await apiGet('/api/pipeline/' + pid);
+            renderPipelineProgress(details.stages);
+            $('#pipeline-run-status').textContent = 'конвейер #' + pid + ': ' + details.run.status;
+          }catch(err){ /* могло ещё не записаться — следующее событие подтянет */ }
+        }
+      }
+    }
+  }).catch(() => {}).finally(() => { pipelineStream = null; loadPipelineRunsTable(); });
+}
+
+$('#pipeline-start').onclick = async () => {
+  const name = $('#pipeline-select').value;
+  const goal = $('#pipeline-goal').value.trim();
+  if (!name){ showMsg('err', 'Выберите конвейер'); return; }
+  if (!goal){ showMsg('err', 'Укажите цель'); return; }
+  try{
+    const res = await apiPost('/api/pipeline/start', {pipeline: name, goal});
+    showMsg('ok', 'Запущен конвейер #' + res.pipeline_run_id);
+    $('#pipeline-log').textContent = '';
+    watchPipeline(res.pipeline_run_id);
+  }catch(e){ showMsg('err', 'Не запущено: ' + e.message); }
 };
 
 // ======================================================== память

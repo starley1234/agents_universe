@@ -1,7 +1,7 @@
 .PHONY: help test test-e2e check build build-sandbox run serve clean install
 
 help:
-	@echo "make test          — все тесты (832 проверки)"
+	@echo "make test          — все тесты (896 проверок)"
 	@echo "make auto GOAL=... — автономный прогон на час"
 	@echo "make test-e2e      — сквозной тест на реальных сокетах"
 	@echo "make check         — самопроверка окружения"
@@ -28,6 +28,7 @@ test:
 	@python3 tests/test_webui.py
 	@python3 tests/test_code_review.py
 	@python3 tests/test_web.py
+	@python3 tests/test_pipeline.py
 
 
 test-e2e:

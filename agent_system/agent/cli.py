@@ -196,6 +196,51 @@ def cmd_auto(cfg: Config, goal: str, hours: float, iters: int,
     return 0 if res.stopped_by in ("done", "time") else 1
 
 
+def cmd_pipeline(cfg: Config, pipeline_name: str, goal: str,
+                 verbose: bool, color: bool) -> int:
+    """Оркестрация нескольких ролей: конвейер стадий из agent/pipelines/."""
+    tint = (lambda c, s: f"{c}{s}{C_OFF}") if color else (lambda c, s: s)
+    from .pipeline import PipelineRunner, PipelineError
+
+    store = Store(cfg.db)
+    printer = make_printer(verbose, color)
+
+    def on_event(kind, data):
+        if kind == "pipeline_start":
+            print(tint(C_OK, f"\n▶ конвейер #{data['pipeline_run_id']} "
+                            f"{data['name']}: {' → '.join(data['stages'])}"))
+        elif kind == "stage_start":
+            print(tint(C_ACC, f"\n── стадия {data['stage']!r} "
+                              f"(профиль {data.get('profile') or '—'})"))
+        elif kind == "stage_done":
+            print(tint(C_OK, f"  ✓ стадия {data['stage']!r} завершена"))
+        elif kind == "stage_failed":
+            print(tint(C_ERR, f"  ✗ стадия {data['stage']!r} провалена: "
+                              f"{data.get('error')}"))
+        elif kind == "stage_skipped":
+            print(tint(C_DIM, f"  … стадия {data['stage']!r} пропущена"))
+        elif kind == "pipeline_finish":
+            print(tint(C_OK if data["status"] == "done" else C_ERR,
+                      f"\nКонвейер завершён: {data['status']}"))
+        elif kind in ("tool_start", "tool_end", "thought", "error", "limit"):
+            printer(kind, {k: v for k, v in data.items() if k != "stage"})
+
+    runner = PipelineRunner(cfg, store, on_event=on_event)
+    print(tint(C_DIM, f"модель: {cfg.provider}/{cfg.model} · конвейер: "
+                      f"{pipeline_name}"))
+    try:
+        result = runner.run(pipeline_name, goal)
+    except PipelineError as exc:
+        print(f"{C_ERR}Ошибка конвейера: {exc}{C_OFF}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print(tint(C_ERR, "\nпрервано пользователем"))
+        return 130
+    finally:
+        store.close()
+    return 0 if result["status"] == "done" else 1
+
+
 def cmd_check(cfg: Config) -> int:
     """Самопроверка: конфиг, песочница, доступность модели."""
     from .tools.shell import effective_mode
@@ -270,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--iterations", type=int, help="предел итераций")
     ap.add_argument("--resume", type=int, help="продолжить прогон по номеру")
     ap.add_argument("--db", help="файл базы состояния")
+    ap.add_argument("--pipeline", metavar="ИМЯ",
+                    help="оркестрация: конвейер стадий из agent/pipelines/"
+                         "<ИМЯ>.json, задача — общая цель конвейера ({goal})")
     args = ap.parse_args(argv)
 
     overrides: dict[str, Any] = {
@@ -305,6 +353,18 @@ def main(argv: list[str] | None = None) -> int:
         decision = route_and_apply(cfg, goal_for_routing)
         print(f"{C_DIM}роль подобрана автоматически: {decision.profile} "
               f"({decision.method}; {decision.reason}){C_OFF}")
+
+    if args.pipeline:
+        if args.auto or args.resume or args.auto_route:
+            print(f"{C_ERR}--pipeline нельзя сочетать с --auto/--resume/"
+                  f"--auto-route{C_OFF}", file=sys.stderr)
+            return 2
+        goal = " ".join(args.task)
+        if not goal:
+            print(f"{C_ERR}Для --pipeline нужна цель текстом{C_OFF}",
+                  file=sys.stderr)
+            return 2
+        return cmd_pipeline(cfg, args.pipeline, goal, args.verbose, color)
 
     if args.auto or args.resume:
         goal = " ".join(args.task)

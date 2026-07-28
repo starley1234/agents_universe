@@ -9,7 +9,8 @@
   POST /webhook/max      — приём входящих сообщений MAX (см. ниже)
   GET  /dashboard        — веб-морда конфигов/логов (см. agent/webui.py)
   /api/*                 — данные для дашборда (профили, прогоны, память,
-                           онтология, управление автономным прогоном)
+                           онтология, управление автономным прогоном и
+                           конвейерами оркестрации, см. /api/pipeline*)
 
 Токен: если задан AGENT_API_TOKEN, требуется заголовок
 Authorization: Bearer <token>. Без него сервер слушает только localhost.
@@ -53,6 +54,10 @@ class Handler(BaseHTTPRequestHandler):
     # Один менеджер автономного прогона на процесс — переживает
     # переподключение клиента дашборда (см. agent/webui.py:AutorunManager).
     autorun: webui.AutorunManager = webui.AutorunManager()
+    # Несколько конвейеров могут выполняться параллельно — см.
+    # agent/webui.py:PipelineManager (в отличие от AutorunManager, где
+    # ровно один прогон на процесс).
+    pipelines: webui.PipelineManager = webui.PipelineManager()
 
     # --- служебное ----------------------------------------------------
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -208,6 +213,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self.autorun.status())
             elif path == "/api/auto/stream":
                 self._api_auto_stream()
+            elif path == "/api/pipelines":
+                self._send(200, {"pipelines": webui.list_pipelines_full()})
+            elif path.startswith("/api/pipeline/") and path.endswith("/status"):
+                pid = int(path[len("/api/pipeline/"):-len("/status")])
+                self._send(200, self.pipelines.status(pid))
+            elif path.startswith("/api/pipeline/") and path.endswith("/stream"):
+                pid = int(path[len("/api/pipeline/"):-len("/stream")])
+                self._api_pipeline_stream(pid)
+            elif path.startswith("/api/pipeline/"):
+                pid = int(path[len("/api/pipeline/"):])
+                with self._closing_store() as st:
+                    run = st.get_pipeline_run(pid)
+                    if not run:
+                        self._send(404, {"error": f"конвейер #{pid} не найден"})
+                        return
+                    self._send(200, {"run": run, "stages": st.pipeline_stages(pid)})
+            elif path == "/api/pipeline_runs":
+                with self._closing_store() as st:
+                    self._send(200, {"runs": st.list_pipeline_runs(qi("limit", 50))})
             else:
                 self._send(404, {"error": f"нет маршрута {path}"})
         except webui.WebUIError as exc:
@@ -267,6 +291,37 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.autorun.unsubscribe(q)
 
+    def _api_pipeline_stream(self, pipeline_run_id: int) -> None:
+        """Тот же приём, что _api_auto_stream, но по конкретному конвейеру
+
+        (их может быть несколько параллельно, см. webui.PipelineManager).
+        """
+        q, backlog = self.pipelines.subscribe(pipeline_run_id)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        try:
+            for payload in backlog:
+                self.wfile.write((json.dumps(payload, ensure_ascii=False)
+                                  + "\n").encode("utf-8"))
+            self.wfile.flush()
+            while True:
+                try:
+                    payload = q.get(timeout=25)
+                except queue.Empty:
+                    payload = {"event": "ping"}
+                try:
+                    self.wfile.write((json.dumps(payload, ensure_ascii=False)
+                                      + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                if payload.get("event") == "pipeline_finish":
+                    break
+        finally:
+            self.pipelines.unsubscribe(pipeline_run_id, q)
+
     # --- дашборд: запись (профили, запуск/остановка автономного прогона)
     def _api_post(self, path: str) -> None:
         data = self._read_json() or {}
@@ -296,6 +351,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/auto/stop":
                 self.autorun.stop()
                 self._send(200, {"status": self.autorun.status()})
+            elif path == "/api/pipeline/start":
+                pid = self.pipelines.start(
+                    self.cfg, data.get("pipeline", ""), data.get("goal", ""))
+                self._send(200, {"pipeline_run_id": pid,
+                                 "status": self.pipelines.status(pid)})
+            elif path.startswith("/api/pipeline/") and path.endswith("/stop"):
+                pid = int(path[len("/api/pipeline/"):-len("/stop")])
+                self.pipelines.stop(pid)
+                self._send(200, {"status": self.pipelines.status(pid)})
             else:
                 self._send(404, {"error": f"нет маршрута {path}"})
         except webui.WebUIError as exc:

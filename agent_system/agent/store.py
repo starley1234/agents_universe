@@ -74,6 +74,36 @@ CREATE TABLE IF NOT EXISTS task(
   ord INTEGER DEFAULT 0
 );
 
+-- Оркестрация (agent/pipeline.py): последовательность стадий, каждая —
+-- ОБЫЧНЫЙ прогон агента (см. таблицу run) под своим профилем. Конвейер
+-- сам не рассуждает и не "руководит" стадиями — это детерминированная
+-- последовательность, поэтому здесь только состояние выполнения, а не
+-- какая-либо логика принятия решений (та уже в agent/pipeline.py).
+CREATE TABLE IF NOT EXISTS pipeline_run(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,                -- имя определения: agent/pipelines/<name>.json
+  goal TEXT DEFAULT '',              -- подставляется в {goal} внутри задач стадий
+  status TEXT DEFAULT 'active',      -- active | done | failed | stopped
+  started REAL, updated REAL, finished REAL
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_stage(
+  id INTEGER PRIMARY KEY,
+  pipeline_run_id INTEGER NOT NULL,
+  ord INTEGER NOT NULL,
+  name TEXT NOT NULL,                -- имя стадии из определения конвейера
+  profile TEXT DEFAULT '',
+  task TEXT DEFAULT '',              -- задача ПОСЛЕ подстановки {goal}/{имя_стадии}
+  status TEXT DEFAULT 'pending',     -- pending | running | done | failed | skipped
+  answer TEXT DEFAULT '',            -- ответ агента — источник для {имя_стадии}
+                                      -- в задачах последующих стадий
+  run_id INTEGER,                    -- id в таблице run — сам прогон этой стадии
+  error TEXT DEFAULT '',
+  created REAL, started REAL, updated REAL, finished REAL
+);
+CREATE INDEX IF NOT EXISTS ix_pipeline_stage_run
+  ON pipeline_stage(pipeline_run_id, ord);
+
 CREATE TABLE IF NOT EXISTS fact(
   id INTEGER PRIMARY KEY,
   text TEXT NOT NULL,
@@ -880,7 +910,82 @@ class Store:
         for name, table in (("runs", "run"), ("facts", "fact"),
                             ("entities", "entity"), ("relations", "relation"),
                             ("events", "event"), ("chunks", "chunk"),
-                            ("cert_checks", "cert_check")):
+                            ("cert_checks", "cert_check"),
+                            ("pipeline_runs", "pipeline_run")):
             out[name] = int(self.db.execute(
                 f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         return out
+
+    # ------------------------------------------------- оркестрация (pipeline)
+    def start_pipeline(self, name: str, goal: str,
+                       stages: list[dict[str, str]]) -> int:
+        """Завести прогон конвейера и все его стадии сразу (в статусе
+
+        pending) — так весь план виден в дашборде с первой секунды, а
+        не появляется по одной стадии по ходу выполнения.
+        """
+        cur = self.db.execute(
+            "INSERT INTO pipeline_run(name, goal, started, updated) "
+            "VALUES(?,?,?,?)", (name, goal, self._now(), self._now()))
+        pid = int(cur.lastrowid)
+        for i, stage in enumerate(stages):
+            self.db.execute(
+                "INSERT INTO pipeline_stage(pipeline_run_id, ord, name, "
+                "profile, created, updated) VALUES(?,?,?,?,?,?)",
+                (pid, i, stage["name"], stage.get("profile", ""),
+                 self._now(), self._now()))
+        self.db.commit()
+        return pid
+
+    def pipeline_stages(self, pipeline_run_id: int) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM pipeline_stage WHERE pipeline_run_id=? ORDER BY ord",
+            (pipeline_run_id,))]
+
+    def get_pipeline_run(self, pipeline_run_id: int) -> dict[str, Any] | None:
+        r = self.db.execute("SELECT * FROM pipeline_run WHERE id=?",
+                            (pipeline_run_id,)).fetchone()
+        return dict(r) if r else None
+
+    def list_pipeline_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM pipeline_run ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def set_pipeline_stage(self, stage_id: int, status: str,
+                           task: str | None = None, answer: str | None = None,
+                           run_id: int | None = None,
+                           error: str | None = None) -> None:
+        """Точечное обновление одной стадии — только переданные поля,
+
+        чтобы, например, запись task при старте стадии не затирала answer
+        предыдущего вызова (его тут просто не передают).
+        """
+        sets, params = ["status=?", "updated=?"], [status, self._now()]
+        if task is not None:
+            sets.append("task=?")
+            params.append(task)
+        if answer is not None:
+            sets.append("answer=?")
+            params.append(answer)
+        if run_id is not None:
+            sets.append("run_id=?")
+            params.append(run_id)
+        if error is not None:
+            sets.append("error=?")
+            params.append(error)
+        if status == "running":
+            sets.append("started=?")
+            params.append(self._now())
+        elif status in ("done", "failed", "skipped"):
+            sets.append("finished=?")
+            params.append(self._now())
+        params.append(stage_id)
+        self.db.execute(
+            f"UPDATE pipeline_stage SET {', '.join(sets)} WHERE id=?", params)
+        self.db.commit()
+
+    def finish_pipeline(self, pipeline_run_id: int, status: str) -> None:
+        self.db.execute(
+            "UPDATE pipeline_run SET status=?, finished=?, updated=? WHERE id=?",
+            (status, self._now(), self._now(), pipeline_run_id))
+        self.db.commit()
