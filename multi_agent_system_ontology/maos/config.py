@@ -1,0 +1,149 @@
+"""Конфигурация MAOS: файл JSON (необязательный) + переменные окружения.
+
+Приоритет: переменные окружения > файл > умолчания. Секреты (API-ключи)
+только в окружении — см. .env.example, никогда в JSON.
+
+В отличие от agent_system (SQLite по умолчанию, Postgres — опция),
+здесь PostgreSQL + pgvector ОБЯЗАТЕЛЕН: вся модель агентов, память трёх
+уровней и граф онтологии живут в одной базе, разделяемой несколькими
+процессами (веб, API, фоновый maintenance-сервис). Без DB_DSN
+приложение отказывается стартовать с понятной ошибкой, а не тихо
+переключается на локальный файл.
+"""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any
+
+
+class ConfigError(RuntimeError):
+    """Ошибка конфигурации: отсутствует обязательный параметр и т.п."""
+
+
+@dataclass
+class Config:
+    # --- обязательное хранилище ---
+    db_dsn: str = ""                    # postgresql://user:pass@host:5432/db
+
+    # --- гибридный LLM-роутинг (см. maos/llm/registry.py: provider::model) ---
+    default_local_model: str = "local::llama3"
+    default_cloud_model: str = "openrouter::openai/gpt-4o-mini"
+    # Порог "сложности" задачи (по длине текста запроса в символах), выше
+    # которого оркестратор предпочитает облачную модель локальной — грубая,
+    # но детерминированная и бесплатная эвристика без обращения к LLM.
+    complexity_char_threshold: int = 600
+    # Если это True — при любой ошибке облачного провайдера (сеть, лимиты,
+    # 5xx) оркестратор автоматически переключается на default_local_model
+    # вместо того, чтобы вернуть агенту ошибку.
+    fallback_to_local: bool = True
+    # Повторы отдельного HTTP-вызова к LLM ДО того, как HybridLLM решит
+    # переключиться на fallback. Умеренные значения по умолчанию — чтобы
+    # разовый сбой сети не приводил к преждевременному фолбэку, но и не
+    # заставлял пользователя ждать минуту, прежде чем сработает откат на
+    # локальную модель.
+    llm_retries: int = 2
+    llm_retry_base: float = 1.0
+
+    # --- эмбеддинги (векторная mid/long-term память) ---
+    embedding_provider: str = "hash"    # hash | openai | local
+    embedding_model: str = "hash-256"
+    embedding_dim: int = 256            # фиксирует vector(dim) в схеме БД
+
+    # --- трёхуровневая память ---
+    # Порог контекстного окна модели, ниже которого включается агрессивная
+    # суммаризация истории диалога (short-term), см. ТЗ п.4.
+    small_context_window: int = 4096
+    # Сколько последних сообщений диалога держим как есть перед суммаризацией.
+    short_term_keep_last: int = 6
+    # Сколько mid-term квантов памяти подмешивать в контекст по векторному
+    # сходству с текущим запросом.
+    mid_term_top_k: int = 5
+    mid_term_min_score: float = 0.15
+
+    # --- фоновое обслуживание (maintenance service) ---
+    maintenance_interval_seconds: int = 300
+    maintenance_distill_after_messages: int = 20  # диалог этой длины -> квант
+    maintenance_dedup_similarity: float = 0.97     # выше — считать дублем
+
+    # --- TTS (интерфейс провайдера, см. maos/tts/) ---
+    tts_provider: str = "none"          # none | openai | elevenlabs | piper
+    tts_default_voice: str = ""
+
+    # --- HTTP API/веб ---
+    host: str = "127.0.0.1"
+    port: int = 8090
+    api_token: str = ""                 # обязателен, если host не 127.0.0.1
+
+    def __post_init__(self) -> None:
+        if not self.db_dsn:
+            self.db_dsn = os.getenv("DB_DSN", "")
+
+    def require_dsn(self) -> str:
+        if not self.db_dsn:
+            raise ConfigError(
+                "DB_DSN не задан. MAOS не работает без PostgreSQL+pgvector "
+                "(см. ТЗ п.1 и п.8). Укажите переменную окружения DB_DSN "
+                "или поле db_dsn в конфиге, например "
+                "postgresql://maos:maos@localhost:5432/maos."
+            )
+        return self.db_dsn
+
+    @classmethod
+    def load(cls, path: str | None = None, **overrides: Any) -> "Config":
+        data: dict[str, Any] = {}
+        if path:
+            p = Path(path).expanduser()
+            if not p.exists():
+                raise FileNotFoundError(f"Конфиг {path} не найден")
+            data = json.loads(p.read_text(encoding="utf-8"))
+        # ключи-комментарии с префиксом "_" игнорируются, как в agent_system
+        data = {k: v for k, v in data.items() if v is not None and not k.startswith("_")}
+        cfg = cls(**data)
+
+        env_map = {
+            "db_dsn": "DB_DSN",
+            "default_local_model": "DEFAULT_LOCAL_MODEL",
+            "default_cloud_model": "DEFAULT_CLOUD_MODEL",
+            "embedding_provider": "MAOS_EMBEDDING_PROVIDER",
+            "embedding_model": "MAOS_EMBEDDING_MODEL",
+            "tts_provider": "TTS_PROVIDER",
+            "tts_default_voice": "TTS_DEFAULT_VOICE",
+            "host": "MAOS_HOST",
+            "api_token": "MAOS_API_TOKEN",
+        }
+        for field_name, env_name in env_map.items():
+            val = os.getenv(env_name)
+            if val:
+                setattr(cfg, field_name, val)
+        if os.getenv("MAOS_PORT"):
+            cfg.port = int(os.environ["MAOS_PORT"])
+        if os.getenv("MAOS_EMBEDDING_DIM"):
+            cfg.embedding_dim = int(os.environ["MAOS_EMBEDDING_DIM"])
+
+        for k, v in overrides.items():
+            if v is not None and hasattr(cfg, k):
+                setattr(cfg, k, v)
+        return cfg
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        if d.get("db_dsn"):
+            d["db_dsn"] = _mask_dsn(d["db_dsn"])
+        if d.get("api_token"):
+            d["api_token"] = "***"
+        return d
+
+
+def _mask_dsn(dsn: str) -> str:
+    """Маскирует пароль в DSN для логов/API — postgresql://user:***@host/db."""
+    if "://" not in dsn or "@" not in dsn:
+        return dsn
+    scheme, rest = dsn.split("://", 1)
+    creds, _, hostpart = rest.partition("@")
+    if ":" not in creds:
+        return dsn
+    user, _, _pwd = creds.partition(":")
+    return f"{scheme}://{user}:***@{hostpart}"

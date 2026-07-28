@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAOS — Multi-Agent Ontology System</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1a1d26; --line:#2a2f3d; --txt:#e6e8ee;
+    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --tool:#c9a227;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
+       background:var(--bg);color:var(--txt);min-height:100vh}
+  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+  header b{font-weight:600}
+  nav{display:flex;gap:4px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);
+             padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+  nav button.active{background:#232733;color:var(--txt);border-color:var(--line)}
+  nav button:hover{color:var(--txt)}
+  .pill{font-size:12px;color:var(--dim);background:#232733;padding:3px 9px;border-radius:99px}
+  select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
+        border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  button{cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--acc)}
+  button.danger:hover{border-color:var(--err);color:var(--err)}
+  button:disabled{opacity:.5;cursor:default}
+  main{padding:18px;max-width:1100px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:15px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.04em}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);
+        vertical-align:top}
+  th{color:var(--dim);font-weight:600}
+  tr:hover td{background:#1f2330}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+  .stat{background:#1f2330;border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center}
+  .stat b{display:block;font-size:22px;color:var(--acc)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .row textarea, .row input[type=text]{flex:1;min-width:200px}
+  textarea{width:100%;min-height:70px;resize:vertical}
+  .tag{display:inline-block;background:#232733;border:1px solid var(--line);
+       border-radius:99px;padding:2px 8px;margin:1px;font-size:12px}
+  .muted{color:var(--dim)}
+  .clickable{cursor:pointer;color:var(--acc)}
+  .clickable:hover{text-decoration:underline}
+  pre.log{white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto;
+          background:#0f1116;border:1px solid var(--line);border-radius:6px;padding:10px;
+          font-size:12.5px}
+  .hidden{display:none !important}
+  .err-box{color:var(--err);background:#2a1618;border:1px solid #52252a;
+           border-radius:6px;padding:8px 12px;margin-bottom:10px}
+  .ok-box{color:var(--ok);background:#152a20;border:1px solid #1f4a34;
+          border-radius:6px;padding:8px 12px;margin-bottom:10px}
+  .field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+  .field label{color:var(--dim);font-size:12px}
+  .avatar{width:28px;height:28px;border-radius:50%;background:#232733;display:inline-block;
+          text-align:center;line-height:28px;margin-right:6px;font-size:13px}
+  .chat-msg{margin-bottom:10px;padding:8px 12px;border-radius:8px;background:#1f2330;
+            border:1px solid var(--line)}
+  .chat-msg.user{background:#1a2436}
+  .chat-msg .meta{color:var(--dim);font-size:11px;margin-bottom:4px}
+  canvas#graphCanvas{width:100%;height:420px;background:#0f1116;border:1px solid var(--line);
+                     border-radius:6px}
+</style>
+</head>
+<body>
+<header>
+  <b>MAOS</b>
+  <input id="token" type="password" placeholder="токен (если задан)" size="16">
+  <span class="pill" id="status">—</span>
+  <nav>
+    <button data-view="overview" class="active">Обзор</button>
+    <button data-view="agents">Агенты</button>
+    <button data-view="chat">Чат</button>
+    <button data-view="chain">Цепочки</button>
+    <button data-view="graph">Граф</button>
+  </nav>
+</header>
+<main>
+
+<section id="view-overview">
+  <div class="card">
+    <h2>Статистика памяти</h2>
+    <div class="grid" id="statsGrid"><div class="stat muted">загрузка…</div></div>
+  </div>
+  <div class="card">
+    <h2>Расход по моделям (provider::model)</h2>
+    <table id="modelsTable"><thead><tr><th>Модель</th><th>Сообщений</th><th>Токенов</th></tr></thead>
+    <tbody></tbody></table>
+  </div>
+</section>
+
+<section id="view-agents" class="hidden">
+  <div class="card">
+    <h2>Создать / обновить агента</h2>
+    <div class="field"><label>slug (латиница, уникален)</label>
+      <input id="a-slug" type="text" placeholder="coder"></div>
+    <div class="field"><label>Имя</label><input id="a-name" type="text" placeholder="Coder"></div>
+    <div class="field"><label>Описание (для роутинга)</label>
+      <textarea id="a-desc" placeholder="Пишет и правит код на Python"></textarea></div>
+    <div class="field"><label>Ключевые слова</label>
+      <input id="a-keywords" type="text" placeholder="код python баги"></div>
+    <div class="field"><label>Аватар (URL или base64)</label>
+      <input id="a-avatar" type="text" placeholder="https://..."></div>
+    <div class="row">
+      <div class="field"><label>Голос: провайдер</label>
+        <select id="a-voice-provider">
+          <option value="">none</option><option value="openai">openai</option>
+          <option value="elevenlabs">elevenlabs</option><option value="piper">piper</option>
+        </select></div>
+      <div class="field"><label>Голос: id</label><input id="a-voice-id" type="text"></div>
+    </div>
+    <div class="field"><label>LLM (provider::model, пусто = глобальный дефолт)</label>
+      <input id="a-llm-ref" type="text" placeholder="local::llama3"></div>
+    <div class="field"><label>Системный промпт</label>
+      <textarea id="a-prompt" placeholder="Ты полезный ассистент..."></textarea></div>
+    <div class="row">
+      <button id="a-save">Сохранить</button>
+      <span id="a-msg"></span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Агенты</h2>
+    <table id="agentsTable">
+      <thead><tr><th>Аватар</th><th>Slug</th><th>Имя</th><th>LLM</th><th>Голос</th>
+             <th>Вкл</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="view-chat" class="hidden">
+  <div class="card">
+    <h2>Мультиагентный чат</h2>
+    <div class="row">
+      <select id="c-agent"><option value="">— авто (semantic router) —</option></select>
+      <input id="c-conv" type="text" placeholder="conversation_id (пусто = новый)" size="8">
+      <button id="c-new">Новый диалог</button>
+    </div>
+    <div id="c-log"></div>
+    <div class="row">
+      <textarea id="c-input" placeholder="Сообщение..."></textarea>
+      <button id="c-send">Отправить</button>
+    </div>
+  </div>
+</section>
+
+<section id="view-chain" class="hidden">
+  <div class="card">
+    <h2>Детерминированная цепочка Agent_A → Agent_B</h2>
+    <div class="field"><label>Цель</label><input id="ch-goal" type="text"></div>
+    <div class="field"><label>Агенты по порядку (через запятую, slug)</label>
+      <input id="ch-agents" type="text" placeholder="researcher,writer"></div>
+    <div class="row"><button id="ch-start">Запустить</button><span id="ch-msg"></span></div>
+    <table id="ch-steps"><thead><tr><th>#</th><th>Агент</th><th>Статус</th><th>Ответ</th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+  <div class="card">
+    <h2>История цепочек</h2>
+    <table id="ch-history"><thead><tr><th>id</th><th>Цель</th><th>Статус</th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+</section>
+
+<section id="view-graph" class="hidden">
+  <div class="card">
+    <h2>Граф онтологии</h2>
+    <canvas id="graphCanvas" width="1000" height="420"></canvas>
+    <p class="muted">Узлы — сущности (kind:name), рёбра — предикаты связей.</p>
+  </div>
+</section>
+
+</main>
+<script>
+const VIEWS = ["overview","agents","chat","chain","graph"];
+function token(){ return document.getElementById('token').value.trim(); }
+async function api(path, opts={}){
+  const headers = opts.headers || {};
+  const t = token();
+  if (t) headers['Authorization'] = 'Bearer ' + t;
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, {...opts, headers});
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+function setActiveView(name){
+  for (const v of VIEWS){
+    document.getElementById('view-'+v).classList.toggle('hidden', v!==name);
+  }
+  document.querySelectorAll('nav button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.view===name);
+  });
+  if (name==='overview') loadOverview();
+  if (name==='agents') loadAgents();
+  if (name==='chat') loadChatAgents();
+  if (name==='chain') loadChainView();
+  if (name==='graph') loadGraph();
+}
+document.querySelectorAll('nav button').forEach(b=>{
+  b.addEventListener('click', ()=>setActiveView(b.dataset.view));
+});
+
+async function checkHealth(){
+  try{ await api('/health'); document.getElementById('status').textContent = 'онлайн'; }
+  catch(e){ document.getElementById('status').textContent = 'офлайн'; }
+}
+
+// ---------------------------------------------------------------- overview
+async function loadOverview(){
+  try{
+    const s = await api('/v1/memory/stats');
+    const grid = document.getElementById('statsGrid');
+    grid.innerHTML = '';
+    const items = [
+      ['агентов', s.agents], ['диалогов', s.conversations],
+      ['сообщений', s.messages], ['токенов сообщений', s.message_tokens],
+      ['квантов памяти', s.memory_quanta], ['сущностей графа', s.onto_entities],
+      ['связей графа', s.onto_relations],
+    ];
+    for (const [label, val] of items){
+      const d = document.createElement('div');
+      d.className = 'stat';
+      d.innerHTML = `<b>${val}</b>${label}`;
+      grid.appendChild(d);
+    }
+    const tbody = document.querySelector('#modelsTable tbody');
+    tbody.innerHTML = '';
+    for (const row of (s.tokens_by_model||[])){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${row.provider_model}</td><td>${row.messages}</td><td>${row.tokens}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){
+    document.getElementById('statsGrid').innerHTML =
+      `<div class="err-box">${e.message}</div>`;
+  }
+}
+
+// ------------------------------------------------------------------ agents
+async function loadAgents(){
+  try{
+    const data = await api('/v1/agents');
+    const tbody = document.querySelector('#agentsTable tbody');
+    tbody.innerHTML = '';
+    for (const a of data.agents){
+      const tr = document.createElement('tr');
+      const initial = (a.name||'?').slice(0,1).toUpperCase();
+      tr.innerHTML = `<td><span class="avatar">${a.avatar ? '' : initial}</span></td>
+        <td>${a.slug}</td><td>${a.name}</td><td>${a.llm_ref || '<span class="muted">дефолт</span>'}</td>
+        <td>${a.voice_provider || '<span class="muted">нет</span>'}</td>
+        <td>${a.enabled ? 'да' : 'нет'}</td>
+        <td><span class="clickable" data-edit="${a.slug}">править</span> ·
+            <span class="clickable" data-del="${a.slug}">удалить</span></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-edit]').forEach(el=>{
+      el.addEventListener('click', ()=>editAgent(el.dataset.edit));
+    });
+    tbody.querySelectorAll('[data-del]').forEach(el=>{
+      el.addEventListener('click', ()=>deleteAgent(el.dataset.del));
+    });
+  }catch(e){
+    document.querySelector('#agentsTable tbody').innerHTML =
+      `<tr><td colspan="7" class="err-box">${e.message}</td></tr>`;
+  }
+}
+async function editAgent(slug){
+  try{
+    const data = await api('/v1/agents/'+slug);
+    const a = data.agent;
+    document.getElementById('a-slug').value = a.slug;
+    document.getElementById('a-slug').disabled = true;
+    document.getElementById('a-name').value = a.name;
+    document.getElementById('a-desc').value = a.description;
+    document.getElementById('a-keywords').value = a.keywords;
+    document.getElementById('a-avatar').value = a.avatar;
+    document.getElementById('a-voice-provider').value = a.voice_provider;
+    document.getElementById('a-voice-id').value = a.voice_id;
+    document.getElementById('a-llm-ref').value = a.llm_ref;
+    document.getElementById('a-prompt').value = a.system_prompt;
+  }catch(e){ document.getElementById('a-msg').textContent = e.message; }
+}
+async function deleteAgent(slug){
+  if (!confirm('Удалить агента ' + slug + '?')) return;
+  try{ await api('/v1/agents/'+slug+'/delete', {method:'POST', body:'{}'}); loadAgents(); }
+  catch(e){ alert(e.message); }
+}
+document.getElementById('a-save').addEventListener('click', async ()=>{
+  const msg = document.getElementById('a-msg');
+  const slugInput = document.getElementById('a-slug');
+  const slug = slugInput.value.trim();
+  const isEdit = slugInput.disabled;
+  const payload = {
+    slug, name: document.getElementById('a-name').value.trim(),
+    description: document.getElementById('a-desc').value,
+    keywords: document.getElementById('a-keywords').value,
+    avatar: document.getElementById('a-avatar').value,
+    voice_provider: document.getElementById('a-voice-provider').value,
+    voice_id: document.getElementById('a-voice-id').value,
+    llm_ref: document.getElementById('a-llm-ref').value,
+    system_prompt: document.getElementById('a-prompt').value,
+  };
+  try{
+    if (isEdit){ await api('/v1/agents/'+slug, {method:'POST', body:JSON.stringify(payload)}); }
+    else { await api('/v1/agents', {method:'POST', body:JSON.stringify(payload)}); }
+    msg.textContent = 'сохранено'; msg.className='ok-box';
+    slugInput.disabled = false;
+    ['a-slug','a-name','a-desc','a-keywords','a-avatar','a-voice-id','a-llm-ref','a-prompt']
+      .forEach(id=>document.getElementById(id).value='');
+    loadAgents();
+  }catch(e){ msg.textContent = e.message; msg.className='err-box'; }
+});
+
+// -------------------------------------------------------------------- chat
+async function loadChatAgents(){
+  try{
+    const data = await api('/v1/agents');
+    const sel = document.getElementById('c-agent');
+    sel.querySelectorAll('option[data-dyn]').forEach(o=>o.remove());
+    for (const a of data.agents){
+      const o = document.createElement('option');
+      o.value = a.slug; o.textContent = a.name + ' (' + a.slug + ')'; o.dataset.dyn=1;
+      sel.appendChild(o);
+    }
+  }catch(e){}
+}
+document.getElementById('c-new').addEventListener('click', ()=>{
+  document.getElementById('c-conv').value='';
+  document.getElementById('c-log').innerHTML='';
+});
+document.getElementById('c-send').addEventListener('click', async ()=>{
+  const input = document.getElementById('c-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const log = document.getElementById('c-log');
+  const userDiv = document.createElement('div');
+  userDiv.className = 'chat-msg user';
+  userDiv.innerHTML = `<div class="meta">вы</div>${text}`;
+  log.appendChild(userDiv);
+  input.value = '';
+  const payload = {message: text};
+  const convId = document.getElementById('c-conv').value.trim();
+  if (convId) payload.conversation_id = parseInt(convId, 10);
+  const agentSlug = document.getElementById('c-agent').value;
+  if (agentSlug) payload.agent_slug = agentSlug;
+  try{
+    const data = await api('/v1/chat', {method:'POST', body: JSON.stringify(payload)});
+    document.getElementById('c-conv').value = data.conversation_id;
+    const agDiv = document.createElement('div');
+    agDiv.className = 'chat-msg';
+    agDiv.innerHTML = `<div class="meta">${data.agent_slug} · ${data.provider_model}` +
+      (data.used_fallback ? ' · fallback' : '') + `</div>${data.answer}`;
+    log.appendChild(agDiv);
+    log.scrollTop = log.scrollHeight;
+  }catch(e){
+    const errDiv = document.createElement('div');
+    errDiv.className = 'err-box';
+    errDiv.textContent = e.message;
+    log.appendChild(errDiv);
+  }
+});
+
+// ------------------------------------------------------------------- chain
+async function loadChainView(){
+  try{
+    const data = await api('/v1/chains');
+    const tbody = document.querySelector('#ch-history tbody');
+    tbody.innerHTML = '';
+    for (const c of data.chains){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${c.id}</td><td>${c.goal}</td><td>${c.status}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){}
+}
+document.getElementById('ch-start').addEventListener('click', async ()=>{
+  const msg = document.getElementById('ch-msg');
+  const goal = document.getElementById('ch-goal').value.trim();
+  const agents = document.getElementById('ch-agents').value.trim()
+    .split(',').map(s=>s.trim()).filter(Boolean);
+  if (!agents.length){ msg.textContent = 'укажите хотя бы одного агента'; return; }
+  msg.textContent = 'выполняется…';
+  try{
+    const data = await api('/v1/chain/start',
+      {method:'POST', body: JSON.stringify({goal, agents})});
+    msg.textContent = 'статус: ' + data.status;
+    const chainData = await api('/v1/chain/' + data.chain_run_id);
+    const tbody = document.querySelector('#ch-steps tbody');
+    tbody.innerHTML = '';
+    for (const s of chainData.steps){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${s.ord}</td><td>${s.agent_slug}</td><td>${s.status}</td>
+        <td>${(s.answer||s.error||'').slice(0,300)}</td>`;
+      tbody.appendChild(tr);
+    }
+    loadChainView();
+  }catch(e){ msg.textContent = e.message; }
+});
+
+// -------------------------------------------------------------------- graph
+async function loadGraph(){
+  try{
+    const data = await api('/v1/graph');
+    drawGraph(data.nodes||[], data.edges||[]);
+  }catch(e){}
+}
+function drawGraph(nodes, edges){
+  const canvas = document.getElementById('graphCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+  if (!nodes.length){
+    ctx.fillStyle = '#8b91a3'; ctx.fillText('нет данных', 20, 20);
+    return;
+  }
+  // простая круговая раскладка — детерминированная, без физики,
+  // читаемая для небольшого числа узлов онтологии
+  const pos = {};
+  nodes.forEach((n, i)=>{
+    const angle = (2*Math.PI*i)/nodes.length;
+    pos[n.id] = [W/2 + Math.cos(angle)*(W/2-80), H/2 + Math.sin(angle)*(H/2-60)];
+  });
+  ctx.strokeStyle = '#2a2f3d';
+  ctx.fillStyle = '#8b91a3';
+  for (const e of edges){
+    const a = pos[e.source], b = pos[e.target];
+    if (!a || !b) continue;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.fillText(e.pred, (a[0]+b[0])/2, (a[1]+b[1])/2);
+  }
+  for (const n of nodes){
+    const [x,y] = pos[n.id];
+    ctx.fillStyle = '#4a9eff';
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, 2*Math.PI); ctx.fill();
+    ctx.fillStyle = '#e6e8ee';
+    ctx.fillText(`${n.kind}:${n.name}`, x+8, y+4);
+  }
+}
+
+checkHealth();
+loadOverview();
+</script>
+</body>
+</html>

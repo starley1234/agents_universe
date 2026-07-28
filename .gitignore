@@ -24,6 +24,12 @@ agent_system/workspace/
 *.db-wal
 *.db-shm
 
+## Рантайм-артефакты multi_agent_system_ontology: MAOS требует внешний
+## PostgreSQL и ничего не пишет на диск сам по себе, кроме случайных
+## временных данных embedded Postgres при локальных экспериментах.
+multi_agent_system_ontology/**/pgdata/
+multi_agent_system_ontology/**/.pgserver/
+
 ## Прочий мусор ОС/редакторов
 .DS_Store
 *.swp
