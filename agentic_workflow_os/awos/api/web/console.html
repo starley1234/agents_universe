@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWOS — Agentic Workflow OS</title>
+<style>
+  :root{
+    --bg:#0f1116; --panel:#171a22; --line:#262b38; --txt:#e6e8ee; --dim:#8b91a3;
+    --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#e0a33e; --human:#b98cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+       background:var(--bg);color:var(--txt);min-height:100vh}
+  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:9}
+  header b{font-weight:700;letter-spacing:.06em}
+  header .sub{color:var(--dim);font-size:12px}
+  nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);
+             padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+  nav button.active{background:#222736;color:var(--txt);border-color:var(--line)}
+  nav button:hover{color:var(--txt)}
+  .pill{font-size:12px;color:var(--dim);background:#222736;padding:3px 9px;border-radius:99px}
+  .pill.alert{color:#1a1200;background:var(--warn);font-weight:700}
+  select,input,button,textarea{font:inherit;background:#222736;color:var(--txt);
+        border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+  button{cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--acc)}
+  button.primary{background:#1d3557;border-color:var(--acc)}
+  button.ok:hover{border-color:var(--ok);color:var(--ok)}
+  button.danger:hover{border-color:var(--err);color:var(--err)}
+  button:disabled{opacity:.45;cursor:default}
+  main{padding:18px;max-width:1180px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:13px;color:var(--dim);font-weight:600;
+           text-transform:uppercase;letter-spacing:.06em}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600}
+  tr:hover td{background:#1c202b}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .stat{background:#1c202b;border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center}
+  .stat b{display:block;font-size:22px;color:var(--acc)}
+  .stat span{font-size:11px;color:var(--dim)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-bottom:10px}
+  .row>*{min-width:0}
+  .grow{flex:1;min-width:220px}
+  textarea{width:100%;min-height:70px;resize:vertical}
+  .muted{color:var(--dim)}
+  .clickable{cursor:pointer;color:var(--acc)}
+  .clickable:hover{text-decoration:underline}
+  pre.log{white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;
+          background:#0b0d12;border:1px solid var(--line);border-radius:6px;padding:10px;font-size:12.5px}
+  .hidden{display:none !important}
+  .box{border-radius:6px;padding:8px 12px;margin-bottom:10px;border:1px solid}
+  .box.err{color:var(--err);background:#251518;border-color:#4d2229}
+  .box.ok{color:var(--ok);background:#12251c;border-color:#1e4634}
+  .box.warn{color:var(--warn);background:#241d0e;border-color:#4a3a16}
+  .st{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11.5px;border:1px solid var(--line)}
+  .st.done{color:var(--ok);border-color:#1e4634;background:#12251c}
+  .st.failed{color:var(--err);border-color:#4d2229;background:#251518}
+  .st.waiting_human{color:var(--warn);border-color:#4a3a16;background:#241d0e}
+  .st.running{color:var(--acc);border-color:#1b3a5c;background:#101c2b}
+  .st.pending,.st.cancelled,.st.skipped{color:var(--dim)}
+  .step{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#1c202b}
+  .step .hd{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .step .nm{font-weight:600}
+  .role{font-size:11px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+  .role.worker{color:var(--acc)} .role.critic{color:var(--warn)}
+  .role.supervisor{color:var(--ok)} .role.human{color:var(--human)}
+  .out{white-space:pre-wrap;word-break:break-word;background:#0b0d12;border:1px solid var(--line);
+       border-radius:6px;padding:9px;margin-top:8px;font-size:12.5px;max-height:280px;overflow:auto}
+  .cp{border:1px solid var(--warn);border-radius:8px;padding:12px;margin-bottom:10px;background:#1e1a10}
+  .kv{display:grid;grid-template-columns:170px 1fr;gap:4px 12px;font-size:13px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .wf{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px;background:#1c202b}
+  .chain{color:var(--dim);font-size:12.5px;margin-top:4px}
+  .chain b{color:var(--txt);font-weight:600}
+  code{background:#0b0d12;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12.5px}
+</style>
+</head>
+<body>
+<header>
+  <b>AWOS</b>
+  <span class="sub">Agentic Workflow OS — среда автономных AI-команд</span>
+  <input id="token" type="password" placeholder="токен (если задан)" size="14">
+  <span class="pill" id="health">—</span>
+  <span class="pill alert hidden" id="inboxPill">0 ждут</span>
+  <nav>
+    <button data-view="runs" class="active">Прогоны</button>
+    <button data-view="launch">Запуск</button>
+    <button data-view="inbox">Согласования</button>
+    <button data-view="catalog">Каталог</button>
+  </nav>
+</header>
+<main>
+  <div id="err" class="box err hidden"></div>
+
+  <!-- ПРОГОНЫ -->
+  <section id="view-runs">
+    <div class="card">
+      <h2>Состояние среды</h2>
+      <div class="grid" id="stats"></div>
+    </div>
+    <div class="card">
+      <h2>Прогоны</h2>
+      <div class="row">
+        <button onclick="loadRuns()">Обновить</button>
+        <label class="muted"><input type="checkbox" id="auto" checked> автообновление</label>
+      </div>
+      <table><thead><tr><th>#</th><th>статус</th><th>workflow</th><th>цель</th>
+        <th>шаги</th><th>токены</th></tr></thead><tbody id="runs"></tbody></table>
+    </div>
+    <div class="card hidden" id="detailCard">
+      <h2>Прогон <span id="detailId"></span></h2>
+      <div id="detail"></div>
+    </div>
+  </section>
+
+  <!-- ЗАПУСК -->
+  <section id="view-launch" class="hidden">
+    <div class="card">
+      <h2>Запустить workflow</h2>
+      <div class="row">
+        <select id="wfSelect" onchange="renderInputs()" class="grow"></select>
+        <button class="ok" onclick="startRun()">Запустить</button>
+      </div>
+      <div class="row"><input id="goal" class="grow" placeholder="цель прогона (подставляется в {goal})"></div>
+      <div id="wfInfo" class="muted"></div>
+      <div id="wfInputs"></div>
+    </div>
+  </section>
+
+  <!-- СОГЛАСОВАНИЯ -->
+  <section id="view-inbox" class="hidden">
+    <div class="card">
+      <h2>Точки контроля — ждут решения человека</h2>
+      <div class="row"><button onclick="loadInbox()">Обновить</button></div>
+      <div id="inbox"></div>
+    </div>
+  </section>
+
+  <!-- КАТАЛОГ -->
+  <section id="view-catalog" class="hidden">
+    <div class="card"><h2>Workflow</h2><div id="catWf"></div></div>
+    <div class="card"><h2>Профили агентов</h2>
+      <table><thead><tr><th>профиль</th><th>роль</th><th>модель</th><th>инструменты</th></tr></thead>
+      <tbody id="catProf"></tbody></table></div>
+    <div class="card"><h2>Инструменты и гранты среды</h2>
+      <div id="catTools"></div></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let WORKFLOWS = [], CURRENT = null, TIMER = null;
+
+function token(){ return $("#token").value.trim(); }
+function headers(){
+  const h = {"Content-Type":"application/json"};
+  if (token()) h["Authorization"] = "Bearer " + token();
+  return h;
+}
+function showErr(msg){
+  const e = $("#err");
+  if (!msg){ e.classList.add("hidden"); return; }
+  e.textContent = msg; e.classList.remove("hidden");
+}
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers: headers()}, opts||{}));
+  let data = null;
+  try { data = await r.json(); } catch(e){ throw new Error("HTTP "+r.status); }
+  if (!r.ok) throw new Error(data && data.error ? data.error : "HTTP "+r.status);
+  return data;
+}
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"]/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+function st(s){ return `<span class="st ${esc(s)}">${esc(s)}</span>`; }
+
+// --- навигация ---
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  ["runs","launch","inbox","catalog"].forEach(v =>
+    $("#view-"+v).classList.toggle("hidden", v !== b.dataset.view));
+  if (b.dataset.view === "inbox") loadInbox();
+  if (b.dataset.view === "catalog") loadCatalog();
+  if (b.dataset.view === "launch") loadWorkflows();
+});
+
+// --- обзор ---
+async function loadStats(){
+  try {
+    const s = await api("/v1/stats");
+    const cells = [["всего прогонов","runs"],["идут","runs_running"],
+      ["ждут человека","runs_waiting_human"],["завершено","runs_done"],
+      ["провалено","runs_failed"],["вызовов инструментов","tool_calls"],
+      ["обращений к моделям","llm_calls"]];
+    $("#stats").innerHTML = cells.map(([label,key]) =>
+      `<div class="stat"><b>${s[key]||0}</b><span>${label}</span></div>`).join("");
+    const n = s.checkpoints_pending || 0;
+    const pill = $("#inboxPill");
+    pill.textContent = n + " ждут";
+    pill.classList.toggle("hidden", n === 0);
+    showErr("");
+  } catch(e){ showErr(e.message); }
+}
+async function loadRuns(){
+  try {
+    const d = await api("/v1/runs?limit=40");
+    $("#runs").innerHTML = d.runs.map(r => `
+      <tr><td class="clickable" onclick="openRun(${r.id})">#${r.id}</td>
+      <td>${st(r.status)}</td><td>${esc(r.workflow)}</td>
+      <td>${esc((r.goal||"").slice(0,60))}</td>
+      <td>${r.steps_done}</td><td class="muted">${r.tokens_in}/${r.tokens_out}</td></tr>`).join("")
+      || `<tr><td colspan="6" class="muted">прогонов пока нет</td></tr>`;
+  } catch(e){ showErr(e.message); }
+}
+async function openRun(id){
+  CURRENT = id;
+  $("#detailCard").classList.remove("hidden");
+  $("#detailId").textContent = "#" + id;
+  await refreshDetail();
+}
+async function refreshDetail(){
+  if (!CURRENT) return;
+  try {
+    const d = await api("/v1/runs/" + CURRENT);
+    const run = d.run;
+    let html = `<div class="kv">
+      <div>статус</div><div>${st(run.status)} ${esc(run.detail||"")}</div>
+      <div>workflow</div><div>${esc(run.workflow)}</div>
+      <div>цель</div><div>${esc(run.goal||"—")}</div>
+      <div>инструменты / модели</div><div>${run.tool_calls} / ${run.llm_calls}</div>
+      <div>токены (вх/исх)</div><div>${run.tokens_in} / ${run.tokens_out}</div></div>`;
+
+    if (d.checkpoint){
+      html += renderCheckpoint(d.checkpoint, true);
+    } else if (run.status === "waiting_human"){
+      html += `<div class="box warn">Прогон ждёт человека, но открытая точка
+        контроля не найдена — нажмите «Продолжить».</div>`;
+    }
+    if (["waiting_human","running"].includes(run.status) && !d.checkpoint){
+      html += `<div class="row"><button onclick="resumeRun(${CURRENT})">Продолжить</button>
+        <button class="danger" onclick="cancelRun(${CURRENT})">Отменить</button></div>`;
+    }
+
+    html += `<h2 style="margin-top:16px">Шаги</h2>`;
+    html += d.steps.map(s => `
+      <div class="step"><div class="hd">
+        <span class="nm">${esc(s.name)}</span> ${st(s.status)}
+        ${s.score!=null ? `<span class="muted">оценка ${Number(s.score).toFixed(2)}</span>`:""}
+        ${s.revisions ? `<span class="muted">доработок: ${s.revisions}</span>`:""}
+        ${s.profile ? `<span class="role worker">${esc(s.profile)}</span>`:""}
+      </div>
+      ${s.detail ? `<div class="muted" style="margin-top:4px">${esc(s.detail)}</div>`:""}
+      ${s.output ? `<div class="out">${esc(s.output)}</div>`:""}</div>`).join("");
+
+    const ctx = Object.entries(d.context||{}).filter(([k]) => !k.startsWith("_"));
+    if (ctx.length){
+      html += `<h2 style="margin-top:16px">Доска контекста</h2>`;
+      html += ctx.map(([k,v]) => {
+        const text = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+        return `<div class="step"><div class="hd"><span class="nm">${esc(k)}</span>
+          <span class="muted">${text.length} символов</span></div>
+          <div class="out">${esc(text)}</div></div>`;
+      }).join("");
+    }
+
+    if (d.events && d.events.length){
+      html += `<h2 style="margin-top:16px">Журнал</h2><pre class="log">` +
+        d.events.map(e => {
+          const role = e.role ? `[${e.role}] ` : "";
+          return esc(`${e.kind.padEnd(20)} ${role}${(e.message||"").slice(0,300)}`);
+        }).join("\n") + `</pre>`;
+    }
+    $("#detail").innerHTML = html;
+  } catch(e){ showErr(e.message); }
+}
+function renderCheckpoint(cp, inline){
+  const p = cp.payload || {};
+  let body = `<div class="cp"><b>⏸ Точка контроля #${cp.id}</b>
+    <span class="role human">${esc(cp.kind)}</span>
+    ${!inline ? `<span class="muted"> прогон #${cp.run_id}</span>`:""}
+    <div style="margin:6px 0">${esc(cp.question)}</div>`;
+  if (p.step) body += `<div class="muted">шаг: ${esc(p.step)}</div>`;
+  if (p.tool) body += `<div class="muted">инструмент: <code>${esc(p.tool)}</code>
+     args: <code>${esc(JSON.stringify(p.args||{}))}</code></div>`;
+  if (p.verdict) body += `<div class="muted">критик: оценка
+     ${Number(p.verdict.score).toFixed(2)}, ${esc(p.verdict.summary||"")}</div>`;
+  if (p.output) body += `<div class="out">${esc(p.output)}</div>`;
+  body += `<div class="row" style="margin-top:10px">
+      <textarea id="resp${cp.id}" class="grow" placeholder="правка результата или комментарий (необязательно)"></textarea>
+    </div>
+    <div class="row">
+      <button class="ok" onclick="respond(${cp.id},'approved')">Утвердить</button>
+      <button onclick="respond(${cp.id},'edited')">Утвердить с правкой</button>
+      <button class="danger" onclick="respond(${cp.id},'rejected')">Отклонить</button>
+    </div></div>`;
+  return body;
+}
+async function respond(id, status){
+  const el = $("#resp"+id);
+  const text = el ? el.value : "";
+  if (status === "edited" && !text.trim()){
+    showErr("Для «утвердить с правкой» нужен текст правки"); return;
+  }
+  try {
+    await api("/v1/checkpoints/"+id, {method:"POST",
+      body: JSON.stringify({status, response: text, actor:"console"})});
+    showErr("");
+    await Promise.all([loadStats(), loadRuns(), loadInbox(), refreshDetail()]);
+  } catch(e){ showErr(e.message); }
+}
+async function resumeRun(id){
+  try { await api(`/v1/runs/${id}/resume`, {method:"POST", body:"{}"});
+        await refreshDetail(); await loadRuns(); }
+  catch(e){ showErr(e.message); }
+}
+async function cancelRun(id){
+  try { await api(`/v1/runs/${id}/cancel`, {method:"POST", body: JSON.stringify({reason:"отменён из консоли"})});
+        await refreshDetail(); await loadRuns(); }
+  catch(e){ showErr(e.message); }
+}
+
+// --- запуск ---
+async function loadWorkflows(){
+  try {
+    const d = await api("/v1/workflows");
+    WORKFLOWS = d.workflows.filter(w => !w.error);
+    $("#wfSelect").innerHTML = WORKFLOWS.map(w =>
+      `<option value="${esc(w.name)}">${esc(w.name)} — ${esc(w.title||"")}</option>`).join("");
+    renderInputs();
+  } catch(e){ showErr(e.message); }
+}
+function renderInputs(){
+  const wf = WORKFLOWS.find(w => w.name === $("#wfSelect").value);
+  if (!wf){ $("#wfInputs").innerHTML = ""; $("#wfInfo").textContent = ""; return; }
+  $("#wfInfo").innerHTML = `${esc(wf.description||"")}
+    <div class="chain">цепочка: <b>${wf.steps.map(esc).join("</b> → <b>")}</b></div>`;
+  $("#wfInputs").innerHTML = Object.entries(wf.inputs||{}).map(([k,v]) =>
+    `<div class="row"><textarea id="in_${esc(k)}" class="grow"
+      placeholder="${esc(k)} — ${esc(v)}"></textarea></div>`).join("");
+}
+async function startRun(){
+  const wf = WORKFLOWS.find(w => w.name === $("#wfSelect").value);
+  if (!wf) return;
+  const inputs = {};
+  let missing = [];
+  for (const k of Object.keys(wf.inputs||{})){
+    const v = ($("#in_"+k)||{}).value || "";
+    if (!v.trim()) missing.push(k);
+    inputs[k] = v;
+  }
+  if (missing.length){ showErr("Не заполнены входы: " + missing.join(", ")); return; }
+  try {
+    showErr("");
+    const out = await api("/v1/runs", {method:"POST", body: JSON.stringify(
+      {workflow: wf.name, goal: $("#goal").value, inputs})});
+    document.querySelector('nav button[data-view="runs"]').click();
+    await loadRuns(); await loadStats(); await openRun(out.run_id);
+  } catch(e){ showErr(e.message); }
+}
+
+// --- согласования ---
+async function loadInbox(){
+  try {
+    const d = await api("/v1/checkpoints?status=pending");
+    $("#inbox").innerHTML = d.checkpoints.length
+      ? d.checkpoints.map(cp => renderCheckpoint(cp, false)).join("")
+      : `<div class="muted">Пусто — среде не нужен человек прямо сейчас.</div>`;
+  } catch(e){ showErr(e.message); }
+}
+
+// --- каталог ---
+async function loadCatalog(){
+  try {
+    const [wf, pr, tl] = await Promise.all([
+      api("/v1/workflows"), api("/v1/profiles"), api("/v1/tools")]);
+    $("#catWf").innerHTML = wf.workflows.map(w => w.error
+      ? `<div class="wf"><b>${esc(w.name)}</b> <span class="st failed">битое определение</span>
+         <div class="muted">${esc(w.error)}</div></div>`
+      : `<div class="wf"><b>${esc(w.name)}</b> — ${esc(w.title||"")}
+         <div class="muted">${esc(w.description||"")}</div>
+         <div class="chain">цепочка: <b>${w.steps.map(esc).join("</b> → <b>")}</b></div>
+         <div class="muted">входы: ${Object.keys(w.inputs||{}).map(esc).join(", ")||"—"}</div></div>`).join("");
+    $("#catProf").innerHTML = pr.profiles.map(p => p.error
+      ? `<tr><td>${esc(p.name)}</td><td colspan="3" class="st failed">${esc(p.error)}</td></tr>`
+      : `<tr><td>${esc(p.name)}</td><td><span class="role ${esc(p.role)}">${esc(p.role)}</span></td>
+         <td class="muted">${esc(p.model)}</td>
+         <td class="muted">${(p.tools||[]).map(esc).join(", ")||"все разрешённые"}</td></tr>`).join("");
+    const g = tl.grants || {};
+    $("#catTools").innerHTML = `
+      <div class="kv">
+        <div>HTTP-хосты</div><div>${(g.http||[]).map(esc).join(", ")||"<span class='muted'>запрещено</span>"}</div>
+        <div>базы SQL</div><div>${(g.sql||[]).map(esc).join(", ")||"<span class='muted'>нет</span>"}</div>
+        <div>shell</div><div>${g.shell?"<span class='st waiting_human'>разрешён</span>":"<span class='muted'>запрещён</span>"}</div>
+      </div>
+      <table style="margin-top:12px"><thead><tr><th>инструмент</th><th>описание</th></tr></thead><tbody>` +
+      tl.tools.map(t => `<tr><td>${esc(t.name)}${t.dangerous?' <span class="st waiting_human">опасный</span>':''}</td>
+        <td class="muted">${esc(t.description)}</td></tr>`).join("") + `</tbody></table>`;
+  } catch(e){ showErr(e.message); }
+}
+
+// --- цикл обновления ---
+async function health(){
+  try {
+    const h = await fetch("/health").then(r => r.json());
+    $("#health").textContent = h.status === "ok" ? "AWOS " + h.version : "—";
+  } catch(e){ $("#health").textContent = "нет связи"; }
+}
+async function tick(){
+  if (!$("#auto").checked) return;
+  await loadStats();
+  await loadRuns();
+  if (CURRENT) await refreshDetail();
+}
+$("#token").addEventListener("change", () => { loadStats(); loadRuns(); });
+health(); loadStats(); loadRuns(); loadWorkflows();
+TIMER = setInterval(tick, 3000);
+</script>
+</body>
+</html>
