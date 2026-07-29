@@ -20,3 +20,14 @@ def validate_inventory(data: Any) -> dict[str, Any]:
             if item["confidence"] < .8: item["requires_review"] = True
     data.setdefault("notes", []); data.setdefault("requires_review", any(i["requires_review"] for r in rooms for i in r["items"]))
     return data
+
+def inventory_markdown(data: dict[str, Any]) -> str:
+    """Детерминированное представление валидной описи для docx_create_markdown."""
+    data = validate_inventory(data)
+    lines = ["# Опись помещения"]
+    for room in data["premises"]:
+        lines += [f"## {room['name']}", "| № | Предмет | Категория | Кол-во | Состояние | Описание |", "|---|---|---|---:|---|---|"]
+        for n, item in enumerate(room["items"], 1):
+            lines.append(f"| {n} | {item['name']} | {item['category']} | {item['quantity']} | {item['condition']} | {item['description']} |")
+    if data["notes"]: lines += ["## Примечания", *[f"- {x}" for x in data["notes"]]]
+    return "\n".join(lines)
