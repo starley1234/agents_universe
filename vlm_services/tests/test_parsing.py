@@ -144,3 +144,53 @@ def test_force_json_can_be_disabled():
 
     cfg = replace(settings(), provider="ollama", force_json=False)
     assert get_vlm(cfg).model_kwargs == {}
+
+
+# --- json-режим по моделям -------------------------------------------------
+@pytest.mark.parametrize("model,expected", [
+    ("gpt-4o-mini", True),
+    ("qwen2.5vl:7b", True),
+    ("unsloth/gemma-4-12b-it", False),      # Gemma отвечает 400 на response_format
+    ("google/gemma-2-27b", False),
+    ("phi-3-vision", False),
+])
+def test_json_mode_support_by_model(model, expected):
+    """Флаг строгого JSON нельзя слать модели, которая его не принимает."""
+    from vlmkit.vlm import supports_json_mode
+
+    assert supports_json_mode(model) is expected
+
+
+def test_custom_gateway_skips_json_mode_for_gemma():
+    """Свой шлюз + Gemma: без этой проверки каждый запрос падал бы с 400."""
+    from dataclasses import replace
+
+    from vlmkit.config import settings
+    from vlmkit.vlm import get_vlm
+
+    cfg = replace(settings(), provider="openai", api_key="k",
+                  base_url="https://llm.example.ru/v1", model="unsloth/gemma-4-12b-it")
+    assert get_vlm(cfg).model_kwargs == {}
+
+
+def test_custom_gateway_uses_json_mode_for_capable_model():
+    from dataclasses import replace
+
+    from vlmkit.config import settings
+    from vlmkit.vlm import get_vlm
+
+    cfg = replace(settings(), provider="openai", api_key="k",
+                  base_url="https://llm.example.ru/v1", model="gpt-4o-mini")
+    assert get_vlm(cfg).model_kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_openai_client_gets_timeout_from_config():
+    """Свой шлюз может отвечать медленно — таймаут обязан быть настраиваемым."""
+    from dataclasses import replace
+
+    from vlmkit.config import settings
+    from vlmkit.vlm import get_vlm
+
+    cfg = replace(settings(), provider="openai", api_key="k",
+                  base_url="https://llm.example.ru/v1", request_timeout_s=240.0)
+    assert get_vlm(cfg).request_timeout == 240.0

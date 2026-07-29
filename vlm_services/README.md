@@ -9,7 +9,7 @@
 
 ```bash
 make install
-make test      # 243 проверки, ~3 с
+make test      # 251 проверка, ~3 с
 make serve     # интерфейс на http://127.0.0.1:8081
 ```
 
@@ -45,6 +45,7 @@ vlm stats                                   # траты, кеш, прогоны
 vlm runs --status error                     # что падало
 vlm purge --older-than-days 30              # чистка журнала и кеша
 vlm doctor                                  # самопроверка
+python scripts/live_check.py                # диагностика на живой модели
 ```
 
 ---
@@ -230,7 +231,7 @@ vlm run ux-critic screen.png --provider openai
 
 ## Тесты
 
-`make test` — 243 проверки без сети и ключей:
+`make test` — 251 проверка без сети и ключей:
 
 - **изображения** — форматы, лимиты, отказ от загрузки по URL (SSRF),
   уменьшение крупных кадров, устойчивость к битым данным;

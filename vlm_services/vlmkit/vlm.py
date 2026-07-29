@@ -186,8 +186,19 @@ def get_vlm(cfg: Settings | None = None, **overrides: Any) -> BaseChatModel:
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, temperature=cfg.temperature, api_key=cfg.api_key,
-                          base_url=cfg.base_url, max_tokens=cfg.max_tokens, **overrides)
+        opts: dict[str, Any] = {
+            "model": model, "temperature": cfg.temperature, "api_key": cfg.api_key,
+            "base_url": cfg.base_url, "max_tokens": cfg.max_tokens,
+            "timeout": cfg.request_timeout_s,
+            "max_retries": 0,  # повторы делает наш Runner, со своей паузой
+        }
+        # Строгий JSON просим только у своего шлюза и только если разрешено:
+        # многие открытые модели (Gemma, часть Llama) на response_format
+        # отвечают 400, и запрос падает ещё до модели.
+        if cfg.base_url and cfg.force_json and supports_json_mode(model):
+            opts["model_kwargs"] = {"response_format": {"type": "json_object"}}
+        opts.update(overrides)
+        return ChatOpenAI(**opts)
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -210,12 +221,23 @@ def get_vlm(cfg: Settings | None = None, **overrides: Any) -> BaseChatModel:
             "timeout": cfg.request_timeout_s,
             "max_retries": 0,  # повторы делает наш Runner, со своей паузой
         }
-        if cfg.force_json:
+        if cfg.force_json and supports_json_mode(model):
             opts["model_kwargs"] = {"response_format": {"type": "json_object"}}
         opts.update(overrides)
         return ChatOpenAI(**opts)
 
     raise ValueError(f"неизвестный провайдер VLM: {provider!r}")
+
+
+# Семейства, которые не принимают response_format=json_object. Список
+# короткий намеренно: лучше не послать флаг там, где он поддерживается,
+# чем получить 400 на каждом запросе.
+NO_JSON_MODE = ("gemma", "phi", "mistral-7b", "tinyllama", "moondream")
+
+
+def supports_json_mode(model: str) -> bool:
+    low = (model or "").lower()
+    return not any(name in low for name in NO_JSON_MODE)
 
 
 def is_offline(cfg: Settings) -> bool:
