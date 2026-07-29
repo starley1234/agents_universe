@@ -1,0 +1,65 @@
+{
+  "provider": "lmstudio",
+  "model": "devstral-small-2",
+  "base_url": "http://GPU-СЕРВЕР:1234/v1",
+  "profile": "autonomous",
+  "workspace": "./workspace",
+  "db": "agent.db",
+  "max_hours": 8,
+  "max_iterations": 60,
+  "sandbox": {
+    "mode": "auto",
+    "timeout": 180
+  },
+  "mcp": {
+    "servers": {
+      "search": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-brave-search"
+        ],
+        "env": {
+          "BRAVE_API_KEY": "ВАШ_КЛЮЧ"
+        },
+        "rate_limit": 20,
+        "_комментарий": "поиск платный и квотируемый — не чаще раза в 20 с"
+      },
+      "fetch": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-fetch"
+        ],
+        "rate_limit": 0,
+        "_комментарий": "загрузка страниц бесплатна — без лимита"
+      },
+      "image": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-image-gen"
+        ],
+        "rate_limit": 10,
+        "enabled": false,
+        "_комментарий": "включите, когда настроите свой сервер картинок"
+      },
+      "speech": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-tts"
+        ],
+        "rate_limit": 5,
+        "enabled": false
+      },
+      "remote": {
+        "transport": "http",
+        "url": "http://127.0.0.1:3000/mcp",
+        "headers": {
+          "Authorization": "Bearer ТОКЕН"
+        },
+        "rate_limit": 0,
+        "enabled": false,
+        "_комментарий": "если сервер уже слушает порт, как в LM Studio"
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "workspace": "./workspace",
+  "max_steps": 30,
+  "skills": [
+    "files",
+    "shell"
+  ],
+  "sandbox": {
+    "mode": "auto",
+    "timeout": 120
+  }
+}

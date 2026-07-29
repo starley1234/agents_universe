@@ -1,0 +1,15 @@
+[Unit]
+Description=Копия базы агента
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/agent_system
+# sqlite3 .backup делает копию БЕЗ остановки: обычный cp во время
+# записи даёт битый файл.
+ExecStart=/bin/sh -c 'mkdir -p backups && python3 -c "\
+import sqlite3,time,glob,os;\
+d=sqlite3.connect(\"agent.db\");\
+n=\"backups/agent-%s.db\" % time.strftime(\"%%Y%%m%%d\");\
+b=sqlite3.connect(n); d.backup(b); b.close(); d.close();\
+old=sorted(glob.glob(\"backups/agent-*.db\"))[:-14];\
+[os.remove(f) for f in old]"'
