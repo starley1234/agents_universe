@@ -373,3 +373,39 @@ make test   # 437 проверок, ~20 секунд
 `ThreadingHTTPServer`), обязательные негативные сценарии, отсутствующие
 опциональные зависимости (`psycopg`/`pgserver`) приводят к graceful
 skip конкретного модуля, а не к падению всего набора.
+
+## Внешние MCP-инструменты и уведомления
+
+Агенту можно назначить `mcp` и `messaging` в поле `tools`, например
+`files,web,mcp,messaging`. MCP-инструменты не реализуются в MAOS: при
+старте хода агент подключается к вашим серверам, читает их `tools/list` и
+передаёт модели их схемы. Во избежание конфликтов инструмент получает
+имя `<server>_<tool>` — например `web_search_search`.
+
+Конфигурация MCP и все токены находятся в **`.env`**, переменная
+`MAOS_MCP_SERVERS`; используйте JSON формата LM Studio:
+
+```dotenv
+MAOS_MCP_SERVERS={"mcpServers":{"web_search":{"transport":"http","url":"http://111.222.333.44:8001/sse/","rate_limit":1},"img_toolforge":{"transport":"http","url":"https://img.toolforge.ru/sse","timeout":120}}}
+```
+
+Сервер, который не отвечает или отдаёт ошибку, не останавливает MAOS:
+его инструменты просто не будут предложены модели в этом ходе. Для
+каждого сервера можно задать `rate_limit`, `timeout`, `headers`,
+`enabled` и `only_tools`. Секретные `Authorization`-заголовки задавайте
+в `.env`, никогда не коммитьте их в JSON-файле.
+
+### Email и MAX
+
+SMTP-параметры также задаются в `.env`: `SMTP_HOST`, `SMTP_PORT`,
+`SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_ADDR`, `SMTP_USE_SSL` и
+`SMTP_STARTTLS`. Это правильное место для пароля: файл `.env` уже
+игнорируется Git; публичные параметры workflow можно хранить в
+JSON-конфигурации. Агент с навыком `messaging` получает `email_send`
+(включая вложения из своей рабочей папки) и при `MAX_BOT_TOKEN` —
+`max_send_message`.
+
+Отправка вовне необратима. `MAOS_CONFIRM_SENDS=true` (значение по
+умолчанию) блокирует её, пока в UI нет отдельного подтверждения. Для
+доверенного автоматического сценария уведомлений после QA установите
+`MAOS_CONFIRM_SENDS=false`.

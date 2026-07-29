@@ -117,6 +117,26 @@ class Config:
     web_max_results: int = 8
     web_allow_local: bool = False          # только для интранет-сценариев/тестов
 
+    # --- внешние MCP-серверы ---
+    # Несекретная конфигурация серверов из JSON-конфига либо JSON в
+    # MAOS_MCP_SERVERS. Токены/Authorization-заголовки задавайте только
+    # через MAOS_MCP_SERVERS в .env, а не в файле, попадающем в git.
+    mcp_servers: dict[str, Any] | None = None
+
+    # --- уведомления и доставка артефактов (навык messaging) ---
+    # Пароли и токены загружаются исключительно из .env. Значения портов,
+    # TLS и адрес отправителя можно хранить в JSON, если это удобно.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_ssl: bool = False
+    smtp_starttls: bool = True
+    smtp_from_addr: str = ""
+    max_bot_token: str = ""
+    max_api_base: str = "https://platform-api2.max.ru"
+    messaging_confirm_sends: bool = True
+
     # --- HTTP API/веб ---
     host: str = "127.0.0.1"
     port: int = 8090
@@ -161,7 +181,7 @@ class Config:
     #: из JSON-конфига — тот же принцип, что у messaging.* в agent_system
     #: (MessagingConfig.from_dict фильтрует пароли/токены). Конфиг можно
     #: класть в git, не боясь утечки ключа внешнего сервера эмбеддингов.
-    _SECRET_FIELDS = ("api_token", "embedding_api_key", "tts_api_key")
+    _SECRET_FIELDS = ("api_token", "embedding_api_key", "tts_api_key", "smtp_host", "smtp_user", "smtp_password", "max_bot_token")
 
     @classmethod
     def load(cls, path: str | None = None, **overrides: Any) -> "Config":
@@ -193,6 +213,12 @@ class Config:
             "tts_audio_format": "TTS_AUDIO_FORMAT",
             "workspace_root": "MAOS_WORKSPACE_ROOT",
             "web_search_base_url": "MAOS_WEB_SEARCH_BASE_URL",
+            "smtp_host": "SMTP_HOST",
+            "smtp_user": "SMTP_USER",
+            "smtp_password": "SMTP_PASSWORD",
+            "smtp_from_addr": "SMTP_FROM_ADDR",
+            "max_bot_token": "MAX_BOT_TOKEN",
+            "max_api_base": "MAX_API_BASE",
             "host": "MAOS_HOST",
             "api_token": "MAOS_API_TOKEN",
         }
@@ -200,6 +226,22 @@ class Config:
             val = os.getenv(env_name)
             if val:
                 setattr(cfg, field_name, val)
+        raw_mcp = os.getenv("MAOS_MCP_SERVERS")
+        if raw_mcp:
+            try:
+                parsed_mcp = json.loads(raw_mcp)
+            except json.JSONDecodeError as exc:
+                raise ConfigError("MAOS_MCP_SERVERS должен содержать JSON") from exc
+            if not isinstance(parsed_mcp, dict):
+                raise ConfigError("MAOS_MCP_SERVERS должен быть JSON-объектом серверов")
+            cfg.mcp_servers = parsed_mcp.get("mcpServers", parsed_mcp)
+        if os.getenv("SMTP_PORT"):
+            cfg.smtp_port = int(os.environ["SMTP_PORT"])
+        for field_name, env_name in (("smtp_use_ssl", "SMTP_USE_SSL"),
+                                     ("smtp_starttls", "SMTP_STARTTLS"),
+                                     ("messaging_confirm_sends", "MAOS_CONFIRM_SENDS")):
+            if os.getenv(env_name):
+                setattr(cfg, field_name, os.environ[env_name].strip().lower() in ("1", "true", "yes", "on"))
         if os.getenv("MAOS_PORT"):
             cfg.port = int(os.environ["MAOS_PORT"])
         if os.getenv("MAOS_EMBEDDING_DIM"):
@@ -224,6 +266,11 @@ class Config:
             d["embedding_api_key"] = "***"
         if d.get("tts_api_key"):
             d["tts_api_key"] = "***"
+        for field_name in ("smtp_host", "smtp_user", "smtp_password", "max_bot_token"):
+            if d.get(field_name):
+                d[field_name] = "***"
+        if d.get("mcp_servers"):
+            d["mcp_servers"] = "***"
         return d
 
 

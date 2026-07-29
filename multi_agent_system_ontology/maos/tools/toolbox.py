@@ -33,7 +33,7 @@ class ToolboxError(RuntimeError):
     """Ошибка сборки набора инструментов: неизвестный навык и т.п."""
 
 
-KNOWN_TOOLS = ("files", "web", "office", "rag")
+KNOWN_TOOLS = ("files", "web", "office", "rag", "mcp", "messaging")
 
 
 def parse_tools_field(raw: str) -> list[str]:
@@ -78,6 +78,23 @@ def build_toolbox(cfg: Config, agent_row: dict, store: Store | None = None,
     if "office" in names:
         from . import office_docs
         _extend(office_docs.build(ws))
+    if "mcp" in names:
+        from ..mcp import MCPPool, configs_from_dict
+        configs = configs_from_dict(cfg.mcp_servers or {})
+        if not configs:
+            raise ToolboxError("Навык 'mcp' включён, но MAOS_MCP_SERVERS не задан")
+        # MCPPool сохраняется вместе с замыканиями инструментов на время хода.
+        _extend(MCPPool(configs).tools())
+    if "messaging" in names:
+        from .messaging import EmailConfig, MaxConfig, MessagingConfig, build as build_messaging
+        msg_cfg = MessagingConfig(
+            email=EmailConfig(smtp_host=cfg.smtp_host, smtp_port=cfg.smtp_port,
+                              smtp_user=cfg.smtp_user, smtp_password=cfg.smtp_password,
+                              smtp_use_ssl=cfg.smtp_use_ssl, smtp_starttls=cfg.smtp_starttls,
+                              from_addr=cfg.smtp_from_addr),
+            max=MaxConfig(bot_token=cfg.max_bot_token, api_base=cfg.max_api_base),
+            confirm_sends=cfg.messaging_confirm_sends)
+        _extend(build_messaging(ws, msg_cfg))
     if "rag" in names:
         if store is None or embedder is None:
             raise ToolboxError(

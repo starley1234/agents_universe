@@ -123,8 +123,8 @@ def main() -> int:
     section("maos.tools.toolbox: parse_tools_field")
     check("разбирает через запятую", parse_tools_field("files, web") == ["files", "web"])
     check("пустая строка -> пустой список", parse_tools_field("") == [])
-    check("KNOWN_TOOLS содержит files/web/office/rag",
-         set(KNOWN_TOOLS) == {"files", "web", "office", "rag"})
+    check("KNOWN_TOOLS содержит встроенные и внешние навыки",
+         set(KNOWN_TOOLS) == {"files", "web", "office", "rag", "mcp", "messaging"})
 
     section("maos.tools.toolbox: build_toolbox без Store — files/web/office")
     with tempfile.TemporaryDirectory() as wsroot:
