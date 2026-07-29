@@ -1,0 +1,30 @@
+{
+  "_комментарий": "Делопроизводство: создание документов и рассылка. Пароли и токены только в переменных окружения, в конфиге их нет.",
+  "_окружение": "AGENT_SMTP_PASS, AGENT_IMAP_PASS, AGENT_TG_TOKEN, AGENT_MAX_TOKEN",
+  "provider": "ollama",
+  "model": "devstral-small-2:22b",
+  "base_url": "http://localhost:11434",
+  "profile": "office",
+  "workspace": "./workspace",
+  "comms": {
+    "smtp_host": "smtp.yandex.ru",
+    "smtp_port": 465,
+    "smtp_ssl": true,
+    "smtp_user": "agent@firma.ru",
+    "smtp_from": "agent@firma.ru",
+    "imap_host": "imap.yandex.ru",
+    "imap_port": 993,
+    "imap_user": "agent@firma.ru",
+    "_allow_to": "Кому РАЗРЕШЕНО писать. Пустой список = никому, всё уходит в черновики outbox/. Маска *@firma.ru разрешает весь домен.",
+    "allow_to": [
+      "*@firma.ru",
+      "boss@partner.com"
+    ],
+    "telegram_chat": "",
+    "max_chat": "",
+    "outbox": "outbox"
+  },
+  "sandbox": {
+    "mode": "auto"
+  }
+}

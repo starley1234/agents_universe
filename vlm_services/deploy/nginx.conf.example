@@ -1,0 +1,27 @@
+# Пример reverse-proxy с TLS. Сам сервис HTTPS не терминирует.
+server {
+    listen 443 ssl http2;
+    server_name vlm.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/vlm.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/vlm.example.com/privkey.pem;
+
+    # Фото с телефона легко весит 10-20 МБ; согласуйте с VLM_MAX_UPLOAD_MB.
+    client_max_body_size 25m;
+
+    # VLM отвечает не мгновенно: на 8 изображений уходит десятки секунд.
+    proxy_read_timeout 180s;
+    proxy_send_timeout 180s;
+
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID      $request_id;
+    }
+
+    # Метрики наружу не отдаём — только для внутренней сети.
+    location /metrics { allow 10.0.0.0/8; deny all; proxy_pass http://127.0.0.1:8081; }
+}

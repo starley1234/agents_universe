@@ -1,0 +1,10 @@
+[Unit]
+Description=Чистка старых прогонов и кеша VLM Services
+
+[Service]
+Type=oneshot
+User=vlm
+Group=vlm
+WorkingDirectory=/opt/vlm-services
+EnvironmentFile=/etc/vlm-services/env
+ExecStart=/opt/vlm-services/.venv/bin/vlm purge --older-than-days 30
