@@ -20,6 +20,8 @@
   GET/POST /v1/workflows           — долгие прикладные задачи и их статусы
   GET/POST /v1/workflows/<id>      — детали / обновление статуса и state
   POST   /v1/workflows/<id>/artifact — зарегистрировать результат задачи
+  POST   /v1/workflows/<id>/run      — выполнить детерминированные шаги
+  POST   /v1/workflows/<id>/cancel   — отменить задачу
   GET    /v1/chain/<id>           — статус+шаги цепочки
   POST   /v1/maintenance/run      — запустить один цикл обслуживания вручную
   GET    /v1/onboarding/status    — пуста ли база / есть ли демо-агенты
@@ -59,6 +61,7 @@ from ..memory.store import Store, StoreError
 from ..orchestrator.chain import ChainError, ChainRunner
 from ..orchestrator.service import Orchestrator
 from ..tts.provider import TTSError, build_tts_provider
+from ..workflows.runner import WorkflowRunner
 
 MAX_BODY = 1_000_000
 
@@ -371,6 +374,15 @@ class Handler(BaseHTTPRequestHandler):
             with self._store() as st:
                 if not st.get_workflow(wid):
                     self._send(404, {"error": f"workflow {wid} не найден"})
+                    return
+                if action == "run":
+                    result = WorkflowRunner(self.cfg, st).run(wid)
+                    self._send(200, {"workflow": result, "steps": st.workflow_steps(wid),
+                                     "artifacts": st.workflow_artifacts(wid)})
+                    return
+                if action == "cancel":
+                    st.set_workflow(wid, status="cancelled")
+                    self._send(200, {"workflow": st.get_workflow(wid)})
                     return
                 if action == "artifact":
                     required = ("kind", "name", "path")
