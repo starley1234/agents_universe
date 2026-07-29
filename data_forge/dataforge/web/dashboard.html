@@ -72,6 +72,7 @@
     <button data-view="quality">Качество</button>
     <button data-view="mdm">MDM / дубли</button>
     <button data-view="gold">Золотые записи</button>
+    <button data-view="ontology">Ontology</button>
     <button data-view="lineage">Lineage</button>
     <button data-view="audit">Аудит</button>
   </nav>
@@ -157,9 +158,38 @@
   <div class="card">
     <h2>Золотые записи (Gold-слой)</h2>
     <p class="sub">Единая точка правды: согласованные атрибуты сущности после слияния источников</p>
-    <table id="goldTable"><thead><tr><th>#</th><th>Тип</th><th>Атрибуты</th></tr></thead>
+    <table id="goldTable"><thead><tr><th>#</th><th>Тип</th><th>Атрибуты</th><th></th></tr></thead>
     <tbody></tbody></table>
     <div id="goldEmpty" class="empty-hint hidden">Золотых записей пока нет</div>
+  </div>
+</section>
+
+<section id="view-ontology" class="hidden">
+  <div class="card">
+    <h2>Ontology: типы бизнес-объектов и actions</h2>
+    <p class="sub">Бизнес-язык поверх сырых таблиц (ТЗ §3.2): объекты, их атрибуты, связи и действия</p>
+    <div class="row">
+      <input id="ot-name" placeholder="имя типа, напр. Контрагент">
+      <input id="ot-gold-type" placeholder="gold_entity_type, напр. counterparty">
+      <input id="ot-schema" placeholder='attributes_schema JSON, напр. [{"name":"inn","type":"string","required":true}]' size="42">
+      <button class="primary" id="ot-create-btn">Определить тип объекта</button>
+    </div>
+    <table id="objectTypesTable"><thead><tr><th>#</th><th>Имя</th><th>Gold entity_type</th>
+      <th>Схема атрибутов</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="objectTypesEmpty" class="empty-hint hidden">Типов объектов пока нет</div>
+
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">Материализация из golden record</h3>
+    <div class="row">
+      <input id="mat-gold-id" placeholder="ID золотой записи" size="8">
+      <button id="mat-btn">Материализовать в Ontology</button>
+    </div>
+
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">Экземпляры объектов</h3>
+    <table id="instancesTable"><thead><tr><th>#</th><th>Тип</th><th>Атрибуты</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="instancesEmpty" class="empty-hint hidden">Экземпляров пока нет</div>
+
+    <div id="instanceCard" class="explain-box hidden" style="white-space:pre-wrap"></div>
   </div>
 </section>
 
@@ -187,7 +217,7 @@
 
 </main>
 <script>
-const VIEWS = ["overview","sources","datasets","quality","mdm","gold","lineage","audit"];
+const VIEWS = ["overview","sources","datasets","quality","mdm","gold","ontology","lineage","audit"];
 function token(){ return document.getElementById('token').value.trim(); }
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 async function api(path, opts={}){
@@ -208,6 +238,7 @@ function setActiveView(name){
   if (name==='datasets') loadDatasets();
   if (name==='mdm') loadCandidates();
   if (name==='gold') loadGold();
+  if (name==='ontology') loadObjectTypes();
   if (name==='audit') loadAudit();
 }
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click', ()=>setActiveView(b.dataset.view)));
@@ -392,9 +423,93 @@ async function loadGold(){
     for (const g of items){
       const tr = document.createElement('tr');
       tr.innerHTML = `<td>#${g.id}</td><td>${esc(g.entity_type)}</td>
-        <td class="mono">${esc(JSON.stringify(g.attributes))}</td>`;
+        <td class="mono">${esc(JSON.stringify(g.attributes))}</td>
+        <td><button data-materialize="${g.id}">→ Ontology</button></td>`;
       tbody.appendChild(tr);
     }
+    tbody.querySelectorAll('[data-materialize]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{
+        const r = await api('/v1/ontology/materialize', {method:'POST',
+          body: JSON.stringify({gold_entity_id: parseInt(el.dataset.materialize, 10)})});
+        alert('Материализовано в ObjectInstance #' + r.id);
+        setActiveView('ontology');
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+async function loadObjectTypes(){
+  try{
+    const items = await api('/v1/ontology/types');
+    const tbody = document.querySelector('#objectTypesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('objectTypesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const t of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${t.id}</td><td>${esc(t.name)}</td>
+        <td><code>${esc(t.gold_entity_type || '—')}</code></td>
+        <td class="mono">${esc(JSON.stringify(t.attributes_schema))}</td>
+        <td><button data-define-action="${t.id}">+ Action</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-define-action]').forEach(el=>el.addEventListener('click', async ()=>{
+      const name = prompt('Имя действия (напр. correct_attribute):', 'correct_attribute');
+      if (!name) return;
+      const handler = prompt('Handler (напр. ontology.actions.correct_attribute):',
+        'ontology.actions.' + name);
+      if (!handler) return;
+      try{
+        await api(`/v1/ontology/types/${el.dataset.defineAction}/actions`,
+          {method:'POST', body: JSON.stringify({name, handler})});
+        alert('Действие определено');
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+  loadObjectInstances();
+}
+document.getElementById('ot-create-btn').addEventListener('click', async ()=>{
+  const name = document.getElementById('ot-name').value.trim();
+  const gold_entity_type = document.getElementById('ot-gold-type').value.trim();
+  let attributes_schema = [];
+  const raw = document.getElementById('ot-schema').value.trim();
+  if (raw) { try{ attributes_schema = JSON.parse(raw); }catch(e){ alert('Схема должна быть валидным JSON'); return; } }
+  if (!name) { alert('Укажите имя типа'); return; }
+  try{
+    await api('/v1/ontology/types', {method:'POST',
+      body: JSON.stringify({name, gold_entity_type, attributes_schema})});
+    loadObjectTypes();
+  }catch(e){ alert(e.message); }
+});
+document.getElementById('mat-btn').addEventListener('click', async ()=>{
+  const gold_entity_id = parseInt(document.getElementById('mat-gold-id').value.trim(), 10);
+  if (!gold_entity_id) { alert('Укажите ID золотой записи'); return; }
+  try{
+    await api('/v1/ontology/materialize', {method:'POST', body: JSON.stringify({gold_entity_id})});
+    loadObjectInstances();
+  }catch(e){ alert(e.message); }
+});
+
+async function loadObjectInstances(){
+  try{
+    const items = await api('/v1/ontology/instances');
+    const tbody = document.querySelector('#instancesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('instancesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const inst of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${inst.id}</td><td>${inst.object_type_id}</td>
+        <td class="mono">${esc(JSON.stringify(inst.attributes))}</td>
+        <td><button data-open="${inst.id}">Открыть карточку</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{
+        const nb = await api(`/v1/ontology/instances/${el.dataset.open}`);
+        const card = document.getElementById('instanceCard');
+        card.classList.remove('hidden');
+        card.textContent = JSON.stringify(nb, null, 2);
+      }catch(e){ alert(e.message); }
+    }));
   }catch(e){}
 }
 

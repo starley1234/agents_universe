@@ -1,10 +1,12 @@
-# DataForge — платформа интеграции данных, качества, MDM и lineage
+# DataForge — платформа интеграции данных, качества, MDM, Ontology и lineage
 
 Ядро платформы интеграции корпоративных данных из большого ТЗ на
 DataForge: подключение источников (Connect Hub), профилирование и
 контроль качества данных (Quality Engine), сборка «золотой записи» из
-нескольких источников (MDM/матчинг), прослеживаемость происхождения
-данных (lineage), поверх которых — REST API и веб-дашборд.
+нескольких источников (MDM/матчинг), бизнес-язык поверх golden record
+с типизированными объектами/связями/действиями (Ontology),
+прослеживаемость происхождения данных (lineage), поверх которых —
+REST API и веб-дашборд.
 
 Независимое приложение, живущее рядом с `agent_system/`,
 `multi_agent_system_ontology/` и `erp_ai/` в этом репозитории — не
@@ -96,15 +98,35 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
   источники (регистрация, discover, ingest), каталог данных
   (Bronze/Silver/Gold с числом строк), качество (профилирование,
   прогон проверок, карантин), MDM (поиск дублей, stewardship-очередь,
-  слияние/отклонение), золотые записи, построение цепочки lineage,
-  журнал аудита.
+  слияние/отклонение), золотые записи (с кнопкой материализации в
+  Ontology), Ontology (типы объектов, actions, экземпляры, карточка
+  объекта со связями), построение цепочки lineage, журнал аудита.
+- **Ontology / семантическая модель** (`dataforge/ontology/`, ТЗ §3.2,
+  K1) — бизнес-язык поверх Gold-слоя:
+  - `model.py`: `define_object_type()` — регистрация типа бизнес-
+    объекта ("Контрагент", "Деталь") с декларативной схемой атрибутов
+    (`{"name","type","required"}`, типы `string`/`number`/`boolean`);
+    `validate_attributes()` — проверка атрибутов против схемы, не
+    бросает исключение сама (вызывающий код решает, блокировать или
+    только предупредить); `materialize_from_gold()` — создаёт или
+    обновляет `ObjectInstance` из golden record по привязке
+    `gold_entity_type`, с опциональным `strict=True` (guardrail —
+    отказ материализовать данные, нарушающие обязательные поля схемы);
+    `link_instances()` — типизированная связь между двумя объектами с
+    проверкой существования обеих сторон; `instance_neighborhood()` —
+    "карточка объекта" (сам объект + исходящие/входящие связи +
+    исходные Silver-записи, слившиеся в golden record).
+  - `actions.py`: реестр КОНКРЕТНЫХ обработчиков действий (не
+    универсальный движок правил/скриптов — сознательно узко и
+    безопасно), `execute_action()` — единая точка выполнения с
+    обязательным audit trail НА ЛЮБОЙ исход (включая неудачные
+    попытки — видно не только что сделано, но и что пытались сделать
+    и не получилось). Встроены `correct_attribute` (ТЗ пример
+    "скорректировать остаток" — обязательное `reason`, тот же принцип
+    explainability, что у `ProcurementAgent` в `erp_ai/`) и `link_to`.
 
 ### НЕ реализовано (осознанно, не притворяемся, что готово)
 
-- **Ontology / семантическая модель** (ТЗ §3.2) — объекты, actions,
-  бизнес-язык поверх сырых таблиц — не реализовано; платформа работает
-  напрямую с `gold_entity`/`entity_type` как со строкой, без
-  формального реестра типов объектов и связей.
 - **Process Orchestrator / оркестрация бизнес-процессов** (ТЗ §5,
   "Слой ... Process Orchestr.") — write-back и обратная запись как
   сквозной сценарий продемонстрированы в `erp_ai/` (соседний проект
@@ -188,7 +210,7 @@ make serve      # http://127.0.0.1:8200/dashboard
 
 ```bash
 pip install -r requirements-dev.txt
-make test       # 300 проверок, ~25 секунд
+make test       # 398 проверок, ~35 секунд
 ```
 
 ## Сценарий — пошагово (K1 + K2 + K4: качество данных → golden record → lineage)
@@ -218,6 +240,31 @@ curl -X POST localhost:8200/v1/mdm/candidates/1/merge -d '{"decided_by":"human:i
 
 # 7. Проследить полную цепочку происхождения золотой записи
 curl "localhost:8200/v1/lineage/trace?asset=gold:entity:1"
+```
+
+## Сценарий — Ontology (бизнес-язык поверх golden record)
+
+```bash
+# 1. Определить тип бизнес-объекта с привязкой к Gold и схемой атрибутов
+curl -X POST localhost:8200/v1/ontology/types \
+  -d '{"name":"Контрагент","gold_entity_type":"counterparty",
+       "attributes_schema":[{"name":"inn","type":"string","required":true}]}'
+
+# 2. Материализовать объект из уже собранной golden record
+curl -X POST localhost:8200/v1/ontology/materialize -d '{"gold_entity_id":1}'
+
+# 3. Определить действие ("скорректировать атрибут" из ТЗ §3.7) и выполнить его
+curl -X POST localhost:8200/v1/ontology/types/1/actions \
+  -d '{"name":"correct_attribute","handler":"ontology.actions.correct_attribute"}'
+curl -X POST localhost:8200/v1/ontology/instances/1/actions \
+  -d '{"action":"correct_attribute","actor":"human:ivanov",
+       "params":{"field":"inn","value":"7701234567","reason":"исправлена опечатка"}}'
+# -> без params.reason запрос будет отклонён (400) — explainability обязательна
+
+# 4. Связать два объекта и посмотреть карточку объекта
+curl -X POST localhost:8200/v1/ontology/links \
+  -d '{"link_type":"поставляет","from_instance_id":1,"to_instance_id":2}'
+curl localhost:8200/v1/ontology/instances/1
 ```
 
 ## HTTP API
@@ -254,6 +301,16 @@ POST /v1/mdm/survivorship             — задать приоритет ист
 GET  /v1/gold                         — золотые записи
 GET  /v1/gold/{id}                    — детали + связанные исходные записи
 
+GET  /v1/ontology/types               — типы бизнес-объектов
+POST /v1/ontology/types               — определить тип объекта
+GET  /v1/ontology/types/{id}          — детали + определённые actions
+POST /v1/ontology/types/{id}/actions  — определить действие для типа
+POST /v1/ontology/materialize         — материализовать объект из golden record
+GET  /v1/ontology/instances           — список экземпляров объектов
+GET  /v1/ontology/instances/{id}      — карточка объекта: связи + источники
+POST /v1/ontology/links               — связать два объекта
+POST /v1/ontology/instances/{id}/actions — выполнить действие над объектом
+
 GET  /v1/lineage/trace                — цепочка lineage по asset
 
 GET  /v1/audit                        — журнал аудита (неизменяемый)
@@ -271,8 +328,8 @@ dataforge/
   config.py            — Config: DB_DSN обязателен, MDM-пороги, секреты
   server.py             — python3 -m dataforge.server: uvicorn.run
   db/
-    store.py             — PostgreSQL Store: 17 таблиц (Bronze/Silver/
-                            Gold, качество, MDM, lineage, аудит)
+    store.py             — PostgreSQL Store: 21 таблица (Bronze/Silver/
+                            Gold, качество, MDM, lineage, Ontology, аудит)
   connectors/
     base.py               — протокол Connector, DatasetSchema, Cursor
     files.py              — CSV/XLSX/JSON/XML (read-only)
@@ -285,6 +342,12 @@ dataforge/
     matching.py             — compare_records, find_match_candidates,
                               apply_survivorship, merge_candidate,
                               auto_merge_high_confidence
+  ontology/
+    model.py                — define_object_type, validate_attributes,
+                              materialize_from_gold, link_instances,
+                              instance_neighborhood
+    actions.py               — реестр обработчиков, execute_action,
+                              correct_attribute, link_to
   pipeline/
     ingest.py               — ingest_full, ingest_changes, promote_quality
   api/
@@ -293,16 +356,18 @@ dataforge/
     dashboard.html           — веб-интерфейс на vanilla JS
 tests/
   test_config.py                 (18 проверок)
-  test_store.py                  (87 проверок)
+  test_store.py                  (110 проверок)
   test_quality_engine.py         (25 проверок)
   test_mdm_matching.py           (34 проверки)
+  test_ontology_model.py         (35 проверок)
+  test_ontology_actions.py       (21 проверка)
   test_connector_files.py        (20 проверок)
   test_connector_sql.py          (19 проверок)
   test_connector_onec_odata.py   (20 проверок)
   test_connector_factory.py      (12 проверок)
   test_pipeline.py               (20 проверок)
-  test_api.py                    (45 проверок)
+  test_api.py                    (64 проверки)
 ```
 
-**Итого 300 проверок**, все зелёные, `pyflakes` чист по `dataforge/` и
+**Итого 398 проверок**, все зелёные, `pyflakes` чист по `dataforge/` и
 `tests/`.

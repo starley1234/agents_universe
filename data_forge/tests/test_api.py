@@ -226,6 +226,100 @@ def main() -> int:
         r = httpx.get(f"{srv.base_url}/v1/gold/999999", timeout=5)
         check("несуществующая golden record -> 404", r.status_code == 404)
 
+        section("Ontology: типы, материализация, связи, actions через HTTP")
+        r = httpx.post(f"{srv.base_url}/v1/ontology/types",
+                       json={"name": "Контрагент", "gold_entity_type": "counterparty",
+                            "attributes_schema": [{"name": "name", "type": "string",
+                                                   "required": True}]}, timeout=5)
+        check("создание ObjectType -> 200", r.status_code == 200)
+        ot_id = r.json()["id"]
+
+        r = httpx.get(f"{srv.base_url}/v1/ontology/types", timeout=5)
+        check("список типов видит созданный", any(t["id"] == ot_id for t in r.json()))
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/types/{ot_id}/actions",
+                       json={"name": "correct_attribute",
+                            "handler": "ontology.actions.correct_attribute"}, timeout=5)
+        check("определение action -> 200", r.status_code == 200)
+
+        r = httpx.get(f"{srv.base_url}/v1/ontology/types/{ot_id}", timeout=5)
+        check("детали типа содержат action_defs", len(r.json()["action_defs"]) == 1)
+
+        r = httpx.get(f"{srv.base_url}/v1/ontology/types/999999", timeout=5)
+        check("несуществующий ObjectType -> 404", r.status_code == 404)
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/materialize",
+                       json={"gold_entity_id": gold_id}, timeout=5)
+        check("материализация из golden record -> 200", r.status_code == 200)
+        instance_id = r.json()["id"]
+        check("gold_entity_id привязан", r.json()["gold_entity_id"] == gold_id)
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/materialize",
+                       json={"gold_entity_id": 999999}, timeout=5)
+        check("материализация несуществующей golden record -> 400", r.status_code == 400)
+
+        r = httpx.get(f"{srv.base_url}/v1/ontology/instances", timeout=5)
+        check("список экземпляров видит созданный", any(i["id"] == instance_id for i in r.json()))
+
+        r = httpx.get(f"{srv.base_url}/v1/ontology/instances/{instance_id}", timeout=5)
+        check("карточка объекта -> 200 с instance/object_type", r.status_code == 200
+             and r.json()["instance"]["id"] == instance_id)
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/types",
+                       json={"name": "Деталь", "gold_entity_type": "part"}, timeout=5)
+        check("создание второго ObjectType (Деталь) -> 200", r.status_code == 200)
+
+        gold_part_id = None
+        # golden record для второго типа создаём напрямую через Store — у API
+        # нет отдельного эндпоинта "создать golden record вручную" (он
+        # появляется только из MDM-слияния), это ожидаемо для honest MVP.
+        from dataforge.db.store import Store as _StoreForTest
+        _st = _StoreForTest(srv.cfg.db_dsn)
+        gold_part_id = _st.create_gold_entity("part", {"sku": "A1"})
+        _st.close()
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/materialize",
+                       json={"gold_entity_id": gold_part_id}, timeout=5)
+        check("материализация второго объекта -> 200", r.status_code == 200)
+        instance_part_id = r.json()["id"]
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/links",
+                       json={"link_type": "поставляет", "from_instance_id": instance_id,
+                            "to_instance_id": instance_part_id, "actor": "human:api-test"},
+                       timeout=5)
+        check("создание связи через API -> 200", r.status_code == 200)
+
+        r = httpx.get(f"{srv.base_url}/v1/ontology/instances/{instance_id}", timeout=5)
+        check("исходящая связь видна в карточке объекта",
+             any(link["to_instance_id"] == instance_part_id
+                for link in r.json()["outgoing_links"]))
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/links",
+                       json={"link_type": "x", "from_instance_id": 999999,
+                            "to_instance_id": instance_part_id, "actor": "human:x"},
+                       timeout=5)
+        check("связь с несуществующим объектом -> 400", r.status_code == 400)
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/instances/{instance_id}/actions",
+                       json={"action": "correct_attribute",
+                            "params": {"field": "name", "value": "Новое имя",
+                                      "reason": "правка через API-тест"},
+                            "actor": "human:api-test"}, timeout=5)
+        check("выполнение действия correct_attribute -> 200", r.status_code == 200)
+        check("явно изменённое поле видно в результате", r.json()["new_value"] == "Новое имя")
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/instances/{instance_id}/actions",
+                       json={"action": "correct_attribute",
+                            "params": {"field": "name", "value": "X"},
+                            "actor": "human:api-test"}, timeout=5)
+        check("действие без обязательного params.reason -> 400 (guardrail)",
+             r.status_code == 400)
+
+        r = httpx.post(f"{srv.base_url}/v1/ontology/instances/{instance_id}/actions",
+                       json={"action": "no_such_action", "params": {},
+                            "actor": "human:api-test"}, timeout=5)
+        check("несуществующее действие -> 400", r.status_code == 400)
+
         section("Lineage: цепочка через HTTP")
         r = httpx.get(f"{srv.base_url}/v1/lineage/trace",
                       params={"asset": f"gold:entity:{gold_id}"}, timeout=5)

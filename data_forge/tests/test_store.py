@@ -279,6 +279,51 @@ def main() -> int:
     check("recent_audit возвращает записи в порядке убывания id",
          recent == sorted(recent, key=lambda a: -a["id"]))
 
+    section("Ontology: object_type, object_instance, object_link, action_def")
+    otid = st.upsert_object_type("Контрагент", gold_entity_type="counterparty",
+                                 attributes_schema=[{"name": "inn", "type": "string"}])
+    check("object_type id > 0", otid > 0)
+    same_otid = st.upsert_object_type("Контрагент", gold_entity_type="counterparty")
+    check("повторный upsert по тому же имени не дублирует", same_otid == otid)
+    check("get_object_type_by_name находит", st.get_object_type_by_name("Контрагент") is not None)
+    check("get_object_type_by_gold_entity_type находит по entity_type",
+         st.get_object_type_by_gold_entity_type("counterparty")["id"] == otid)
+    check("get_object_type для отсутствующего -> None", st.get_object_type(999999) is None)
+    check("list_object_types видит запись", len(st.list_object_types()) >= 1)
+
+    oiid = st.create_object_instance(otid, {"name": "ООО Ромашка"}, gold_entity_id=gold_id)
+    check("object_instance id > 0", oiid > 0)
+    check("get_object_instance_by_gold находит", st.get_object_instance_by_gold(gold_id)["id"] == oiid)
+    st.update_object_instance_attributes(oiid, {"name": "ООО Ромашка (обновлено)"})
+    check("атрибуты обновились", st.get_object_instance(oiid)["attributes"]["name"]
+         == "ООО Ромашка (обновлено)")
+    try:
+        st.create_object_instance(otid, {"x": 1}, gold_entity_id=gold_id)
+        check("повторная привязка того же gold_entity_id -> ошибка уникальности", False)
+    except Exception:
+        check("повторная привязка того же gold_entity_id -> ошибка уникальности", True)
+        st.conn.rollback()
+
+    otid2 = st.upsert_object_type("Деталь", gold_entity_type="part")
+    oiid2 = st.create_object_instance(otid2, {"sku": "A1"})
+    link_id = st.create_object_link("поставляет", oiid, oiid2)
+    check("object_link id > 0", link_id > 0)
+    same_link = st.create_object_link("поставляет", oiid, oiid2)
+    check("повторное создание той же связи не дублирует", same_link == link_id)
+    check("links_from находит связь", len(st.links_from(oiid)) == 1)
+    check("links_to находит связь", len(st.links_to(oiid2)) == 1)
+    check("links_from с фильтром по типу находит", len(st.links_from(oiid, "поставляет")) == 1)
+    check("links_from с фильтром по чужому типу не находит", len(st.links_from(oiid, "чужой")) == 0)
+
+    adid = st.create_action_def(otid, "correct_attribute", "ontology.actions.correct_attribute")
+    check("action_def id > 0", adid > 0)
+    same_adid = st.create_action_def(otid, "correct_attribute", "new.handler")
+    check("повторное создание того же действия обновляет handler, не дублирует",
+         same_adid == adid and st.get_action_def(adid)["handler"] == "new.handler")
+    check("list_action_defs видит действие", len(st.list_action_defs(otid)) == 1)
+    check("get_action_def_by_name находит", st.get_action_def_by_name(otid, "correct_attribute") is not None)
+    check("get_action_def для отсутствующего -> None", st.get_action_def(999999) is None)
+
     section("Dashboard stats: агрегированная статистика")
     stats = st.dashboard_stats()
     check("sources >= 1", stats["sources"] >= 1)
@@ -287,6 +332,8 @@ def main() -> int:
     check("silver_records >= 2", stats["silver_records"] >= 2)
     check("gold_entities >= 1", stats["gold_entities"] >= 1)
     check("audit_entries >= 1", stats["audit_entries"] >= 1)
+    check("object_types >= 2", stats["object_types"] >= 2)
+    check("object_instances >= 2", stats["object_instances"] >= 2)
 
     st.close()
 

@@ -7,8 +7,8 @@
 не реализован, см. README.md).
 
 Схема отражает модель данных из ТЗ (§4), в объёме выбранного контура
-(Connect Hub + Quality Engine + MDM/матчинг + Lineage, БЕЗ Ontology и
-Process Orchestrator — см. README.md, "Честная граница объёма"):
+(Connect Hub + Quality Engine + MDM/матчинг + Lineage + Ontology, БЕЗ
+Process Orchestrator/AI Copilot — см. README.md, "Честная граница объёма"):
 
   source              — зарегистрированный источник данных (файл/SQL/1С)
   dataset             — набор данных источника, привязан к слою
@@ -28,6 +28,16 @@ Process Orchestrator — см. README.md, "Честная граница объ�
   survivorship_rule   — приоритет источников для конкретного поля сущности
   lineage_edge        — ребро графа прослеживаемости (K4): откуда -> куда
   audit_log           — НЕИЗМЕНЯЕМЫЙ журнал действий (только INSERT)
+  object_type         — тип бизнес-объекта Ontology (ТЗ §3.2): "Контрагент",
+                        "Деталь" и т.п., со схемой атрибутов и опциональной
+                        привязкой к entity_type Gold-слоя
+  object_instance     — конкретный экземпляр ObjectType, материализованный
+                        из golden record (или существующий самостоятельно)
+  object_link         — типизированная связь между двумя ObjectInstance
+                        ("поставщик", "содержит" и т.п.)
+  action_def          — определение действия, которое можно выполнить над
+                        объектами данного ObjectType ("скорректировать
+                        атрибут", "согласовать", "связать")
 
 Импорт psycopg — ленивый, как в остальных проектах этого репозитория.
 """
@@ -312,6 +322,66 @@ class Store:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS ix_audit_log_entity "
             "ON audit_log(entity_type, entity_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS object_type(
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,      -- напр. "Контрагент", "Деталь"
+                gold_entity_type TEXT DEFAULT '',  -- привязка к entity_type Gold
+                attributes_schema JSONB DEFAULT '[]',
+                -- [{"name":"inn","type":"string","required":true}, ...]
+                created DOUBLE PRECISION,
+                updated DOUBLE PRECISION
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS object_instance(
+                id SERIAL PRIMARY KEY,
+                object_type_id INTEGER NOT NULL REFERENCES object_type(id)
+                    ON DELETE CASCADE,
+                gold_entity_id INTEGER,          -- откуда материализован (если есть)
+                attributes JSONB NOT NULL DEFAULT '{}',
+                created DOUBLE PRECISION,
+                updated DOUBLE PRECISION
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_object_instance_type "
+            "ON object_instance(object_type_id)")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_object_instance_gold "
+            "ON object_instance(gold_entity_id) WHERE gold_entity_id IS NOT NULL")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS object_link(
+                id SERIAL PRIMARY KEY,
+                link_type TEXT NOT NULL,          -- "поставщик", "содержит" и т.п.
+                from_instance_id INTEGER NOT NULL REFERENCES object_instance(id)
+                    ON DELETE CASCADE,
+                to_instance_id INTEGER NOT NULL REFERENCES object_instance(id)
+                    ON DELETE CASCADE,
+                attributes JSONB DEFAULT '{}',
+                created DOUBLE PRECISION NOT NULL,
+                UNIQUE(link_type, from_instance_id, to_instance_id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_object_link_from "
+            "ON object_link(from_instance_id)")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_object_link_to "
+            "ON object_link(to_instance_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS action_def(
+                id SERIAL PRIMARY KEY,
+                object_type_id INTEGER NOT NULL REFERENCES object_type(id)
+                    ON DELETE CASCADE,
+                name TEXT NOT NULL,             -- "correct_attribute", "approve"
+                params_schema JSONB DEFAULT '[]',
+                -- [{"name":"field","type":"string","required":true}, ...]
+                handler TEXT NOT NULL,          -- реестр-ключ в actions.py
+                created DOUBLE PRECISION,
+                UNIQUE(object_type_id, name)
+            )
+        """)
 
     # -------------------------------------------------------------- source
     def upsert_source(self, name: str, kind: str,
@@ -932,6 +1002,199 @@ class Store:
                "created")
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    # ---------------------------------------------------------- ontology
+    def upsert_object_type(self, name: str, gold_entity_type: str = "",
+                           attributes_schema: list[dict[str, Any]] | None = None) -> int:
+        now = self._now()
+        cur = self.conn.cursor()
+        cur.execute("SELECT id FROM object_type WHERE name=%s", (name,))
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE object_type SET gold_entity_type=%s, attributes_schema=%s, "
+                "updated=%s WHERE id=%s",
+                (gold_entity_type, _j(attributes_schema or []), now, row[0]))
+            return int(row[0])
+        cur.execute(
+            "INSERT INTO object_type(name,gold_entity_type,attributes_schema,"
+            "created,updated) VALUES(%s,%s,%s,%s,%s) RETURNING id",
+            (name, gold_entity_type, _j(attributes_schema or []), now, now))
+        return int(cur.fetchone()[0])
+
+    _OT_COLS = ("id", "name", "gold_entity_type", "attributes_schema", "created",
+               "updated")
+
+    def get_object_type(self, object_type_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._OT_COLS)} FROM object_type WHERE id=%s",
+            (object_type_id,))
+        row = cur.fetchone()
+        return dict(zip(self._OT_COLS, row)) if row else None
+
+    def get_object_type_by_name(self, name: str) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._OT_COLS)} FROM object_type WHERE name=%s",
+            (name,))
+        row = cur.fetchone()
+        return dict(zip(self._OT_COLS, row)) if row else None
+
+    def get_object_type_by_gold_entity_type(self, gold_entity_type: str
+                                            ) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._OT_COLS)} FROM object_type "
+            "WHERE gold_entity_type=%s", (gold_entity_type,))
+        row = cur.fetchone()
+        return dict(zip(self._OT_COLS, row)) if row else None
+
+    def list_object_types(self) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute(f"SELECT {', '.join(self._OT_COLS)} FROM object_type ORDER BY name")
+        return [dict(zip(self._OT_COLS, r)) for r in cur.fetchall()]
+
+    def create_object_instance(self, object_type_id: int,
+                               attributes: dict[str, Any],
+                               gold_entity_id: int | None = None) -> int:
+        now = self._now()
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO object_instance(object_type_id,gold_entity_id,attributes,"
+            "created,updated) VALUES(%s,%s,%s,%s,%s) RETURNING id",
+            (object_type_id, gold_entity_id, _j(attributes), now, now))
+        return int(cur.fetchone()[0])
+
+    _OI_COLS = ("id", "object_type_id", "gold_entity_id", "attributes", "created",
+               "updated")
+
+    def get_object_instance(self, instance_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._OI_COLS)} FROM object_instance WHERE id=%s",
+            (instance_id,))
+        row = cur.fetchone()
+        return dict(zip(self._OI_COLS, row)) if row else None
+
+    def get_object_instance_by_gold(self, gold_entity_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._OI_COLS)} FROM object_instance "
+            "WHERE gold_entity_id=%s", (gold_entity_id,))
+        row = cur.fetchone()
+        return dict(zip(self._OI_COLS, row)) if row else None
+
+    def update_object_instance_attributes(self, instance_id: int,
+                                          attributes: dict[str, Any]) -> None:
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE object_instance SET attributes=%s, updated=%s WHERE id=%s",
+            (_j(attributes), self._now(), instance_id))
+
+    def list_object_instances(self, object_type_id: int | None = None,
+                              limit: int = 500) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        if object_type_id is not None:
+            cur.execute(
+                f"SELECT {', '.join(self._OI_COLS)} FROM object_instance "
+                "WHERE object_type_id=%s ORDER BY id LIMIT %s",
+                (object_type_id, limit))
+        else:
+            cur.execute(
+                f"SELECT {', '.join(self._OI_COLS)} FROM object_instance "
+                "ORDER BY id LIMIT %s", (limit,))
+        return [dict(zip(self._OI_COLS, r)) for r in cur.fetchall()]
+
+    def create_object_link(self, link_type: str, from_instance_id: int,
+                           to_instance_id: int,
+                           attributes: dict[str, Any] | None = None) -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT id FROM object_link WHERE link_type=%s AND from_instance_id=%s "
+            "AND to_instance_id=%s", (link_type, from_instance_id, to_instance_id))
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+        cur.execute(
+            "INSERT INTO object_link(link_type,from_instance_id,to_instance_id,"
+            "attributes,created) VALUES(%s,%s,%s,%s,%s) RETURNING id",
+            (link_type, from_instance_id, to_instance_id,
+             _j(attributes or {}), self._now()))
+        return int(cur.fetchone()[0])
+
+    _OL_COLS = ("id", "link_type", "from_instance_id", "to_instance_id",
+               "attributes", "created")
+
+    def links_from(self, instance_id: int, link_type: str = "") -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        if link_type:
+            cur.execute(
+                f"SELECT {', '.join(self._OL_COLS)} FROM object_link "
+                "WHERE from_instance_id=%s AND link_type=%s",
+                (instance_id, link_type))
+        else:
+            cur.execute(
+                f"SELECT {', '.join(self._OL_COLS)} FROM object_link "
+                "WHERE from_instance_id=%s", (instance_id,))
+        return [dict(zip(self._OL_COLS, r)) for r in cur.fetchall()]
+
+    def links_to(self, instance_id: int, link_type: str = "") -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        if link_type:
+            cur.execute(
+                f"SELECT {', '.join(self._OL_COLS)} FROM object_link "
+                "WHERE to_instance_id=%s AND link_type=%s",
+                (instance_id, link_type))
+        else:
+            cur.execute(
+                f"SELECT {', '.join(self._OL_COLS)} FROM object_link "
+                "WHERE to_instance_id=%s", (instance_id,))
+        return [dict(zip(self._OL_COLS, r)) for r in cur.fetchall()]
+
+    def create_action_def(self, object_type_id: int, name: str, handler: str,
+                          params_schema: list[dict[str, Any]] | None = None) -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT id FROM action_def WHERE object_type_id=%s AND name=%s",
+            (object_type_id, name))
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE action_def SET handler=%s, params_schema=%s WHERE id=%s",
+                (handler, _j(params_schema or []), row[0]))
+            return int(row[0])
+        cur.execute(
+            "INSERT INTO action_def(object_type_id,name,params_schema,handler,"
+            "created) VALUES(%s,%s,%s,%s,%s) RETURNING id",
+            (object_type_id, name, _j(params_schema or []), handler, self._now()))
+        return int(cur.fetchone()[0])
+
+    _AD_COLS = ("id", "object_type_id", "name", "params_schema", "handler", "created")
+
+    def get_action_def(self, action_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._AD_COLS)} FROM action_def WHERE id=%s",
+            (action_id,))
+        row = cur.fetchone()
+        return dict(zip(self._AD_COLS, row)) if row else None
+
+    def get_action_def_by_name(self, object_type_id: int, name: str
+                               ) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._AD_COLS)} FROM action_def "
+            "WHERE object_type_id=%s AND name=%s", (object_type_id, name))
+        row = cur.fetchone()
+        return dict(zip(self._AD_COLS, row)) if row else None
+
+    def list_action_defs(self, object_type_id: int) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._AD_COLS)} FROM action_def "
+            "WHERE object_type_id=%s ORDER BY name", (object_type_id,))
+        return [dict(zip(self._AD_COLS, r)) for r in cur.fetchall()]
+
     # ------------------------------------------------------------ metrics
     def dashboard_stats(self) -> dict[str, Any]:
         cur = self.conn.cursor()
@@ -951,10 +1214,16 @@ class Store:
         pending_matches = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM audit_log")
         audit_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM object_type")
+        object_types = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM object_instance")
+        object_instances = cur.fetchone()[0]
         return {
             "sources": int(sources), "datasets": int(datasets),
             "bronze_records": int(bronze), "silver_records": int(silver),
             "quarantine_open": int(quarantine_open), "gold_entities": int(gold),
             "pending_matches": int(pending_matches),
             "audit_entries": int(audit_count),
+            "object_types": int(object_types),
+            "object_instances": int(object_instances),
         }

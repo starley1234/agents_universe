@@ -34,6 +34,16 @@ README.md "Честная граница объёма"):
   GET  /v1/gold                         — золотые записи
   GET  /v1/gold/{id}                    — детали + связанные исходные записи
 
+  GET  /v1/ontology/types               — типы бизнес-объектов
+  POST /v1/ontology/types               — определить тип объекта (ТЗ §3.2)
+  GET  /v1/ontology/types/{id}          — детали + определённые actions
+  POST /v1/ontology/types/{id}/actions  — определить действие для типа
+  POST /v1/ontology/materialize         — материализовать объект из golden record
+  GET  /v1/ontology/instances           — список экземпляров объектов
+  GET  /v1/ontology/instances/{id}      — карточка объекта: связи + источники
+  POST /v1/ontology/links               — связать два объекта
+  POST /v1/ontology/instances/{id}/actions — выполнить действие над объектом
+
   GET  /v1/lineage/trace                — цепочка lineage по asset (K4)
 
   GET  /v1/audit                        — журнал аудита (неизменяемый)
@@ -58,6 +68,8 @@ from ..connectors.base import ConnectorError
 from ..connectors.factory import build_connector
 from ..db.store import Store, StoreError
 from ..mdm import matching as mdm
+from ..ontology import model as ontology
+from ..ontology.actions import ActionError, execute_action
 from ..pipeline import ingest as pipeline
 from ..quality import engine as quality
 
@@ -120,6 +132,16 @@ async def _quality_error_handler(request: Request, exc: quality.QualityError):
 
 @app.exception_handler(mdm.MdmError)
 async def _mdm_error_handler(request: Request, exc: mdm.MdmError):
+    return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.exception_handler(ontology.OntologyError)
+async def _ontology_error_handler(request: Request, exc: ontology.OntologyError):
+    return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.exception_handler(ActionError)
+async def _action_error_handler(request: Request, exc: ActionError):
     return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
@@ -192,6 +214,37 @@ class SurvivorshipIn(BaseModel):
     entity_type: str
     field_name: str
     source_priority: list[str]
+
+
+class ObjectTypeIn(BaseModel):
+    name: str
+    gold_entity_type: str = ""
+    attributes_schema: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MaterializeIn(BaseModel):
+    gold_entity_id: int
+    strict: bool = False
+
+
+class LinkInstancesIn(BaseModel):
+    link_type: str
+    from_instance_id: int
+    to_instance_id: int
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    actor: str = "human:api"
+
+
+class ActionDefIn(BaseModel):
+    name: str
+    handler: str
+    params_schema: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExecuteActionIn(BaseModel):
+    action: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    actor: str
 
 
 # --------------------------------------------------------------- sources
@@ -397,6 +450,70 @@ async def get_gold(gold_id: int, store: Store = Depends(get_store)) -> dict[str,
         raise HTTPException(404, f"Золотая запись #{gold_id} не найдена")
     gold["links"] = store.links_for_gold(gold_id)
     return gold
+
+
+# ------------------------------------------------------------- ontology
+@app.get("/v1/ontology/types", dependencies=[Depends(require_auth)])
+async def list_object_types(store: Store = Depends(get_store)) -> list[dict[str, Any]]:
+    return store.list_object_types()
+
+
+@app.post("/v1/ontology/types", dependencies=[Depends(require_auth)])
+async def create_object_type(body: ObjectTypeIn, store: Store = Depends(get_store)
+                             ) -> dict[str, Any]:
+    return ontology.define_object_type(store, body.name, body.gold_entity_type,
+                                       body.attributes_schema)
+
+
+@app.get("/v1/ontology/types/{object_type_id}", dependencies=[Depends(require_auth)])
+async def get_object_type(object_type_id: int, store: Store = Depends(get_store)
+                          ) -> dict[str, Any]:
+    ot = store.get_object_type(object_type_id)
+    if not ot:
+        raise HTTPException(404, f"ObjectType #{object_type_id} не найден")
+    ot["action_defs"] = store.list_action_defs(object_type_id)
+    return ot
+
+
+@app.post("/v1/ontology/types/{object_type_id}/actions", dependencies=[Depends(require_auth)])
+async def create_action_def_route(object_type_id: int, body: ActionDefIn,
+                                  store: Store = Depends(get_store)) -> dict[str, Any]:
+    if not store.get_object_type(object_type_id):
+        raise HTTPException(404, f"ObjectType #{object_type_id} не найден")
+    aid = store.create_action_def(object_type_id, body.name, body.handler,
+                                  body.params_schema)
+    return store.get_action_def(aid)
+
+
+@app.post("/v1/ontology/materialize", dependencies=[Depends(require_auth)])
+async def materialize_route(body: MaterializeIn, store: Store = Depends(get_store)
+                            ) -> dict[str, Any]:
+    return ontology.materialize_from_gold(store, body.gold_entity_id, body.strict)
+
+
+@app.get("/v1/ontology/instances", dependencies=[Depends(require_auth)])
+async def list_object_instances(object_type_id: int | None = None,
+                                store: Store = Depends(get_store)) -> list[dict[str, Any]]:
+    return store.list_object_instances(object_type_id)
+
+
+@app.get("/v1/ontology/instances/{instance_id}", dependencies=[Depends(require_auth)])
+async def get_object_instance_route(instance_id: int, store: Store = Depends(get_store)
+                                    ) -> dict[str, Any]:
+    return ontology.instance_neighborhood(store, instance_id)
+
+
+@app.post("/v1/ontology/links", dependencies=[Depends(require_auth)])
+async def link_instances_route(body: LinkInstancesIn, store: Store = Depends(get_store)
+                               ) -> dict[str, Any]:
+    return ontology.link_instances(store, body.link_type, body.from_instance_id,
+                                   body.to_instance_id, body.attributes, body.actor)
+
+
+@app.post("/v1/ontology/instances/{instance_id}/actions", dependencies=[Depends(require_auth)])
+async def execute_action_route(instance_id: int, body: ExecuteActionIn,
+                               store: Store = Depends(get_store)) -> dict[str, Any]:
+    return execute_action(store, instance_id, body.action, body.params, body.actor)
 
 
 # -------------------------------------------------------------- lineage
