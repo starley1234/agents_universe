@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+workspace/
+artifacts/
+.maos_quickstart_pgdata/
+tests/
