@@ -40,6 +40,30 @@ def test_parse_json(raw, expected):
     assert parse_json(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("{'a': 1}", {"a": 1}),                       # одинарные кавычки
+        ('{"a": 1, "b": 2,}', {"a": 1, "b": 2}),      # висящая запятая
+        ('{"ok": True, "x": None}', {"ok": True, "x": None}),
+        ('{"a": 1, // коммент\n "b": 2}', {"a": 1, "b": 2}),
+    ],
+)
+def test_parse_json_tolerates_local_model_quirks(raw, expected):
+    """Так отвечают локальные модели через Ollama; без починки — пустой ответ."""
+    assert parse_json(raw) == expected
+
+
+def test_parse_json_recovers_truncated_list():
+    """Ответ обрезан лимитом токенов: целые элементы важнее пустоты."""
+    out = parse_json('{"elements": [{"n": 1}, {"n": 2}, {"n"')
+    assert out == {"elements": [{"n": 1}, {"n": 2}]}
+
+
+def test_parse_json_keeps_apostrophe():
+    assert parse_json('{"name": "Ivan\'s"}') == {"name": "Ivan's"}
+
+
 def test_echo_model_returns_schema_hint():
     a = Agent(name="t", system="роль", schema_hint={"x": 0, "y": ""}, llm=EchoChatModel())
     assert a.run_json("вопрос") == {"x": 0, "y": ""}

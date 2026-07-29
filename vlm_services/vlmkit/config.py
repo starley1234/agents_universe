@@ -55,6 +55,11 @@ class Settings:
         default_factory=lambda: _env_float("VLM_DAILY_BUDGET_USD", 0.0))
     request_timeout_s: float = field(
         default_factory=lambda: _env_float("VLM_REQUEST_TIMEOUT_S", 120.0))
+    # Просить у провайдера строгий JSON. Помогает локальным моделям, но
+    # поддерживается не всеми сборками — при ошибке 400 выключите.
+    force_json: bool = field(
+        default_factory=lambda: os.getenv("VLM_FORCE_JSON", "1").lower()
+        not in ("0", "false", "no"))
 
     def resolved_model(self) -> str:
         if self.model:

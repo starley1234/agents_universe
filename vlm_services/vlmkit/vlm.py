@@ -198,9 +198,22 @@ def get_vlm(cfg: Settings | None = None, **overrides: Any) -> BaseChatModel:
     if provider == "ollama":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, temperature=cfg.temperature,
-                          base_url=cfg.base_url or "http://localhost:11434/v1",
-                          api_key=cfg.api_key or "ollama", **overrides)
+        # Ollama говорит по OpenAI-совместимому протоколу, но с оговорками:
+        # 1) локальные VLM гораздо охотнее отдают валидный JSON, если явно
+        #    попросить формат — иначе они добавляют преамбулу и пояснения;
+        # 2) таймаут по умолчанию мал: на CPU кадр обрабатывается минутами.
+        opts: dict[str, Any] = {
+            "model": model,
+            "temperature": cfg.temperature,
+            "base_url": cfg.base_url or "http://localhost:11434/v1",
+            "api_key": cfg.api_key or "ollama",
+            "timeout": cfg.request_timeout_s,
+            "max_retries": 0,  # повторы делает наш Runner, со своей паузой
+        }
+        if cfg.force_json:
+            opts["model_kwargs"] = {"response_format": {"type": "json_object"}}
+        opts.update(overrides)
+        return ChatOpenAI(**opts)
 
     raise ValueError(f"неизвестный провайдер VLM: {provider!r}")
 
