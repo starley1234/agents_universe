@@ -1,0 +1,32 @@
+services:
+  vlm:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: vlm-services:latest
+    container_name: vlm-services
+    restart: unless-stopped
+    ports:
+      # Наружу не выставляем: перед публикацией нужен reverse-proxy с TLS
+      # и заданный VLM_API_TOKEN.
+      - "127.0.0.1:8081:8081"
+    environment:
+      VLM_PROVIDER: "${VLM_PROVIDER:-fake}"
+      VLM_MODEL: "${VLM_MODEL:-}"
+      VLM_API_KEY: "${VLM_API_KEY:-}"
+      VLM_BASE_URL: "${VLM_BASE_URL:-}"
+      VLM_API_TOKEN: "${VLM_API_TOKEN:-}"
+      VLM_MAX_SIDE_PX: "${VLM_MAX_SIDE_PX:-1024}"
+      VLM_MAX_UPLOAD_MB: "${VLM_MAX_UPLOAD_MB:-20}"
+      VLM_LOG: "${VLM_LOG:-INFO}"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G

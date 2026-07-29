@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VLM Services — двенадцать сервисов</title>
+<style>
+  :root {
+    --bg:#0e1014; --panel:#161920; --panel2:#1c2029; --line:#2a3039;
+    --text:#e7eaf0; --dim:#98a2b3; --accent:#5b9cff; --ok:#3fb950;
+    --warn:#d29922; --err:#f85149;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:light){
+    :root{--bg:#f5f6f8;--panel:#fff;--panel2:#eef1f5;--line:#dde1e8;
+          --text:#161a20;--dim:#5b6675;--accent:#0b5fd0;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:13px 20px;
+         border-bottom:1px solid var(--line);background:var(--panel);
+         position:sticky;top:0;z-index:20}
+  header h1{font-size:15px;margin:0;font-weight:650}
+  .pill{font-size:12px;color:var(--dim);background:var(--panel2);
+        border:1px solid var(--line);border-radius:20px;padding:3px 11px;
+        text-decoration:none}
+  .pill b{color:var(--text)}
+  .sp{flex:1}
+  main{display:grid;grid-template-columns:320px 1fr;min-height:calc(100vh - 52px)}
+  aside{border-right:1px solid var(--line);background:var(--panel);
+        overflow-y:auto;max-height:calc(100vh - 52px)}
+  .side-h{padding:12px 15px 6px;font-size:11px;text-transform:uppercase;
+          letter-spacing:.09em;color:var(--dim);font-weight:650}
+  .svc{padding:11px 15px;border-bottom:1px solid var(--line);cursor:pointer;
+       border-left:3px solid transparent}
+  .svc:hover{background:var(--panel2)}
+  .svc.on{background:var(--panel2);border-left-color:var(--accent)}
+  .svc .t{font-weight:600;margin-bottom:2px;font-size:13.5px}
+  .svc .s{font-size:12px;color:var(--dim)}
+  section{padding:20px 24px;overflow-y:auto;max-height:calc(100vh - 52px)}
+  h2{margin:0 0 4px;font-size:19px}
+  .sub{color:var(--dim);margin-bottom:16px}
+  .card{background:var(--panel);border:1px solid var(--line);
+        border-radius:10px;padding:16px;margin-bottom:14px}
+  .row{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  button{font:inherit;font-weight:550;padding:8px 15px;border-radius:7px;
+         border:1px solid var(--line);background:var(--panel2);color:var(--text);
+         cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  select,input,textarea{font:inherit;background:var(--panel2);color:var(--text);
+        border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+  textarea{width:100%;font-family:var(--mono);font-size:12.5px;min-height:110px;
+           resize:vertical}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:24px;
+        text-align:center;color:var(--dim);cursor:pointer;transition:.15s}
+  .drop:hover,.drop.over{border-color:var(--accent);color:var(--text);
+        background:var(--panel2)}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .thumb{position:relative;width:78px;height:78px;border-radius:8px;
+         overflow:hidden;border:1px solid var(--line)}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb b{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);
+           color:#fff;border-radius:50%;width:18px;height:18px;font-size:12px;
+           line-height:18px;text-align:center;cursor:pointer}
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+      padding:13px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
+      white-space:pre-wrap;word-break:break-word}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:10px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .md h1{font-size:18px;margin:0 0 10px}.md h2{font-size:15px;margin:18px 0 7px}
+  .md code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;
+           border-radius:4px;font-size:12.5px}
+  .md ul{padding-left:20px;margin:7px 0}.md p{margin:7px 0}
+  .md blockquote{border-left:3px solid var(--warn);margin:10px 0;padding:6px 14px;
+                 background:var(--panel2);border-radius:0 6px 6px 0}
+  .warn{color:var(--warn);background:rgba(210,153,34,.1);
+        border:1px solid rgba(210,153,34,.3);border-radius:8px;
+        padding:10px 13px;margin-bottom:12px;font-size:13px}
+  .err{color:var(--err);background:rgba(248,81,73,.09);
+       border:1px solid rgba(248,81,73,.3);border-radius:8px;padding:11px 14px}
+  .empty{color:var(--dim);text-align:center;padding:40px 20px}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:14px}
+  .tab{padding:8px 14px;cursor:pointer;color:var(--dim);font-weight:550;
+       border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab.on{color:var(--accent);border-bottom-color:var(--accent)}
+  .hint{font-size:12px;color:var(--dim);margin-top:5px}
+  @media (max-width:900px){main{grid-template-columns:1fr}
+    aside{max-height:none;border-right:none;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>VLM Services</h1>
+  <span class="pill" id="hProv">—</span>
+  <span class="sp"></span>
+  <span class="pill" id="hAuth"></span>
+  <a class="pill" href="/docs" target="_blank">API</a>
+</header>
+
+<main>
+  <aside><div class="side-h">Сервисы</div><div id="list"></div></aside>
+  <section><div id="view"><div class="empty">Загрузка…</div></div></section>
+</main>
+
+<script>
+const S={svcs:[],slug:null,detail:null,files:[],tab:'run',
+         token:localStorage.getItem('vlm_token')||''};
+
+async function api(path,opts={}){
+  const h={...(opts.headers||{})};
+  if(!(opts.body instanceof FormData)) h['Content-Type']='application/json';
+  if(S.token) h['Authorization']='Bearer '+S.token;
+  const r=await fetch('/api'+path,{...opts,headers:h});
+  if(r.status===401){askToken();throw new Error('нужен токен доступа');}
+  if(!r.ok){let m=r.statusText;try{m=(await r.json()).detail||m}catch{};throw new Error(m);}
+  return r.json();
+}
+function askToken(){
+  const t=prompt('API-токен (VLM_API_TOKEN):',S.token);
+  if(t!==null){S.token=t.trim();localStorage.setItem('vlm_token',S.token);}
+}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function md(src){
+  const lines=String(src||'').split('\n');
+  let out='',tbl=null,list=false;
+  const inline=t=>esc(t).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+                        .replace(/`(.+?)`/g,'<code>$1</code>')
+                        .replace(/_(.+?)_/g,'<i>$1</i>');
+  const closeL=()=>{if(list){out+='</ul>';list=false}};
+  const closeT=()=>{if(tbl){out+='<table><thead><tr>'+tbl.head.map(h=>`<th>${inline(h)}</th>`).join('')
+    +'</tr></thead><tbody>'+tbl.rows.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('')
+    +'</tbody></table>';tbl=null}};
+  const cells=l=>l.split('|').slice(1,-1).map(c=>c.trim());
+  for(const line of lines){
+    const t=line.trim();
+    if(t.startsWith('|')){const c=cells(t);
+      if(!tbl)tbl={head:c,rows:[]};else if(!/^[-: ]+$/.test(c.join('')))tbl.rows.push(c);
+      continue;}
+    closeT();
+    if(t.startsWith('> ')){closeL();out+=`<blockquote>${inline(t.slice(2))}</blockquote>`}
+    else if(t.startsWith('## ')){closeL();out+=`<h2>${inline(t.slice(3))}</h2>`}
+    else if(t.startsWith('# ')){closeL();out+=`<h1>${inline(t.slice(2))}</h1>`}
+    else if(/^[-*] /.test(t)){if(!list){out+='<ul>';list=true}out+=`<li>${inline(t.slice(2))}</li>`}
+    else if(/^\d+\. /.test(t)){if(!list){out+='<ul>';list=true}out+=`<li>${inline(t.replace(/^\d+\. /,''))}</li>`}
+    else if(!t){closeL()}
+    else{closeL();out+=`<p>${inline(t)}</p>`}
+  }
+  closeL();closeT();return out;
+}
+
+function renderList(){
+  document.getElementById('list').innerHTML=S.svcs.map(s=>`
+    <div class="svc ${s.slug===S.slug?'on':''}" onclick="pick('${s.slug}')">
+      <div class="t">${esc(s.title)}</div><div class="s">${esc(s.summary)}</div>
+    </div>`).join('');
+}
+
+function render(){
+  const v=document.getElementById('view');
+  if(!S.detail){v.innerHTML='<div class="empty">Выберите сервис</div>';return}
+  const d=S.detail;
+  v.innerHTML=`<h2>${esc(d.title)}</h2><div class="sub">${esc(d.summary)}</div>
+    <div class="tabs">${['run','schema'].map(t=>`<div class="tab ${S.tab===t?'on':''}"
+      onclick="setTab('${t}')">${t==='run'?'Запуск':'Схема ответа'}</div>`).join('')}</div>
+    <div id="body"></div>`;
+  renderTab();
+}
+function setTab(t){S.tab=t;render()}
+
+function renderTab(){
+  const b=document.getElementById('body');
+  if(S.tab==='schema'){
+    b.innerHTML=`<div class="card"><pre>${esc(JSON.stringify(S.detail.schema,null,2))}</pre>
+      <div class="hint">Модель отвечает по этой схеме; сервис затем проверяет и досчитывает результат кодом.</div></div>`;
+    return;
+  }
+  b.innerHTML=`
+    <div class="card">
+      <div class="drop" id="drop" onclick="document.getElementById('fi').click()">
+        Перетащите фото сюда или нажмите, чтобы выбрать<br>
+        <span class="hint">до ${S.detail.max_images} шт., от ${S.detail.min_images}</span>
+      </div>
+      <input type="file" id="fi" accept="image/*" multiple hidden>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <select id="prov">
+          <option value="">провайдер по умолчанию</option>
+          <option value="fake">fake (оффлайн)</option>
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+          <option value="ollama">ollama</option>
+        </select>
+        <input id="model" placeholder="модель" style="width:190px">
+        <span class="sp" style="flex:1"></span>
+        <button onclick="runDemo()">Демо-данные</button>
+        <button class="primary" id="go" onclick="run()">Запустить</button>
+      </div>
+      <textarea id="params" spellcheck="false"></textarea>
+      <div class="hint">Параметры в JSON.</div>
+    </div>
+    <div id="out"></div>`;
+  document.getElementById('params').value=JSON.stringify(S.detail.demo_params||{},null,2);
+  wireDrop();
+  renderThumbs();
+}
+
+function wireDrop(){
+  const drop=document.getElementById('drop'),fi=document.getElementById('fi');
+  fi.onchange=e=>addFiles(e.target.files);
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{
+    e.preventDefault();drop.classList.add('over')}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{
+    e.preventDefault();drop.classList.remove('over')}));
+  drop.addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+}
+function addFiles(fl){
+  for(const f of fl){
+    if(!f.type.startsWith('image/'))continue;
+    if(S.files.length>=S.detail.max_images){
+      alert(`Максимум ${S.detail.max_images} изображений`);break;}
+    S.files.push(f);
+  }
+  renderThumbs();
+}
+function rmFile(i){S.files.splice(i,1);renderThumbs()}
+function renderThumbs(){
+  const t=document.getElementById('thumbs');
+  if(!t)return;
+  t.innerHTML=S.files.map((f,i)=>
+    `<div class="thumb"><img src="${URL.createObjectURL(f)}" alt="${esc(f.name)}">
+     <b onclick="rmFile(${i})">×</b></div>`).join('');
+}
+
+function readParams(){
+  const raw=document.getElementById('params').value.trim();
+  if(!raw)return {};
+  return JSON.parse(raw);
+}
+
+async function run(){
+  const out=document.getElementById('out'),btn=document.getElementById('go');
+  let params;
+  try{params=readParams()}
+  catch(e){out.innerHTML=`<div class="err">Некорректный JSON параметров: ${esc(e.message)}</div>`;return}
+  if(S.files.length<S.detail.min_images){
+    out.innerHTML=`<div class="err">Нужно минимум ${S.detail.min_images} изображение(й).
+      Или нажмите «Демо-данные».</div>`;return;}
+
+  btn.disabled=true;btn.textContent='Анализ…';
+  out.innerHTML='<div class="card"><div class="empty">Модель смотрит изображения…</div></div>';
+  try{
+    const fd=new FormData();
+    S.files.forEach(f=>fd.append('files',f));
+    fd.append('params',JSON.stringify(params));
+    const prov=document.getElementById('prov').value;
+    const model=document.getElementById('model').value.trim();
+    if(prov)fd.append('provider',prov);
+    if(model)fd.append('model',model);
+    show(await api(`/services/${S.slug}/upload`,{method:'POST',body:fd}));
+  }catch(e){out.innerHTML=`<div class="err">${esc(e.message)}</div>`}
+  finally{btn.disabled=false;btn.textContent='Запустить'}
+}
+
+async function runDemo(){
+  const out=document.getElementById('out');
+  out.innerHTML='<div class="card"><div class="empty">Демо-прогон…</div></div>';
+  try{show(await api(`/services/${S.slug}/demo`,{method:'POST'}))}
+  catch(e){out.innerHTML=`<div class="err">${esc(e.message)}</div>`}
+}
+
+function show(res){
+  const out=document.getElementById('out');
+  out.innerHTML=
+    (res.warnings||[]).map(w=>`<div class="warn">⚠ ${esc(w)}</div>`).join('')
+    +`<div class="card md">${md(res.report)}</div>`
+    +`<div class="card"><b>Данные</b><pre>${esc(JSON.stringify(res.data,null,2))}</pre></div>`
+    +`<div class="hint">${res.duration_s} с · модель ${esc(res.model)} · изображений ${(res.images||[]).length}</div>`;
+}
+
+async function pick(slug){
+  S.slug=slug;S.files=[];S.tab='run';renderList();
+  document.getElementById('view').innerHTML='<div class="empty">Загрузка…</div>';
+  try{S.detail=await api('/services/'+slug);location.hash=slug;render()}
+  catch(e){document.getElementById('view').innerHTML=`<div class="err">${esc(e.message)}</div>`}
+}
+
+(async function init(){
+  try{
+    const h=await (await fetch('/health')).json();
+    document.getElementById('hProv').innerHTML=`<b>${esc(h.provider)}</b> · ${esc(h.model)}`;
+    const a=document.getElementById('hAuth');
+    a.innerHTML=h.auth==='on'?'🔒 защищено':'🔓 без токена';
+    a.style.cursor='pointer';a.onclick=askToken;
+  }catch{}
+  try{
+    S.svcs=await api('/services');renderList();
+    const h=location.hash.slice(1);
+    pick(S.svcs.some(s=>s.slug===h)?h:S.svcs[0].slug);
+  }catch(e){
+    document.getElementById('view').innerHTML=`<div class="err">${esc(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>
