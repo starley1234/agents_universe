@@ -70,6 +70,8 @@
     <button data-view="sources">Источники</button>
     <button data-view="datasets">Каталог данных</button>
     <button data-view="quality">Качество</button>
+    <button data-view="processes">Процессы</button>
+    <button data-view="copilot">AI Copilot</button>
     <button data-view="mdm">MDM / дубли</button>
     <button data-view="gold">Золотые записи</button>
     <button data-view="ontology">Ontology</button>
@@ -135,6 +137,39 @@
     <table id="quarantineTable"><thead><tr><th>#</th><th>Bronze ID</th><th>Причины</th>
       <th>Статус</th><th></th></tr></thead><tbody></tbody></table>
     <div id="quarantineEmpty" class="empty-hint hidden">Карантин пуст</div>
+  </div>
+</section>
+
+<section id="view-processes" class="hidden">
+  <div class="card">
+    <h2>Process Orchestrator: сквозной процесс с write-back (ТЗ K3)</h2>
+    <p class="sub">Карантин → задача исполнителю → корректировка (guardrail: повторная проверка правил) → запись обратно в источник</p>
+    <table id="processesTable"><thead><tr><th>#</th><th>Тип</th><th>Предмет</th>
+      <th>Статус</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="processesEmpty" class="empty-hint hidden">Процессов пока нет — запустите из вкладки «Качество» (карантин)</div>
+    <div id="processCard" class="explain-box hidden" style="white-space:pre-wrap"></div>
+  </div>
+</section>
+
+<section id="view-copilot" class="hidden">
+  <div class="card">
+    <h2>AI Copilot: диалог с ассистентом платформы (ТЗ §3.6)</h2>
+    <p class="sub">Ассистент работает ЧЕРЕЗ те же публичные REST-эндпоинты, что и человек (function calling), в рамках вашего токена — без скрытого доступа к данным; каждое взаимодействие пишется в аудит.</p>
+    <div class="row">
+      <select id="copilot-mode">
+        <option value="ops">ops — эксплуатация</option>
+        <option value="setup">setup — настройка платформы</option>
+      </select>
+      <input id="copilot-actor" placeholder="actor, напр. human:ivanov" value="human:dashboard">
+    </div>
+    <div class="row">
+      <textarea id="copilot-prompt" placeholder="Например: покажи статистику платформы" style="flex:1;min-height:60px"></textarea>
+      <button class="primary" id="copilot-send-btn">Спросить</button>
+    </div>
+    <div id="copilotAnswer" class="explain-box hidden" style="white-space:pre-wrap"></div>
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">История взаимодействий</h3>
+    <table id="copilotHistoryTable"><thead><tr><th>#</th><th>Actor</th><th>Режим</th>
+      <th>Запрос</th><th>Инструменты</th></tr></thead><tbody></tbody></table>
   </div>
 </section>
 
@@ -217,7 +252,7 @@
 
 </main>
 <script>
-const VIEWS = ["overview","sources","datasets","quality","mdm","gold","ontology","lineage","audit"];
+const VIEWS = ["overview","sources","datasets","quality","processes","copilot","mdm","gold","ontology","lineage","audit"];
 function token(){ return document.getElementById('token').value.trim(); }
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 async function api(path, opts={}){
@@ -239,6 +274,8 @@ function setActiveView(name){
   if (name==='mdm') loadCandidates();
   if (name==='gold') loadGold();
   if (name==='ontology') loadObjectTypes();
+  if (name==='processes') loadProcesses();
+  if (name==='copilot') loadCopilotHistory();
   if (name==='audit') loadAudit();
 }
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click', ()=>setActiveView(b.dataset.view)));
@@ -359,16 +396,28 @@ async function loadQuarantine(id){
     document.getElementById('quarantineEmpty').classList.toggle('hidden', items.length > 0);
     for (const q of items){
       const tr = document.createElement('tr');
+      const actions = q.resolved ? ''
+        : `<button data-resolve="${q.id}">Отметить решённым</button>
+           <button data-start-process="${q.id}" class="primary">Запустить процесс коррекции</button>`;
       tr.innerHTML = `<td>#${q.id}</td><td>${q.bronze_record_id}</td>
         <td class="mono">${esc(JSON.stringify(q.reasons))}</td>
         <td>${q.resolved ? '<span class="badge ok">решено</span>' : '<span class="badge pending">открыто</span>'}</td>
-        <td>${q.resolved ? '' : `<button data-resolve="${q.id}">Отметить решённым</button>`}</td>`;
+        <td>${actions}</td>`;
       tbody.appendChild(tr);
     }
     tbody.querySelectorAll('[data-resolve]').forEach(el=>el.addEventListener('click', async ()=>{
       const resolution = prompt('Комментарий к решению:', '') || '';
       try{ await api(`/v1/quarantine/${el.dataset.resolve}/resolve`, {method:'POST', body: JSON.stringify({resolution})}); loadQuarantine(id); }
       catch(e){ alert(e.message); }
+    }));
+    tbody.querySelectorAll('[data-start-process]').forEach(el=>el.addEventListener('click', async ()=>{
+      const assignee = prompt('Назначить исполнителя (напр. human:ivanov):', 'human:ivanov') || '';
+      try{
+        const p = await api('/v1/processes/quarantine-correction', {method:'POST',
+          body: JSON.stringify({quarantine_id: parseInt(el.dataset.startProcess, 10), assignee})});
+        alert('Процесс #' + p.id + ' запущен');
+        setActiveView('processes');
+      }catch(e){ alert(e.message); }
     }));
   }catch(e){}
 }
@@ -543,6 +592,118 @@ async function loadAudit(){
       const when = new Date(a.created*1000).toLocaleString('ru-RU');
       tr.innerHTML = `<td>#${a.id}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td>
         <td>${esc(a.entity_type)}${a.entity_id ? '#'+a.entity_id : ''}</td><td>${when}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){}
+}
+
+async function loadProcesses(){
+  try{
+    const items = await api('/v1/processes');
+    const tbody = document.querySelector('#processesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('processesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const p of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${p.id}</td><td>${esc(p.process_type)}</td>
+        <td>${esc(p.subject_type)}#${p.subject_id}</td>
+        <td><span class="badge ${p.status==='completed'||p.status==='corrected'?'ok':(p.status==='failed'||p.status==='cancelled'?'error':'pending')}">${esc(p.status)}</span></td>
+        <td><button data-open-process="${p.id}">Открыть</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-open-process]').forEach(el=>el.addEventListener('click', ()=>openProcess(el.dataset.openProcess)));
+  }catch(e){}
+}
+
+async function openProcess(id){
+  try{
+    const p = await api(`/v1/processes/${id}`);
+    const card = document.getElementById('processCard');
+    card.classList.remove('hidden');
+    let actions = '';
+    if (p.status === 'awaiting_task'){
+      actions = `<div class="row" style="margin-top:10px">
+        <textarea id="correction-payload-${id}" placeholder='исправленный JSON, напр. {"inn":"1234567890"}' style="flex:1;min-height:50px"></textarea>
+        <button data-submit-correction="${id}" class="primary">Подать исправление</button>
+      </div>`;
+    } else if (p.status === 'corrected'){
+      actions = `<div class="row" style="margin-top:10px">
+        <input id="wb-dataset-${id}" placeholder="dataset_name">
+        <input id="wb-key-${id}" placeholder="natural_key">
+        <button data-write-back="${id}" class="primary">Записать в источник</button>
+      </div>`;
+    }
+    if (p.status !== 'completed' && p.status !== 'cancelled'){
+      actions += `<div class="row" style="margin-top:6px"><button data-rollback-process="${id}" class="danger">Откатить процесс</button></div>`;
+    }
+    card.innerHTML = JSON.stringify(p, null, 2) + '<div id="process-actions-' + id + '"></div>';
+    document.getElementById('process-actions-' + id).outerHTML = actions;
+
+    const submitBtn = document.querySelector(`[data-submit-correction="${id}"]`);
+    if (submitBtn) submitBtn.addEventListener('click', async ()=>{
+      let payload;
+      try{ payload = JSON.parse(document.getElementById(`correction-payload-${id}`).value); }
+      catch(e){ alert('Исправление должно быть валидным JSON'); return; }
+      try{
+        const r = await api(`/v1/processes/${id}/correct`, {method:'POST',
+          body: JSON.stringify({corrected_payload: payload, actor: 'human:dashboard'})});
+        if (!r.accepted) alert('Отклонено, нарушения: ' + JSON.stringify(r.errors));
+        openProcess(id);
+        loadProcesses();
+      }catch(e){ alert(e.message); }
+    });
+    const wbBtn = document.querySelector(`[data-write-back="${id}"]`);
+    if (wbBtn) wbBtn.addEventListener('click', async ()=>{
+      const dataset_name = document.getElementById(`wb-dataset-${id}`).value.trim();
+      const natural_key = document.getElementById(`wb-key-${id}`).value.trim();
+      try{
+        const r = await api(`/v1/processes/${id}/write-back`, {method:'POST',
+          body: JSON.stringify({dataset_name, natural_key, actor: 'human:dashboard'})});
+        alert(r.ok ? 'Записано в источник' : 'Ошибка записи');
+        openProcess(id);
+        loadProcesses();
+      }catch(e){ alert(e.message); }
+    });
+    const rbBtn = document.querySelector(`[data-rollback-process="${id}"]`);
+    if (rbBtn) rbBtn.addEventListener('click', async ()=>{
+      const reason = prompt('Причина отката:', '') || '';
+      try{
+        await api(`/v1/processes/${id}/rollback`, {method:'POST',
+          body: JSON.stringify({actor: 'human:dashboard', reason})});
+        openProcess(id);
+        loadProcesses();
+      }catch(e){ alert(e.message); }
+    });
+  }catch(e){ alert(e.message); }
+}
+
+document.getElementById('copilot-send-btn').addEventListener('click', async ()=>{
+  const prompt_ = document.getElementById('copilot-prompt').value.trim();
+  const mode = document.getElementById('copilot-mode').value;
+  const actor = document.getElementById('copilot-actor').value.trim() || 'human:dashboard';
+  if (!prompt_) return;
+  const answerBox = document.getElementById('copilotAnswer');
+  answerBox.classList.remove('hidden');
+  answerBox.textContent = 'думает…';
+  try{
+    const r = await api('/v1/copilot/ask', {method:'POST',
+      body: JSON.stringify({prompt: prompt_, mode, actor})});
+    answerBox.textContent = r.text + (r.tools_called.length
+      ? '\n\n[инструменты: ' + r.tools_called.map(t=>t.name).join(', ') + ']' : '');
+    loadCopilotHistory();
+  }catch(e){ answerBox.textContent = 'Ошибка: ' + e.message; }
+});
+
+async function loadCopilotHistory(){
+  try{
+    const items = await api('/v1/copilot/history');
+    const tbody = document.querySelector('#copilotHistoryTable tbody');
+    tbody.innerHTML = '';
+    for (const h of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${h.id}</td><td>${esc(h.actor)}</td><td><code>${esc(h.mode)}</code></td>
+        <td>${esc(h.prompt)}</td>
+        <td class="mono">${esc((h.tools_called||[]).map(t=>t.name).join(', '))}</td>`;
       tbody.appendChild(tr);
     }
   }catch(e){}

@@ -47,13 +47,22 @@ class Config:
     onec_api_key: str = ""
     onec_timeout: int = 30
 
+    # --- AI Copilot (ТЗ §3.6, K6) — LLM через OpenAI-совместимый протокол.
+    # Без настройки (llm_base_url пуст) Copilot отвечает явной ошибкой,
+    # а НЕ имитирует ответ — модуль полностью отключаем без влияния на
+    # ядро платформы (ТЗ: "Модуль полностью отключаем без влияния на ядро").
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_timeout: int = 60
+
     # --- HTTP API/дашборд ---
     host: str = "127.0.0.1"
     port: int = 8200
     api_token: str = ""                 # обязателен, если host не 127.0.0.1
 
     #: поля-секреты: разрешены ТОЛЬКО из переменных окружения
-    _SECRET_FIELDS = ("api_token", "onec_api_key")
+    _SECRET_FIELDS = ("api_token", "onec_api_key", "llm_api_key")
 
     def __post_init__(self) -> None:
         if not self.db_dsn:
@@ -85,6 +94,9 @@ class Config:
             "db_dsn": "DB_DSN",
             "onec_base_url": "ONEC_BASE_URL",
             "onec_api_key": "ONEC_API_KEY",
+            "llm_base_url": "FORGE_LLM_BASE_URL",
+            "llm_api_key": "FORGE_LLM_API_KEY",
+            "llm_model": "FORGE_LLM_MODEL",
             "host": "FORGE_HOST",
             "api_token": "FORGE_API_TOKEN",
             "quality_default_severity": "QUALITY_DEFAULT_SEVERITY",
@@ -97,6 +109,8 @@ class Config:
             cfg.port = int(os.environ["FORGE_PORT"])
         if os.getenv("ONEC_TIMEOUT"):
             cfg.onec_timeout = int(os.environ["ONEC_TIMEOUT"])
+        if os.getenv("FORGE_LLM_TIMEOUT"):
+            cfg.llm_timeout = int(os.environ["FORGE_LLM_TIMEOUT"])
         if os.getenv("MATCH_AUTO_THRESHOLD"):
             cfg.match_auto_threshold = float(os.environ["MATCH_AUTO_THRESHOLD"])
         if os.getenv("MATCH_REVIEW_THRESHOLD"):

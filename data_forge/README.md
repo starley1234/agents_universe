@@ -97,10 +97,12 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
 - **Веб-дашборд** (`dataforge/web/dashboard.html`) — вкладки: обзор,
   источники (регистрация, discover, ingest), каталог данных
   (Bronze/Silver/Gold с числом строк), качество (профилирование,
-  прогон проверок, карантин), MDM (поиск дублей, stewardship-очередь,
-  слияние/отклонение), золотые записи (с кнопкой материализации в
-  Ontology), Ontology (типы объектов, actions, экземпляры, карточка
-  объекта со связями), построение цепочки lineage, журнал аудита.
+  прогон проверок, карантин с кнопкой запуска процесса коррекции),
+  процессы (Process Orchestrator), AI Copilot (диалог, история), MDM
+  (поиск дублей, stewardship-очередь, слияние/отклонение), золотые
+  записи (с кнопкой материализации в Ontology), Ontology (типы
+  объектов, actions, экземпляры, карточка объекта со связями),
+  построение цепочки lineage, журнал аудита.
 - **Ontology / семантическая модель** (`dataforge/ontology/`, ТЗ §3.2,
   K1) — бизнес-язык поверх Gold-слоя:
   - `model.py`: `define_object_type()` — регистрация типа бизнес-
@@ -125,26 +127,68 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
     "скорректировать остаток" — обязательное `reason`, тот же принцип
     explainability, что у `ProcurementAgent` в `erp_ai/`) и `link_to`.
 
+- **Process Orchestrator** (`dataforge/pipeline/orchestrator.py`, ТЗ
+  K3) — единственный реализованный сквозной процесс
+  `quarantine_correction`, демонстрирующий ВЕСЬ обязательный паттерн
+  ТЗ §3.7 на одном конкретном примере (по аналогии с `ProcurementAgent`
+  в `erp_ai/`):
+  1. `start_quarantine_correction()` — запись данных нарушила правило
+     качества и попала в карантин → создаётся `process_instance` +
+     `task` ответственному (stewardship); идемпотентно относительно
+     повторного запуска на ТОЙ ЖЕ записи карантина.
+  2. `submit_correction()` — исполнитель присылает исправленный
+     payload; **GUARDRAIL**: он ПОВТОРНО проверяется теми же правилами
+     качества, что отправили запись в карантин
+     (`quality.engine.evaluate_payload`) — если нарушение осталось,
+     процесс явно остаётся в 'awaiting_task' со списком нарушений, а
+     НЕ продолжается молча. Только валидное исправление обновляет
+     Bronze-запись (единственное место всего приложения, где Bronze не
+     append-only — обосновано тем, что это исправление ошибки
+     источника) и разрешает карантин.
+  3. `write_back_correction()` — пишет исправление обратно в источник
+     через `Connector.write_back()` (тот же интерфейс, что и у ingest),
+     с идемпотентностью через `write_back_log` (тот же принцип, что
+     `onec_log_attempt` в `erp_ai`) — повторный вызов не отправляет
+     запись в источник дважды.
+  4. `rollback_process()` — отмена ДО успешного write-back; ПОСЛЕ
+     успешного write-back откат средствами платформы заблокирован
+     (источник уже изменён) — то же ограничение, что у
+     `ProcurementAgent.rollback_proposal` для отправленных в 1С заказов.
+
+  Полная история — `audit_trail_for("process_instance", id)`, включая
+  НЕУДАЧНЫЕ попытки исправления (guardrail-отклонения), не только успех.
+- **AI Copilot** (`dataforge/copilot/`, ТЗ §3.6, K6) — работает ЧЕРЕЗ
+  инструменты (function calling) над ПУБЛИЧНЫМИ REST API DataForge, а
+  НЕ имеет прямого доступа к `Store`/БД (`ApiTools` принимает
+  `httpx.Client`, не объект БД — структурно проверено тестом):
+  - `llm.py`: минимальный клиент OpenAI-совместимого чат-протокола с
+    tool-calling (тот же протокол, что покрывает и облачные провайдеры,
+    и локальные LM Studio/Ollama/vLLM — по аналогии с
+    `maos/llm/openai_like.py` в этом репозитории, но без реестра
+    провайдеров, который был бы избыточен для одного протокола).
+  - `tools.py`: узкий набор из 8 инструментов (статистика платформы,
+    список источников/датасетов, карантин, запуск процесса коррекции,
+    кандидаты MDM, lineage, список процессов) — каждый соответствует
+    ОДНОМУ одобренному REST-вызову, не "дай мне произвольный запрос".
+  - `assistant.py`: `ask()` — цикл модель → инструмент → модель (до 6
+    шагов), пишет КАЖДОЕ взаимодействие в неизменяемый `ai_interaction`
+    (промпт, вызванные инструменты, финальный ответ). Без
+    `FORGE_LLM_BASE_URL` бросает `CopilotError` — модуль полностью
+    отключаем без влияния на ядро (остальной API работает независимо).
+  - **Важный технический момент, найденный и исправленный при
+    тестировании**: `ApiTools` делает HTTP-запросы ОБРАТНО к тому же
+    серверу DataForge (за инструментами). Если выполнить это в `async`
+    FastAPI-роуте напрямую, единственный event loop uvicorn
+    блокируется сам на себя — вложенный запрос никогда не будет
+    обработан (deadlock, воспроизведён и пойман тестом). Исправлено
+    через `fastapi.concurrency.run_in_threadpool` — блокирующий вызов
+    уходит в отдельный поток, event loop остаётся свободным.
+
 ### НЕ реализовано (осознанно, не притворяемся, что готово)
 
-- **Process Orchestrator / оркестрация бизнес-процессов** (ТЗ §5,
-  "Слой ... Process Orchestr.") — write-back и обратная запись как
-  сквозной сценарий продемонстрированы в `erp_ai/` (соседний проект
-  этого репозитория, тот же паттерн guardrails/confirmation
-  gates/audit trail/rollback); здесь write-back есть на уровне
-  коннектора (`SqlConnector.write_back`,
-  `OneCODataConnector.write_back`), но НЕТ отдельного процесса
-  "расхождение → задача человеку → корректировка → запись в источник"
-  (кейс K3 ТЗ) — платформа предоставляет строительные блоки
-  (Connector.write_back, agent_proposal-подобный паттерн из erp_ai
-  переиспользуем), но сам процесс не собран.
 - **Real-time мониторинг производства** (K5) — единая панель сквозного
   статуса заказов/операций — не реализована, платформа работает с
   универсальными Bronze/Silver/Gold, а не с производственной моделью.
-- **AI Copilot** (ТЗ §3.6, K6) — ассистирующий слой поверх публичных
-  API через function calling — не реализован в этой сессии; архитектура
-  API уже готова принять такой слой (все действия — обычные REST-вызовы
-  с валидацией и аудитом), но сам LLM-компонент не написан.
 - **CDC через Debezium/Redpanda** — инкрементальное чтение реализовано
   через универсальный "курсор по монотонному полю" (SQL) и план обмена
   (1С), НЕ через захват изменений на уровне транзакционного лога БД
@@ -187,9 +231,14 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
 
 - Python 3.10+
 - PostgreSQL 14+ (без `pgvector` — не нужен для этого объёма)
-- `pip install -r requirements.txt` (FastAPI/uvicorn/psycopg/rapidfuzz/openpyxl)
+- `pip install -r requirements.txt`
+  (FastAPI/uvicorn/psycopg/rapidfuzz/openpyxl/httpx — httpx нужен не
+  только тестам, но и AI Copilot для вызова инструментов через API)
+- Опционально: OpenAI-совместимый LLM-сервер (облачный или локальный
+  LM Studio/Ollama/vLLM) для AI Copilot — без него `/v1/copilot/*`
+  отвечает 503, остальная платформа работает как обычно
 - Для тестов: `pip install -r requirements-dev.txt` (`pgserver` —
-  embedded PostgreSQL, `httpx` — HTTP-клиент для тестов API)
+  embedded PostgreSQL)
 
 ## Быстрый старт
 
@@ -210,7 +259,7 @@ make serve      # http://127.0.0.1:8200/dashboard
 
 ```bash
 pip install -r requirements-dev.txt
-make test       # 398 проверок, ~35 секунд
+make test       # 503 проверки, ~50 секунд
 ```
 
 ## Сценарий — пошагово (K1 + K2 + K4: качество данных → golden record → lineage)
@@ -267,6 +316,40 @@ curl -X POST localhost:8200/v1/ontology/links \
 curl localhost:8200/v1/ontology/instances/1
 ```
 
+## Сценарий — Process Orchestrator (K3: карантин -> задача -> корректировка -> write-back)
+
+```bash
+# 1. Запись ушла в карантин (см. сценарий выше, шаг 4) -> запустить процесс
+curl -X POST localhost:8200/v1/processes/quarantine-correction \
+  -d '{"quarantine_id":1,"assignee":"human:ivanov"}'
+
+# 2. Исполнитель подаёт исправление — guardrail: если оно снова нарушает
+#    правило качества, запрос будет отклонён (accepted: false) БЕЗ изменения Bronze
+curl -X POST localhost:8200/v1/processes/1/correct \
+  -d '{"corrected_payload":{"name":"ООО Ромашка","inn":"1234567890"},"actor":"human:ivanov"}'
+
+# 3. Записать исправление обратно в источник (идемпотентно)
+curl -X POST localhost:8200/v1/processes/1/write-back \
+  -d '{"dataset_name":"customers","natural_key":"c1","actor":"human:ivanov"}'
+
+# 4. Посмотреть полную историю процесса (включая отклонённые попытки)
+curl localhost:8200/v1/processes/1
+```
+
+## Сценарий — AI Copilot (ТЗ §3.6)
+
+```bash
+# Требует настроенный LLM: FORGE_LLM_BASE_URL (OpenAI-совместимый сервер,
+# например LM Studio/Ollama/vLLM в режиме /v1, или облачный провайдер)
+curl -X POST localhost:8200/v1/copilot/ask \
+  -d '{"prompt":"покажи статистику платформы и есть ли открытые процессы",
+       "mode":"ops","actor":"human:ivanov"}'
+# -> Copilot сам вызовет нужные REST-инструменты (get_dashboard_stats,
+#    list_processes) через ТОТ ЖЕ API, что доступен человеку, и ответит текстом
+
+curl localhost:8200/v1/copilot/history   # аудит всех взаимодействий
+```
+
 ## HTTP API
 
 ```
@@ -311,6 +394,16 @@ GET  /v1/ontology/instances/{id}      — карточка объекта: св�
 POST /v1/ontology/links               — связать два объекта
 POST /v1/ontology/instances/{id}/actions — выполнить действие над объектом
 
+POST /v1/processes/quarantine-correction — запустить процесс коррекции (K3)
+GET  /v1/processes                    — список запущенных процессов
+GET  /v1/processes/{id}               — детали + задачи + write-back лог
+POST /v1/processes/{id}/correct       — подать исправленный payload (guardrail)
+POST /v1/processes/{id}/write-back    — записать исправление в источник
+POST /v1/processes/{id}/rollback      — отменить процесс (до write-back)
+
+POST /v1/copilot/ask                  — спросить AI Copilot (ТЗ §3.6, K6)
+GET  /v1/copilot/history              — история взаимодействий (аудит AI)
+
 GET  /v1/lineage/trace                — цепочка lineage по asset
 
 GET  /v1/audit                        — журнал аудита (неизменяемый)
@@ -328,8 +421,9 @@ dataforge/
   config.py            — Config: DB_DSN обязателен, MDM-пороги, секреты
   server.py             — python3 -m dataforge.server: uvicorn.run
   db/
-    store.py             — PostgreSQL Store: 21 таблица (Bronze/Silver/
-                            Gold, качество, MDM, lineage, Ontology, аудит)
+    store.py             — PostgreSQL Store: 24 таблицы (Bronze/Silver/
+                            Gold, качество, MDM, lineage, Ontology,
+                            Process Orchestrator, AI Copilot, аудит)
   connectors/
     base.py               — протокол Connector, DatasetSchema, Cursor
     files.py              — CSV/XLSX/JSON/XML (read-only)
@@ -350,24 +444,36 @@ dataforge/
                               correct_attribute, link_to
   pipeline/
     ingest.py               — ingest_full, ingest_changes, promote_quality
+    orchestrator.py           — Process Orchestrator (K3):
+                              start_quarantine_correction, submit_correction,
+                              write_back_correction, rollback_process
+  copilot/
+    llm.py                    — минимальный OpenAI-совместимый клиент
+                              с tool-calling
+    tools.py                   — ApiTools: инструменты как HTTP-вызовы
+                              к публичному REST API DataForge
+    assistant.py                — ask(): цикл модель -> инструмент -> модель,
+                              audit trail в ai_interaction
   api/
     server.py               — FastAPI, все REST-маршруты
   web/
     dashboard.html           — веб-интерфейс на vanilla JS
 tests/
   test_config.py                 (18 проверок)
-  test_store.py                  (110 проверок)
+  test_store.py                  (146 проверок)
   test_quality_engine.py         (25 проверок)
   test_mdm_matching.py           (34 проверки)
   test_ontology_model.py         (35 проверок)
   test_ontology_actions.py       (21 проверка)
+  test_process_orchestrator.py   (38 проверок)
+  test_copilot.py                (17 проверок)
   test_connector_files.py        (20 проверок)
   test_connector_sql.py          (19 проверок)
   test_connector_onec_odata.py   (20 проверок)
   test_connector_factory.py      (12 проверок)
   test_pipeline.py               (20 проверок)
-  test_api.py                    (64 проверки)
+  test_api.py                    (78 проверок)
 ```
 
-**Итого 398 проверок**, все зелёные, `pyflakes` чист по `dataforge/` и
+**Итого 503 проверки**, все зелёные, `pyflakes` чист по `dataforge/` и
 `tests/`.

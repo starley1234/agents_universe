@@ -128,6 +128,33 @@ _CHECKERS = {
 }
 
 
+def evaluate_payload(store: Store, dataset_id: int,
+                     payload: dict[str, Any]) -> list[str]:
+    """Проверяет ОДИН payload против активных правил датасета (кроме
+    `unique`, которое по определению требует контекста всего набора
+    записей — здесь неприменимо и пропускается). Возвращает список
+    нарушений severity="error" (пустой список — payload валиден).
+
+    Используется Process Orchestrator (см. `pipeline/orchestrator.py`)
+    как guardrail ПОСЛЕ ручной корректировки записи из карантина: прежде
+    чем считать процесс завершённым и делать write-back, повторно
+    проверяем те же правила, что отправили запись в карантин — если
+    исправление не устранило нарушение, процесс не должен молча продолжаться."""
+    rules = store.list_quality_rules(dataset_id, active_only=True)
+    errors: list[str] = []
+    for rule in rules:
+        if rule["rule_type"] == "unique":
+            continue
+        if rule["rule_type"] not in _RULE_TYPES:
+            raise QualityError(f"Неизвестный тип правила: {rule['rule_type']}")
+        field_value = _get_field(payload, rule["field_name"]) if rule["field_name"] else None
+        checker = _CHECKERS[rule["rule_type"]]
+        passed, detail = checker(field_value, rule["params"])
+        if not passed and rule["severity"] == "error":
+            errors.append(f"{rule['field_name'] or '<запись>'}: {rule['rule_type']} — {detail}")
+    return errors
+
+
 def run_quality_checks(store: Store, dataset_id: int) -> dict[str, Any]:
     """Прогоняет все активные правила по всем Bronze-записям датасета.
     Записи без нарушений severity="error" продвигаются в Silver

@@ -7,8 +7,10 @@
 не реализован, см. README.md).
 
 Схема отражает модель данных из ТЗ (§4), в объёме выбранного контура
-(Connect Hub + Quality Engine + MDM/матчинг + Lineage + Ontology, БЕЗ
-Process Orchestrator/AI Copilot — см. README.md, "Честная граница объёма"):
+(Connect Hub + Quality Engine + MDM/матчинг + Lineage + Ontology +
+Process Orchestrator (кейс K3) + AI Copilot — см. README.md, "Честная
+граница объёма" за тем, что осознанно НЕ реализовано в остальных
+разделах ТЗ):
 
   source              — зарегистрированный источник данных (файл/SQL/1С)
   dataset             — набор данных источника, привязан к слою
@@ -38,6 +40,17 @@ Process Orchestrator/AI Copilot — см. README.md, "Честная грани�
   action_def          — определение действия, которое можно выполнить над
                         объектами данного ObjectType ("скорректировать
                         атрибут", "согласовать", "связать")
+  process_instance    — запущенный экземпляр сквозного процесса (ТЗ K3):
+                        сейчас единственный процесс "quarantine_correction"
+                        (карантин -> задача -> корректировка -> write-back),
+                        но таблица общая для будущих процессов
+  task                — задача человеку внутри процесса (stewardship):
+                        что нужно сделать, кто исполнитель, статус
+  write_back_log      — журнал попыток обратной записи в источник
+                        (идемпотентность, ошибки, статус) — тот же принцип,
+                        что onec_sync_log в erp_ai, но для ЛЮБОГО источника
+  ai_interaction      — НЕИЗМЕНЯЕМЫЙ аудит взаимодействий с AI Copilot
+                        (ТЗ §4: "AiInteraction... аудит AI")
 
 Импорт psycopg — ленивый, как в остальных проектах этого репозитория.
 """
@@ -382,6 +395,80 @@ class Store:
                 UNIQUE(object_type_id, name)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS process_instance(
+                id SERIAL PRIMARY KEY,
+                process_type TEXT NOT NULL,     -- 'quarantine_correction' и т.п.
+                subject_type TEXT NOT NULL,     -- 'quarantine_record'
+                subject_id INTEGER NOT NULL,    -- id записи-предмета процесса
+                status TEXT DEFAULT 'open',
+                -- open|awaiting_task|corrected|write_back_pending|
+                -- completed|cancelled|failed
+                context JSONB DEFAULT '{}',     -- рабочие данные шага (снимки и т.п.)
+                created_by TEXT DEFAULT 'system',   -- 'system' | 'agent:copilot' | 'human:<u>'
+                created DOUBLE PRECISION,
+                updated DOUBLE PRECISION
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_process_instance_status "
+            "ON process_instance(status)")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_process_instance_subject "
+            "ON process_instance(subject_type, subject_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS task(
+                id SERIAL PRIMARY KEY,
+                process_instance_id INTEGER NOT NULL REFERENCES process_instance(id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                assignee TEXT DEFAULT '',       -- 'human:<user>' | '' (не назначено)
+                status TEXT DEFAULT 'open',     -- open|done|cancelled
+                result JSONB DEFAULT '{}',      -- что сделал исполнитель
+                created DOUBLE PRECISION,
+                completed DOUBLE PRECISION
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_task_process "
+            "ON task(process_instance_id)")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_task_status "
+            "ON task(status)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS write_back_log(
+                id SERIAL PRIMARY KEY,
+                process_instance_id INTEGER REFERENCES process_instance(id)
+                    ON DELETE CASCADE,
+                source_id INTEGER NOT NULL REFERENCES source(id),
+                dataset_name TEXT NOT NULL,
+                natural_key TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT DEFAULT 'pending',  -- pending|ok|error
+                error TEXT DEFAULT '',
+                attempts INTEGER DEFAULT 0,
+                created DOUBLE PRECISION,
+                updated DOUBLE PRECISION
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_write_back_log_process "
+            "ON write_back_log(process_instance_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_interaction(
+                id SERIAL PRIMARY KEY,
+                actor TEXT NOT NULL,            -- 'human:<user>' — от чьего имени спрошено
+                prompt TEXT NOT NULL,
+                tools_called JSONB DEFAULT '[]',  -- [{"name":..,"arguments":..,"result":..}]
+                result_text TEXT DEFAULT '',
+                mode TEXT NOT NULL,              -- 'setup' | 'ops' (ТЗ K6)
+                created DOUBLE PRECISION NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_ai_interaction_actor "
+            "ON ai_interaction(actor)")
 
     # -------------------------------------------------------------- source
     def upsert_source(self, name: str, kind: str,
@@ -544,6 +631,17 @@ class Store:
         row = cur.fetchone()
         return dict(zip(self._BR_COLS, row)) if row else None
 
+    def update_bronze_payload(self, bronze_id: int, payload: dict[str, Any]) -> bool:
+        """Правка сырой записи ЗАДНИМ ЧИСЛОМ — используется ТОЛЬКО процессом
+        корректировки карантина (человек подтвердил исправление), не общим
+        ingest-путём (там Bronze append-only). Идемпотентность: повторный
+        вызов с теми же данными просто перезаписывает тем же значением."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE bronze_record SET payload=%s WHERE id=%s",
+            (_j(payload), bronze_id))
+        return cur.rowcount > 0
+
     def list_bronze(self, dataset_id: int, limit: int = 10000) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
         cur.execute(
@@ -600,6 +698,14 @@ class Store:
     _QR_COLS = ("id", "dataset_id", "bronze_record_id", "reasons",
                "quality_run_id", "quarantined", "resolved", "resolved_at",
                "resolution")
+
+    def get_quarantine(self, quarantine_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._QR_COLS)} FROM quarantine_record WHERE id=%s",
+            (quarantine_id,))
+        row = cur.fetchone()
+        return dict(zip(self._QR_COLS, row)) if row else None
 
     def list_quarantine(self, dataset_id: int | None = None,
                         resolved: bool | None = None,
@@ -1195,6 +1301,216 @@ class Store:
             "WHERE object_type_id=%s ORDER BY name", (object_type_id,))
         return [dict(zip(self._AD_COLS, r)) for r in cur.fetchall()]
 
+    # ------------------------------------------------------------ process
+    def create_process_instance(self, process_type: str, subject_type: str,
+                                subject_id: int, context: dict[str, Any] | None = None,
+                                created_by: str = "system") -> int:
+        now = self._now()
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO process_instance(process_type,subject_type,subject_id,"
+            "context,created_by,created,updated) VALUES(%s,%s,%s,%s,%s,%s,%s) "
+            "RETURNING id",
+            (process_type, subject_type, subject_id, _j(context or {}), created_by,
+             now, now))
+        return int(cur.fetchone()[0])
+
+    _PI_COLS = ("id", "process_type", "subject_type", "subject_id", "status",
+               "context", "created_by", "created", "updated")
+
+    def get_process_instance(self, process_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._PI_COLS)} FROM process_instance WHERE id=%s",
+            (process_id,))
+        row = cur.fetchone()
+        return dict(zip(self._PI_COLS, row)) if row else None
+
+    def set_process_status(self, process_id: int, status: str,
+                           context: dict[str, Any] | None = None) -> bool:
+        cur = self.conn.cursor()
+        if context is not None:
+            cur.execute(
+                "UPDATE process_instance SET status=%s, context=%s, updated=%s "
+                "WHERE id=%s", (status, _j(context), self._now(), process_id))
+        else:
+            cur.execute(
+                "UPDATE process_instance SET status=%s, updated=%s WHERE id=%s",
+                (status, self._now(), process_id))
+        return cur.rowcount > 0
+
+    def list_process_instances(self, process_type: str = "", status: str = "",
+                               limit: int = 200) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        clauses, params = [], []
+        if process_type:
+            clauses.append("process_type=%s")
+            params.append(process_type)
+        if status:
+            clauses.append("status=%s")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        cur.execute(
+            f"SELECT {', '.join(self._PI_COLS)} FROM process_instance "
+            f"{where} ORDER BY id DESC LIMIT %s", params)
+        return [dict(zip(self._PI_COLS, r)) for r in cur.fetchall()]
+
+    def find_open_process_for_subject(self, subject_type: str, subject_id: int
+                                      ) -> dict[str, Any] | None:
+        """Находит НЕзавершённый процесс для предмета — используется для
+        идемпотентности запуска (повторный запуск на том же предмете не
+        плодит параллельные процессы)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._PI_COLS)} FROM process_instance "
+            "WHERE subject_type=%s AND subject_id=%s AND status NOT IN "
+            "('completed','cancelled','failed') ORDER BY id DESC LIMIT 1",
+            (subject_type, subject_id))
+        row = cur.fetchone()
+        return dict(zip(self._PI_COLS, row)) if row else None
+
+    # --------------------------------------------------------------- task
+    def create_task(self, process_instance_id: int, title: str,
+                    description: str = "", assignee: str = "") -> int:
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO task(process_instance_id,title,description,assignee,"
+            "created) VALUES(%s,%s,%s,%s,%s) RETURNING id",
+            (process_instance_id, title, description, assignee, self._now()))
+        return int(cur.fetchone()[0])
+
+    _TASK_COLS = ("id", "process_instance_id", "title", "description", "assignee",
+                 "status", "result", "created", "completed")
+
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._TASK_COLS)} FROM task WHERE id=%s", (task_id,))
+        row = cur.fetchone()
+        return dict(zip(self._TASK_COLS, row)) if row else None
+
+    def complete_task(self, task_id: int, result: dict[str, Any] | None = None) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE task SET status='done', result=%s, completed=%s WHERE id=%s",
+            (_j(result or {}), self._now(), task_id))
+        return cur.rowcount > 0
+
+    def cancel_task(self, task_id: int) -> bool:
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE task SET status='cancelled', completed=%s WHERE id=%s",
+            (self._now(), task_id))
+        return cur.rowcount > 0
+
+    def list_tasks(self, process_instance_id: int | None = None, status: str = "",
+                  assignee: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        clauses, params = [], []
+        if process_instance_id is not None:
+            clauses.append("process_instance_id=%s")
+            params.append(process_instance_id)
+        if status:
+            clauses.append("status=%s")
+            params.append(status)
+        if assignee:
+            clauses.append("assignee=%s")
+            params.append(assignee)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        cur.execute(
+            f"SELECT {', '.join(self._TASK_COLS)} FROM task {where} "
+            "ORDER BY id DESC LIMIT %s", params)
+        return [dict(zip(self._TASK_COLS, r)) for r in cur.fetchall()]
+
+    # -------------------------------------------------------- write_back
+    def write_back_log_attempt(self, process_instance_id: int | None, source_id: int,
+                               dataset_name: str, natural_key: str,
+                               idempotency_key: str) -> tuple[int, bool]:
+        """Регистрирует попытку write-back. Возвращает (id, is_new) —
+        is_new=False означает, что запись с таким idempotency_key уже
+        была (тот же принцип, что onec_log_attempt в erp_ai)."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT id, status FROM write_back_log WHERE idempotency_key=%s",
+            (idempotency_key,))
+        row = cur.fetchone()
+        if row:
+            return int(row[0]), False
+        now = self._now()
+        cur.execute(
+            "INSERT INTO write_back_log(process_instance_id,source_id,dataset_name,"
+            "natural_key,idempotency_key,created,updated) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (process_instance_id, source_id, dataset_name, natural_key,
+             idempotency_key, now, now))
+        return int(cur.fetchone()[0]), True
+
+    def write_back_mark_result(self, log_id: int, status: str, error: str = "") -> None:
+        cur = self.conn.cursor()
+        cur.execute(
+            "UPDATE write_back_log SET status=%s, error=%s, attempts=attempts+1, "
+            "updated=%s WHERE id=%s", (status, error, self._now(), log_id))
+
+    _WBL_COLS = ("id", "process_instance_id", "source_id", "dataset_name",
+                "natural_key", "idempotency_key", "status", "error", "attempts",
+                "created", "updated")
+
+    def get_write_back_log(self, log_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(self._WBL_COLS)} FROM write_back_log WHERE id=%s",
+            (log_id,))
+        row = cur.fetchone()
+        return dict(zip(self._WBL_COLS, row)) if row else None
+
+    def list_write_back_log(self, process_instance_id: int | None = None,
+                            status: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        clauses, params = [], []
+        if process_instance_id is not None:
+            clauses.append("process_instance_id=%s")
+            params.append(process_instance_id)
+        if status:
+            clauses.append("status=%s")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        cur.execute(
+            f"SELECT {', '.join(self._WBL_COLS)} FROM write_back_log {where} "
+            "ORDER BY id DESC LIMIT %s", params)
+        return [dict(zip(self._WBL_COLS, r)) for r in cur.fetchall()]
+
+    # -------------------------------------------------------- ai_interaction
+    def log_ai_interaction(self, actor: str, prompt: str, mode: str,
+                           tools_called: list[dict[str, Any]] | None = None,
+                           result_text: str = "") -> int:
+        """Добавляет запись в НЕИЗМЕНЯЕМЫЙ журнал взаимодействий с AI
+        Copilot (ТЗ §4: "AiInteraction... аудит AI"). В коде Store
+        сознательно нет ни одного метода update/delete для этой таблицы."""
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO ai_interaction(actor,prompt,tools_called,result_text,"
+            "mode,created) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",
+            (actor, prompt, _j(tools_called or []), result_text, mode, self._now()))
+        return int(cur.fetchone()[0])
+
+    def list_ai_interactions(self, actor: str = "", limit: int = 200
+                             ) -> list[dict[str, Any]]:
+        cols = ("id", "actor", "prompt", "tools_called", "result_text", "mode",
+                "created")
+        cur = self.conn.cursor()
+        if actor:
+            cur.execute(
+                f"SELECT {', '.join(cols)} FROM ai_interaction WHERE actor=%s "
+                "ORDER BY id DESC LIMIT %s", (actor, limit))
+        else:
+            cur.execute(
+                f"SELECT {', '.join(cols)} FROM ai_interaction "
+                "ORDER BY id DESC LIMIT %s", (limit,))
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
     # ------------------------------------------------------------ metrics
     def dashboard_stats(self) -> dict[str, Any]:
         cur = self.conn.cursor()
@@ -1218,6 +1534,14 @@ class Store:
         object_types = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM object_instance")
         object_instances = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(*) FROM process_instance WHERE status NOT IN "
+            "('completed','cancelled','failed')")
+        open_processes = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM task WHERE status='open'")
+        open_tasks = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM ai_interaction")
+        ai_interactions = cur.fetchone()[0]
         return {
             "sources": int(sources), "datasets": int(datasets),
             "bronze_records": int(bronze), "silver_records": int(silver),
@@ -1226,4 +1550,7 @@ class Store:
             "audit_entries": int(audit_count),
             "object_types": int(object_types),
             "object_instances": int(object_instances),
+            "open_processes": int(open_processes),
+            "open_tasks": int(open_tasks),
+            "ai_interactions": int(ai_interactions),
         }

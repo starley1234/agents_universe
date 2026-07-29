@@ -324,6 +324,93 @@ def main() -> int:
     check("get_action_def_by_name находит", st.get_action_def_by_name(otid, "correct_attribute") is not None)
     check("get_action_def для отсутствующего -> None", st.get_action_def(999999) is None)
 
+    section("Process instance: lifecycle и идемпотентность предмета")
+    pid = st.create_process_instance("quarantine_correction", "quarantine_record", 42,
+                                     context={"foo": "bar"}, created_by="system")
+    check("process id > 0", pid > 0)
+    check("статус по умолчанию open", st.get_process_instance(pid)["status"] == "open")
+    check("get_process_instance для отсутствующего -> None",
+         st.get_process_instance(999999) is None)
+    ok_set = st.set_process_status(pid, "awaiting_task", context={"step": 1})
+    check("set_process_status обновил статус и контекст", ok_set
+         and st.get_process_instance(pid)["status"] == "awaiting_task"
+         and st.get_process_instance(pid)["context"]["step"] == 1)
+    found_open = st.find_open_process_for_subject("quarantine_record", 42)
+    check("find_open_process_for_subject находит незавершённый процесс",
+         found_open is not None and found_open["id"] == pid)
+    st.set_process_status(pid, "completed")
+    check("find_open_process_for_subject НЕ находит завершённый процесс",
+         st.find_open_process_for_subject("quarantine_record", 42) is None)
+    check("list_process_instances(process_type=) фильтрует",
+         any(p["id"] == pid for p in st.list_process_instances("quarantine_correction")))
+    check("list_process_instances(status=) фильтрует",
+         all(p["status"] == "completed"
+            for p in st.list_process_instances(status="completed")))
+
+    section("Task: lifecycle")
+    tid = st.create_task(pid, "Исправить запись", description="детали",
+                         assignee="human:ivanov")
+    check("task id > 0", tid > 0)
+    check("статус по умолчанию open", st.get_task(tid)["status"] == "open")
+    check("get_task для отсутствующего -> None", st.get_task(999999) is None)
+    ok_complete = st.complete_task(tid, result={"x": 1})
+    check("complete_task обновил статус и результат", ok_complete
+         and st.get_task(tid)["status"] == "done"
+         and st.get_task(tid)["result"] == {"x": 1}
+         and st.get_task(tid)["completed"] is not None)
+    tid2 = st.create_task(pid, "Вторая задача")
+    ok_cancel = st.cancel_task(tid2)
+    check("cancel_task обновил статус", ok_cancel and st.get_task(tid2)["status"] == "cancelled")
+    check("list_tasks(process_instance_id=) видит обе задачи",
+         len(st.list_tasks(process_instance_id=pid)) == 2)
+    check("list_tasks(status=) фильтрует", len(st.list_tasks(status="done")) >= 1
+         and all(t["status"] == "done" for t in st.list_tasks(status="done")))
+    check("list_tasks(assignee=) фильтрует",
+         all(t["assignee"] == "human:ivanov" for t in st.list_tasks(assignee="human:ivanov")))
+
+    section("Write-back log: идемпотентность")
+    wb_id, is_new = st.write_back_log_attempt(pid, sid, "customers", "c1", "idem-key-1")
+    check("первая попытка — новая запись", is_new)
+    wb_id2, is_new2 = st.write_back_log_attempt(pid, sid, "customers", "c1", "idem-key-1")
+    check("повторная попытка с тем же ключом -> не новая", not is_new2)
+    check("id тот же (та же запись)", wb_id == wb_id2)
+    st.write_back_mark_result(wb_id, "ok")
+    check("get_write_back_log видит обновлённый статус",
+         st.get_write_back_log(wb_id)["status"] == "ok")
+    check("get_write_back_log для отсутствующего -> None",
+         st.get_write_back_log(999999) is None)
+    check("attempts увеличился", st.get_write_back_log(wb_id)["attempts"] == 1)
+    check("list_write_back_log(process_instance_id=) находит",
+         any(w["id"] == wb_id for w in st.list_write_back_log(process_instance_id=pid)))
+    check("list_write_back_log(status=) фильтрует",
+         all(w["status"] == "ok" for w in st.list_write_back_log(status="ok")))
+
+    section("AI interaction: неизменяемый журнал")
+    ai_id = st.log_ai_interaction("human:ivanov", "покажи статистику", "ops",
+                                  tools_called=[{"name": "get_dashboard_stats"}],
+                                  result_text="вот ответ")
+    check("ai_interaction id > 0", ai_id > 0)
+    check("В классе Store НЕТ метода update/delete для ai_interaction",
+         not hasattr(st, "update_ai_interaction") and not hasattr(st, "delete_ai_interaction"))
+    interactions = st.list_ai_interactions()
+    check("list_ai_interactions находит запись", any(a["id"] == ai_id for a in interactions))
+    check("list_ai_interactions(actor=) фильтрует",
+         all(a["actor"] == "human:ivanov" for a in st.list_ai_interactions("human:ivanov")))
+
+    section("Bronze update: правка записи процессом коррекции")
+    bid_for_update = st.insert_bronze(did, {"name": "исходное значение"})
+    ok_update = st.update_bronze_payload(bid_for_update, {"name": "исправленное значение"})
+    check("update_bronze_payload вернул True", ok_update)
+    check("payload реально обновился",
+         st.get_bronze(bid_for_update)["payload"]["name"] == "исправленное значение")
+    check("update_bronze_payload для отсутствующей записи -> False",
+         st.update_bronze_payload(999999, {}) is False)
+
+    section("Quarantine: get_quarantine (единичный доступ)")
+    check("get_quarantine находит существующую запись",
+         st.get_quarantine(q_id) is not None and st.get_quarantine(q_id)["id"] == q_id)
+    check("get_quarantine для отсутствующей -> None", st.get_quarantine(999999) is None)
+
     section("Dashboard stats: агрегированная статистика")
     stats = st.dashboard_stats()
     check("sources >= 1", stats["sources"] >= 1)
@@ -334,6 +421,10 @@ def main() -> int:
     check("audit_entries >= 1", stats["audit_entries"] >= 1)
     check("object_types >= 2", stats["object_types"] >= 2)
     check("object_instances >= 2", stats["object_instances"] >= 2)
+    check("open_processes учитывается корректно (наш процесс завершён)",
+         stats["open_processes"] == 0)
+    check("open_tasks >= 0", stats["open_tasks"] >= 0)
+    check("ai_interactions >= 1", stats["ai_interactions"] >= 1)
 
     st.close()
 

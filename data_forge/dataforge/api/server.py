@@ -44,6 +44,16 @@ README.md "Честная граница объёма"):
   POST /v1/ontology/links               — связать два объекта
   POST /v1/ontology/instances/{id}/actions — выполнить действие над объектом
 
+  POST /v1/processes/quarantine-correction — запустить процесс коррекции (K3)
+  GET  /v1/processes                    — список запущенных процессов
+  GET  /v1/processes/{id}               — детали + задачи + write-back лог
+  POST /v1/processes/{id}/correct       — подать исправленный payload (guardrail)
+  POST /v1/processes/{id}/write-back    — записать исправление в источник
+  POST /v1/processes/{id}/rollback      — отменить процесс (до write-back)
+
+  POST /v1/copilot/ask                  — спросить AI Copilot (ТЗ §3.6, K6)
+  GET  /v1/copilot/history              — история взаимодействий (аудит AI)
+
   GET  /v1/lineage/trace                — цепочка lineage по asset (K4)
 
   GET  /v1/audit                        — журнал аудита (неизменяемый)
@@ -60,17 +70,20 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from ..config import Config
 from ..connectors.base import ConnectorError
 from ..connectors.factory import build_connector
+from ..copilot.assistant import CopilotError, CopilotRequestError, ask as copilot_ask
 from ..db.store import Store, StoreError
 from ..mdm import matching as mdm
 from ..ontology import model as ontology
 from ..ontology.actions import ActionError, execute_action
 from ..pipeline import ingest as pipeline
+from ..pipeline import orchestrator as process_orch
 from ..quality import engine as quality
 
 app = FastAPI(title="DataForge", version="0.1.0")
@@ -142,6 +155,21 @@ async def _ontology_error_handler(request: Request, exc: ontology.OntologyError)
 
 @app.exception_handler(ActionError)
 async def _action_error_handler(request: Request, exc: ActionError):
+    return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.exception_handler(process_orch.ProcessError)
+async def _process_error_handler(request: Request, exc: process_orch.ProcessError):
+    return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.exception_handler(CopilotError)
+async def _copilot_error_handler(request: Request, exc: CopilotError):
+    return JSONResponse(status_code=503, content={"error": str(exc)})
+
+
+@app.exception_handler(CopilotRequestError)
+async def _copilot_request_error_handler(request: Request, exc: CopilotRequestError):
     return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
@@ -244,6 +272,34 @@ class ActionDefIn(BaseModel):
 class ExecuteActionIn(BaseModel):
     action: str
     params: dict[str, Any] = Field(default_factory=dict)
+    actor: str
+
+
+class StartProcessIn(BaseModel):
+    quarantine_id: int
+    assignee: str = ""
+    actor: str = "system"
+
+
+class SubmitCorrectionIn(BaseModel):
+    corrected_payload: dict[str, Any]
+    actor: str
+
+
+class WriteBackIn(BaseModel):
+    dataset_name: str
+    natural_key: str
+    actor: str
+
+
+class RollbackProcessIn(BaseModel):
+    actor: str
+    reason: str = ""
+
+
+class CopilotAskIn(BaseModel):
+    prompt: str
+    mode: str = "ops"       # ops | setup
     actor: str
 
 
@@ -514,6 +570,89 @@ async def link_instances_route(body: LinkInstancesIn, store: Store = Depends(get
 async def execute_action_route(instance_id: int, body: ExecuteActionIn,
                                store: Store = Depends(get_store)) -> dict[str, Any]:
     return execute_action(store, instance_id, body.action, body.params, body.actor)
+
+
+# ------------------------------------------------------------- processes
+@app.post("/v1/processes/quarantine-correction", dependencies=[Depends(require_auth)])
+async def start_quarantine_correction_route(body: StartProcessIn,
+                                            store: Store = Depends(get_store)
+                                            ) -> dict[str, Any]:
+    return process_orch.start_quarantine_correction(
+        store, body.quarantine_id, body.assignee, body.actor)
+
+
+@app.get("/v1/processes", dependencies=[Depends(require_auth)])
+async def list_processes(process_type: str = "", status: str = "",
+                         store: Store = Depends(get_store)) -> list[dict[str, Any]]:
+    return store.list_process_instances(process_type, status)
+
+
+@app.get("/v1/processes/{process_id}", dependencies=[Depends(require_auth)])
+async def get_process_route(process_id: int, store: Store = Depends(get_store)
+                            ) -> dict[str, Any]:
+    process = store.get_process_instance(process_id)
+    if not process:
+        raise HTTPException(404, f"Процесс #{process_id} не найден")
+    process["tasks"] = store.list_tasks(process_instance_id=process_id)
+    process["write_back_log"] = store.list_write_back_log(process_instance_id=process_id)
+    process["audit_trail"] = store.audit_trail_for("process_instance", process_id)
+    return process
+
+
+@app.post("/v1/processes/{process_id}/correct", dependencies=[Depends(require_auth)])
+async def submit_correction_route(process_id: int, body: SubmitCorrectionIn,
+                                  store: Store = Depends(get_store)) -> dict[str, Any]:
+    return process_orch.submit_correction(store, process_id, body.corrected_payload,
+                                          body.actor)
+
+
+@app.post("/v1/processes/{process_id}/write-back", dependencies=[Depends(require_auth)])
+async def write_back_route(process_id: int, body: WriteBackIn,
+                           cfg: Config = Depends(get_cfg),
+                           store: Store = Depends(get_store)) -> dict[str, Any]:
+    process = store.get_process_instance(process_id)
+    if not process:
+        raise HTTPException(404, f"Процесс #{process_id} не найден")
+    dataset = store.get_dataset(process["context"]["dataset_id"])
+    source = store.get_source(dataset["source_id"]) if dataset else None
+    if not source:
+        raise HTTPException(404, "Источник процесса не найден")
+    connector = build_connector(source, cfg.onec_base_url, cfg.onec_api_key,
+                                cfg.onec_timeout)
+    return process_orch.write_back_correction(
+        store, process_id, connector, source["id"], body.dataset_name,
+        body.natural_key, body.actor)
+
+
+@app.post("/v1/processes/{process_id}/rollback", dependencies=[Depends(require_auth)])
+async def rollback_process_route(process_id: int, body: RollbackProcessIn,
+                                 store: Store = Depends(get_store)) -> dict[str, Any]:
+    return process_orch.rollback_process(store, process_id, body.actor, body.reason)
+
+
+# ------------------------------------------------------------- copilot
+@app.post("/v1/copilot/ask", dependencies=[Depends(require_auth)])
+async def copilot_ask_route(body: CopilotAskIn, request: Request,
+                            cfg: Config = Depends(get_cfg),
+                            store: Store = Depends(get_store)) -> dict[str, Any]:
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ") if auth_header else None
+    self_base_url = str(request.base_url).rstrip("/")
+    # ВАЖНО: copilot_ask делает БЛОКИРУЮЩИЕ HTTP-вызовы (к LLM и обратно к
+    # ЭТОМУ ЖЕ серверу за инструментами). Если выполнить их прямо в async
+    # роуте, единственный event loop uvicorn заблокируется сам на себя —
+    # входящий "внутренний" HTTP-запрос от ApiTools никогда не будет
+    # обработан (deadlock). run_in_threadpool переносит вызов в отдельный
+    # поток, event loop остаётся свободным обслуживать вложенный запрос.
+    return await run_in_threadpool(
+        copilot_ask, store, cfg, body.actor, body.prompt, body.mode,
+        self_base_url, token)
+
+
+@app.get("/v1/copilot/history", dependencies=[Depends(require_auth)])
+async def copilot_history(actor: str = "", store: Store = Depends(get_store)
+                          ) -> list[dict[str, Any]]:
+    return store.list_ai_interactions(actor)
 
 
 # -------------------------------------------------------------- lineage

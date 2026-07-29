@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -319,6 +321,91 @@ def main() -> int:
                        json={"action": "no_such_action", "params": {},
                             "actor": "human:api-test"}, timeout=5)
         check("несуществующее действие -> 400", r.status_code == 400)
+
+        section("Process Orchestrator: сквозной процесс с write-back через HTTP (K3)")
+        sqlite_path = tempfile.mktemp(suffix=".db")
+        conn = sqlite3.connect(sqlite_path)
+        conn.execute("CREATE TABLE customers(id TEXT PRIMARY KEY, name TEXT, inn TEXT)")
+        conn.execute("INSERT INTO customers VALUES ('p1', 'ООО Процесс', '')")
+        conn.commit()
+        conn.close()
+        os.environ["TEST_API_PROCESS_DSN"] = f"sqlite:///{sqlite_path}"
+
+        r = httpx.post(f"{srv.base_url}/v1/sources",
+                       json={"name": "erp_proc", "kind": "sql",
+                            "config": {"dsn_env": "TEST_API_PROCESS_DSN",
+                                      "table": "customers", "id_field": "id"}}, timeout=5)
+        proc_sid = r.json()["id"]
+
+        r = httpx.post(f"{srv.base_url}/v1/sources/{proc_sid}/ingest/full",
+                       json={"dataset": "customers", "id_field": "id"}, timeout=5)
+        proc_did = r.json()["dataset_id"]
+
+        r = httpx.post(f"{srv.base_url}/v1/datasets/{proc_did}/quality-rules",
+                       json={"rule_type": "not_null", "field_name": "inn",
+                            "severity": "error"}, timeout=5)
+        r = httpx.post(f"{srv.base_url}/v1/datasets/{proc_did}/quality-run", timeout=5)
+        check("quality-run отправил запись в карантин", r.json()["quarantined_count"] == 1)
+
+        r = httpx.get(f"{srv.base_url}/v1/datasets/{proc_did}/quarantine", timeout=5)
+        proc_qid = r.json()[0]["id"]
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/quarantine-correction",
+                       json={"quarantine_id": proc_qid, "assignee": "human:steward"},
+                       timeout=5)
+        check("процесс запущен -> 200", r.status_code == 200)
+        proc_pid = r.json()["id"]
+        check("статус процесса awaiting_task", r.json()["status"] == "awaiting_task")
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/quarantine-correction",
+                       json={"quarantine_id": proc_qid}, timeout=5)
+        check("повторный запуск на том же карантине идемпотентен",
+             r.json()["id"] == proc_pid)
+
+        r = httpx.get(f"{srv.base_url}/v1/processes/{proc_pid}", timeout=5)
+        check("детали процесса содержат задачи и audit_trail", len(r.json()["tasks"]) == 1
+             and len(r.json()["audit_trail"]) >= 1)
+        check("assignee из запроса передан в задачу",
+             r.json()["tasks"][0]["assignee"] == "human:steward")
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/{proc_pid}/correct",
+                       json={"corrected_payload": {"id": "p1", "name": "ООО Процесс",
+                                                   "inn": ""}, "actor": "human:steward"},
+                       timeout=5)
+        check("невалидное исправление отклонено (guardrail)", r.json()["accepted"] is False)
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/{proc_pid}/correct",
+                       json={"corrected_payload": {"id": "p1", "name": "ООО Процесс",
+                                                   "inn": "9998887766"}, "actor": "human:steward"},
+                       timeout=5)
+        check("валидное исправление принято", r.json()["accepted"] is True)
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/{proc_pid}/write-back",
+                       json={"dataset_name": "customers", "natural_key": "p1",
+                            "actor": "human:steward"}, timeout=5)
+        check("write-back -> 200", r.status_code == 200)
+        check("write-back успешен", r.json()["ok"] is True)
+
+        conn2 = sqlite3.connect(sqlite_path)
+        row = conn2.execute("SELECT inn FROM customers WHERE id='p1'").fetchone()
+        conn2.close()
+        check("значение РЕАЛЬНО записалось в источник через HTTP-сценарий",
+             row[0] == "9998887766")
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/{proc_pid}/rollback",
+                       json={"actor": "human:x"}, timeout=5)
+        check("откат после успешного write-back -> 400", r.status_code == 400)
+
+        r = httpx.get(f"{srv.base_url}/v1/processes",
+                      params={"process_type": "quarantine_correction"}, timeout=5)
+        check("список процессов видит наш процесс", any(p["id"] == proc_pid for p in r.json()))
+
+        r = httpx.post(f"{srv.base_url}/v1/processes/{proc_pid}/correct",
+                       json={"corrected_payload": {}, "actor": "human:x"}, timeout=5)
+        check("подача исправления для завершённого процесса -> 400", r.status_code == 400)
+
+        os.unlink(sqlite_path)
+        os.environ.pop("TEST_API_PROCESS_DSN", None)
 
         section("Lineage: цепочка через HTTP")
         r = httpx.get(f"{srv.base_url}/v1/lineage/trace",
