@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>САПС — рабочее место инженера</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --panel:#fff; --line:#dfe4ec; --txt:#1c2432; --dim:#6b7789;
+    --acc:#1f6feb; --ok:#1a7f4b; --warn:#b3730a; --err:#c0392b; --soft:#eef2f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+       background:var(--bg);color:var(--txt)}
+  header{background:var(--panel);border-bottom:1px solid var(--line);padding:10px 18px;
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+  header b{font-size:16px;letter-spacing:.02em}
+  header .sub{color:var(--dim);font-size:12px}
+  nav{display:flex;gap:2px;margin-left:auto;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);
+             padding:7px 14px;border-radius:7px;cursor:pointer;font:inherit}
+  nav button.active{background:var(--soft);color:var(--txt);border-color:var(--line);font-weight:600}
+  nav button:hover{color:var(--txt)}
+  main{padding:18px;max-width:1320px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:12px;color:var(--dim);font-weight:700;
+           text-transform:uppercase;letter-spacing:.07em}
+  select,input,button,textarea{font:inherit;background:#fff;color:var(--txt);
+        border:1px solid var(--line);border-radius:7px;padding:7px 11px}
+  button{cursor:pointer;background:var(--soft)}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button.primary{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600}
+  button.primary:hover{opacity:.9;color:#fff}
+  button.ok{background:var(--ok);color:#fff;border-color:var(--ok);font-weight:600}
+  button.ok:hover{opacity:.9;color:#fff}
+  button.danger:hover{border-color:var(--err);color:var(--err)}
+  button:disabled{opacity:.45;cursor:default}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tbody tr:hover{background:var(--soft)}
+  .row{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:11px}
+  .grow{flex:1;min-width:200px}
+  textarea{width:100%;min-height:90px;resize:vertical;font-family:inherit}
+  .muted{color:var(--dim)}
+  .clickable{cursor:pointer;color:var(--acc);font-weight:600}
+  .clickable:hover{text-decoration:underline}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:11px}
+  .stat{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:11px;text-align:center}
+  .stat b{display:block;font-size:23px;color:var(--acc)}
+  .stat span{font-size:11px;color:var(--dim)}
+  .hidden{display:none!important}
+  .box{border-radius:7px;padding:9px 13px;margin-bottom:11px;border:1px solid}
+  .box.err{color:var(--err);background:#fdeeec;border-color:#f3c5be}
+  .box.ok{color:var(--ok);background:#e9f7ef;border-color:#b9e2c9}
+  .box.warn{color:var(--warn);background:#fdf5e6;border-color:#f0dcb0}
+  .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;
+       border:1px solid var(--line);background:var(--soft);white-space:nowrap}
+  .tag.approved{color:var(--ok);border-color:#b9e2c9;background:#e9f7ef}
+  .tag.draft{color:var(--dim)}
+  .tag.in_review{color:var(--warn);border-color:#f0dcb0;background:#fdf5e6}
+  .tag.rejected,.tag.obsolete{color:var(--err);border-color:#f3c5be;background:#fdeeec}
+  .health{height:9px;background:var(--soft);border-radius:99px;overflow:hidden;min-width:110px}
+  .health i{display:block;height:100%;background:var(--ok)}
+  .health i.mid{background:var(--warn)} .health i.low{background:var(--err)}
+  .diff{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin:9px 0}
+  .diff>div{border:1px solid var(--line);border-radius:7px;padding:10px;font-size:13px;
+            white-space:pre-wrap;word-break:break-word}
+  .diff .before{background:#fdeeec;border-color:#f3c5be}
+  .diff .after{background:#e9f7ef;border-color:#b9e2c9}
+  .diff h4{margin:0 0 6px;font-size:11px;text-transform:uppercase;color:var(--dim);letter-spacing:.05em}
+  ins{background:#c8f0d8;text-decoration:none;border-radius:3px;padding:0 2px}
+  del{background:#f8ccc6;border-radius:3px;padding:0 2px}
+  .sug{border:1px solid var(--line);border-radius:9px;padding:13px;margin-bottom:11px;background:var(--panel)}
+  .sug .hd{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:7px}
+  .issue{font-size:12.5px;padding:3px 0;color:var(--dim)}
+  .issue b{color:var(--err);font-weight:600}
+  .issue.minor b{color:var(--warn)}
+  .rq{border:1px solid var(--line);border-radius:9px;padding:13px;margin-bottom:10px}
+  .rq .hd{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+  .rq .txt{margin-top:7px;white-space:pre-wrap}
+  details summary{cursor:pointer;color:var(--acc);font-size:13px;margin-top:7px}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;
+        background:var(--soft);transition:border-color .15s}
+  .drop.over{border-color:var(--acc);background:#eaf2fd}
+  .pick{color:var(--acc);cursor:pointer;text-decoration:underline}
+  .steps{list-style:none;padding:0;margin:10px 0}
+  .steps li{padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .steps li:last-child{border-bottom:none}
+  .steps .mk{font-weight:700;margin-right:7px}
+  .steps .mk.ok{color:var(--ok)} .steps .mk.no{color:var(--err)}
+  code{background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12.5px}
+  .pill{font-size:12px;color:var(--dim);background:var(--soft);padding:4px 10px;border-radius:99px}
+  .pill.alert{background:var(--warn);color:#fff;font-weight:700}
+</style>
+</head>
+<body>
+<header>
+  <b>САПС</b>
+  <span class="sub">Система агентской поддержки сертификации</span>
+  <input id="token" type="password" placeholder="токен (если задан)" size="12">
+  <input id="me" placeholder="Ваше имя (для журнала)" size="16" value="engineer">
+  <span class="pill" id="conn">—</span>
+  <span class="pill alert hidden" id="sugPill">0</span>
+  <nav>
+    <button data-view="dash" class="active">Обзор</button>
+    <button data-view="reqs">Требования</button>
+    <button data-view="sugs">Предложения агентов</button>
+    <button data-view="upload">Загрузка</button>
+    <button data-view="wizard">Мастер импорта</button>
+    <button data-view="tools">Агенты и отчёты</button>
+  </nav>
+</header>
+<main>
+  <div id="err" class="box err hidden"></div>
+  <div id="msg" class="box ok hidden"></div>
+
+  <!-- ОБЗОР -->
+  <section id="view-dash">
+    <div class="card"><h2>Состояние базы</h2><div class="grid" id="stats"></div></div>
+    <div class="card">
+      <h2>Здоровье сертификации по узлам изделия</h2>
+      <table><thead><tr><th>Узел</th><th>Требований</th><th>Готовность</th>
+        <th>Нет связи с АП</th><th>Нет MoC</th><th>Нет доказательств</th></tr></thead>
+        <tbody id="healthRows"></tbody></table>
+      <div class="muted" style="margin-top:9px;font-size:12.5px">
+        Готовность = 0.2·связь с АП + 0.25·назначен MoC + 0.35·есть доказательство
+        + 0.2·качество формулировки.
+      </div>
+    </div>
+  </section>
+
+  <!-- ТРЕБОВАНИЯ -->
+  <section id="view-reqs" class="hidden">
+    <div class="card">
+      <h2>Мои требования</h2>
+      <div class="row">
+        <input id="fOwner" placeholder="ответственный" size="14">
+        <input id="fNode" placeholder="узел изделия" size="16">
+        <select id="fStatus">
+          <option value="">любой статус</option>
+          <option value="draft">draft</option><option value="in_review">in_review</option>
+          <option value="approved">approved</option><option value="rejected">rejected</option>
+        </select>
+        <input id="fQuery" class="grow" placeholder="поиск по тексту или номеру">
+        <button class="primary" onclick="loadReqs()">Показать</button>
+      </div>
+      <table><thead><tr><th>Требование</th><th>Формулировка</th><th>Статус</th>
+        <th>Качество</th><th>Узел</th><th>Ответственный</th></tr></thead>
+        <tbody id="reqRows"></tbody></table>
+    </div>
+    <div class="card hidden" id="reqCard"><h2>Карточка требования</h2><div id="reqDetail"></div></div>
+  </section>
+
+  <!-- ПРЕДЛОЖЕНИЯ -->
+  <section id="view-sugs" class="hidden">
+    <div class="card">
+      <h2>Предложения агентов — требуется решение инженера</h2>
+      <div class="row">
+        <select id="sAgent"><option value="">все агенты</option>
+          <option value="editor">editor</option><option value="classifier">classifier</option>
+          <option value="gap">gap</option><option value="code_review">code_review</option></select>
+        <button onclick="loadSugs()">Обновить</button>
+        <span class="muted">Агент не меняет данные сам: изменение вносится только после вашего решения.</span>
+      </div>
+      <div id="sugList"></div>
+    </div>
+  </section>
+
+  <!-- ЗАГРУЗКА ДОКУМЕНТА -->
+  <section id="view-upload" class="hidden">
+    <div class="card">
+      <h2>Загрузить документ — система разберётся сама</h2>
+      <div id="drop" class="drop">
+        <b>Перетащите сюда файл</b> или <label class="pick">выберите
+          <input type="file" id="file" accept=".pdf,.docx,.xlsx" hidden></label>
+        <div class="muted" style="margin-top:6px">
+          PDF со справочником авиационных правил, ТЗ в Word, перечень
+          требований в Excel — назначение определится автоматически.
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <select id="uAs">
+          <option value="">определить автоматически</option>
+          <option value="rulebook">справочник авиационных правил</option>
+          <option value="requirements">документ с требованиями</option>
+        </select>
+        <input id="uRuleset" placeholder="набор правил (АП-25)" size="14">
+        <input id="uOwner" placeholder="ответственный" size="14">
+        <input id="uNode" placeholder="узел изделия" size="14">
+        <label class="muted"><input type="checkbox" id="uAgents" checked>
+          запустить агентов</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="uGo" onclick="doUpload()" disabled>
+          Загрузить</button>
+        <span id="uName" class="muted"></span>
+      </div>
+      <div id="uProgress" class="hidden box warn">Обрабатываю документ…
+        для большого справочника это может занять минуту.</div>
+      <div id="uResult"></div>
+    </div>
+    <div class="card">
+      <h2>Модель эмбеддингов</h2>
+      <div class="row"><button onclick="loadEmb()">Проверить</button>
+        <span class="muted">Семантический поиск по требованиям и пунктам АП.</span></div>
+      <div id="embStatus" class="muted">—</div>
+    </div>
+  </section>
+
+  <!-- МАСТЕР ИМПОРТА -->
+  <section id="view-wizard" class="hidden">
+    <div class="card">
+      <h2>Документы-источники</h2>
+      <div class="row"><button onclick="loadDocs()">Обновить</button>
+        <span class="muted">Импорт файлов выполняется командой
+          <code>saps import &lt;файл&gt;</code> — здесь виден результат разбора.</span></div>
+      <table><thead><tr><th>#</th><th>Тип</th><th>Имя</th><th>Записей</th><th>Импортирован</th><th></th></tr></thead>
+        <tbody id="docRows"></tbody></table>
+    </div>
+    <div class="card hidden" id="stagingCard">
+      <h2>Мастер подготовки данных — что распозналось</h2>
+      <div class="row">
+        <input id="pOwner" placeholder="ответственный по умолчанию" size="18">
+        <input id="pNode" placeholder="узел по умолчанию" size="16">
+        <button class="ok" onclick="promoteSelected()">Перенести отмеченные в базу</button>
+        <span class="muted">Проверьте распознанное перед переносом: исправить номер
+          требования потом дороже.</span>
+      </div>
+      <table><thead><tr><th><input type="checkbox" id="stAll" onclick="toggleAll()"></th>
+        <th>Номер</th><th>Раздел</th><th>Текст</th><th>Уверенность</th><th>Статус</th></tr></thead>
+        <tbody id="stagingRows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- АГЕНТЫ И ОТЧЁТЫ -->
+  <section id="view-tools" class="hidden">
+    <div class="card">
+      <h2>Запуск агентов</h2>
+      <div class="row">
+        <input id="aOwner" placeholder="ответственный (необязательно)" size="18">
+        <input id="aNode" placeholder="узел (необязательно)" size="16">
+      </div>
+      <div class="row">
+        <button onclick="runAgent('editor')">Редактор — проверить формулировки</button>
+        <button onclick="runAgent('classifier')">Классификатор — подобрать пункты АП</button>
+        <button onclick="runAgent('gap')">Gap-аналитик — найти пробелы</button>
+        <button onclick="reindex()">Пересчитать эмбеддинги</button>
+      </div>
+      <pre id="agentOut" class="muted" style="white-space:pre-wrap;font-size:12.5px"></pre>
+    </div>
+    <div class="card">
+      <h2>Выгрузка (ТЗ п.6.3)</h2>
+      <div class="row">
+        <button class="primary" onclick="doExport('docx')">Протокол соответствия (Word)</button>
+        <button onclick="doExport('xlsx')">Протокол соответствия (Excel)</button>
+        <button onclick="doExport('requirements')">Срез требований (Excel)</button>
+      </div>
+      <div class="muted" style="font-size:12.5px">Файлы сохраняются в рабочий каталог сервера.</div>
+    </div>
+    <div class="card"><h2>Плагины</h2><div id="pluginList" class="muted">—</div></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let CURRENT_REQ = null, CURRENT_DOC = null;
+
+function tok(){ return $("#token").value.trim(); }
+function me(){ return $("#me").value.trim() || "engineer"; }
+function headers(){
+  const h = {"Content-Type":"application/json"};
+  if (tok()) h["Authorization"] = "Bearer " + tok();
+  return h;
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function showErr(m){ const e=$("#err"); if(!m){e.classList.add("hidden");return;} e.textContent=m; e.classList.remove("hidden"); }
+function showMsg(m){ const e=$("#msg"); if(!m){e.classList.add("hidden");return;} e.textContent=m; e.classList.remove("hidden"); setTimeout(()=>e.classList.add("hidden"),6000); }
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers:headers()}, opts||{}));
+  let d=null; try{ d = await r.json(); }catch(e){ throw new Error("HTTP "+r.status); }
+  if(!r.ok) throw new Error(d && d.error ? d.error : "HTTP "+r.status);
+  return d;
+}
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");
+  ["dash","reqs","sugs","upload","wizard","tools"].forEach(v=>
+    $("#view-"+v).classList.toggle("hidden", v!==b.dataset.view));
+  if(b.dataset.view==="sugs") loadSugs();
+  if(b.dataset.view==="wizard") loadDocs();
+  if(b.dataset.view==="upload") loadEmb();
+  if(b.dataset.view==="reqs") loadReqs();
+  if(b.dataset.view==="tools") loadPlugins();
+  if(b.dataset.view==="dash"){ loadStats(); loadHealth(); }
+});
+
+// ---------- пословный diff: инженер должен видеть, ЧТО изменилось ----------
+function diffWords(a, b){
+  const A=(a||"").split(/(\s+)/), B=(b||"").split(/(\s+)/);
+  const n=A.length, m=B.length;
+  // LCS по словам. Тексты требований короткие, поэтому O(n*m) допустимо.
+  const dp=Array.from({length:n+1},()=>new Uint32Array(m+1));
+  for(let i=n-1;i>=0;i--) for(let j=m-1;j>=0;j--)
+    dp[i][j] = A[i]===B[j] ? dp[i+1][j+1]+1 : Math.max(dp[i+1][j],dp[i][j+1]);
+  let i=0,j=0,left="",right="";
+  while(i<n && j<m){
+    if(A[i]===B[j]){ left+=esc(A[i]); right+=esc(B[j]); i++; j++; }
+    else if(dp[i+1][j]>=dp[i][j+1]){ if(A[i].trim()) left+="<del>"+esc(A[i])+"</del>"; else left+=esc(A[i]); i++; }
+    else { if(B[j].trim()) right+="<ins>"+esc(B[j])+"</ins>"; else right+=esc(B[j]); j++; }
+  }
+  while(i<n){ if(A[i].trim()) left+="<del>"+esc(A[i])+"</del>"; else left+=esc(A[i]); i++; }
+  while(j<m){ if(B[j].trim()) right+="<ins>"+esc(B[j])+"</ins>"; else right+=esc(B[j]); j++; }
+  return [left,right];
+}
+
+// ---------- обзор ----------
+async function loadStats(){
+  try{
+    const s = await api("/v1/stats");
+    const cells=[["требований","requirements"],["утверждено","requirements_approved"],
+      ["документов","documents"],["в staging","staging_new"],["пунктов АП","clauses"],
+      ["связей подтв.","links_confirmed"],["пунктов MoC","compliance_items"],
+      ["доказательств","evidence"],["предложений","suggestions_pending"],
+      ["низкое качество","low_quality"]];
+    $("#stats").innerHTML = cells.map(([l,k])=>
+      `<div class="stat"><b>${s[k]||0}</b><span>${l}</span></div>`).join("");
+    const n=s.suggestions_pending||0, p=$("#sugPill");
+    p.textContent = n+" предложений"; p.classList.toggle("hidden", n===0);
+    showErr("");
+  }catch(e){ showErr(e.message); }
+}
+async function loadHealth(){
+  try{
+    const d = await api("/v1/health/nodes");
+    $("#healthRows").innerHTML = d.nodes.length ? d.nodes.map(h=>{
+      const pct = Math.round(h.health*100);
+      const cls = pct>=70?"":(pct>=40?"mid":"low");
+      return `<tr><td class="clickable" onclick="filterNode('${esc(h.node_code)}')">${esc(h.node_code)}</td>
+        <td>${h.total}</td>
+        <td><div class="row" style="margin:0;gap:7px"><div class="health" style="flex:1">
+          <i class="${cls}" style="width:${pct}%"></i></div>
+          <span>${pct}% — ${esc(h.status)}</span></div></td>
+        <td>${h.gaps.no_rule_link}</td><td>${h.gaps.no_moc}</td><td>${h.gaps.no_evidence}</td></tr>`;
+    }).join("") : `<tr><td colspan="6" class="muted">Узлы не заданы. Требованиям
+      можно назначить узел при импорте или в карточке.</td></tr>`;
+  }catch(e){ showErr(e.message); }
+}
+function filterNode(code){
+  document.querySelector('nav button[data-view="reqs"]').click();
+  $("#fNode").value = code; loadReqs();
+}
+
+// ---------- требования ----------
+async function loadReqs(){
+  try{
+    const p = new URLSearchParams({owner:$("#fOwner").value, node:$("#fNode").value,
+      status:$("#fStatus").value, q:$("#fQuery").value});
+    const d = await api("/v1/requirements?"+p);
+    $("#reqRows").innerHTML = d.requirements.length ? d.requirements.map(r=>`
+      <tr><td class="clickable" onclick="openReq(${r.id})">${esc(r.external_id)}</td>
+      <td>${esc((r.text||"").slice(0,150))}${(r.text||"").length>150?"…":""}</td>
+      <td><span class="tag ${esc(r.status)}">${esc(r.status)}</span></td>
+      <td>${r.quality_score==null?'<span class="muted">—</span>':Number(r.quality_score).toFixed(2)}</td>
+      <td>${esc(r.node_code||"")}</td><td>${esc(r.owner||"")}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="muted">Ничего не найдено.</td></tr>`;
+  }catch(e){ showErr(e.message); }
+}
+async function openReq(id){
+  CURRENT_REQ = id;
+  try{
+    const d = await api("/v1/requirements/"+id);
+    const r = d.requirement;
+    let h = `<div class="row"><b style="font-size:16px">${esc(r.external_id)}</b>
+      <span class="tag ${esc(r.status)}">${esc(r.status)}</span>
+      ${r.quality_score!=null?`<span class="tag">качество ${Number(r.quality_score).toFixed(2)}</span>`:""}
+      ${r.node_code?`<span class="tag">${esc(r.node_code)}</span>`:""}
+      ${r.owner?`<span class="tag">${esc(r.owner)}</span>`:""}
+      ${r.tc_uid?`<span class="tag">Teamcenter: ${esc(r.tc_uid)}</span>`:""}</div>`;
+
+    h += `<div class="row"><textarea id="rqText">${esc(r.text)}</textarea></div>
+      <div class="row">
+        <select id="rqStatus">${["draft","in_review","approved","rejected","obsolete"]
+          .map(s=>`<option ${s===r.status?"selected":""}>${s}</option>`).join("")}</select>
+        <input id="rqOwner" placeholder="ответственный" value="${esc(r.owner||"")}" size="14">
+        <input id="rqReason" class="grow" placeholder="причина изменения (попадёт в историю)">
+        <button class="primary" onclick="saveReq(${id})">Сохранить</button>
+      </div>`;
+
+    const q = r.quality && r.quality.issues ? r.quality.issues : [];
+    if(q.length) h += `<div class="card" style="margin:11px 0"><h2>Замечания к формулировке</h2>`+
+      q.map(i=>`<div class="issue ${esc(i.severity)}"><b>${esc(i.code)}</b> — ${esc(i.message)}
+        ${i.fragment?`<code>${esc(i.fragment)}</code>`:""}</div>`).join("")+`</div>`;
+
+    h += `<div class="card" style="margin:11px 0"><h2>Пункты авиационных правил</h2>`;
+    h += d.links.length ? `<table><thead><tr><th>Пункт</th><th>Название</th><th>Уверенность</th>
+      <th>Источник</th><th></th></tr></thead><tbody>`+
+      d.links.map(l=>`<tr><td>${esc(l.ruleset)} ${esc(l.clause)}</td><td>${esc(l.title||"")}</td>
+        <td>${Number(l.score||0).toFixed(2)}</td><td>${esc(l.source)}</td>
+        <td>${l.confirmed?'<span class="tag approved">подтверждено</span>'
+          :'<span class="tag in_review">не подтверждено</span>'}</td></tr>`).join("")+`</tbody></table>`
+      : `<div class="muted">Связей нет. Запустите Классификатор или добавьте связь вручную.</div>`;
+    h += `</div>`;
+
+    h += `<div class="card" style="margin:11px 0"><h2>Доказательная документация</h2>`;
+    h += d.compliance.length ? `<table><thead><tr><th>Метод</th><th>Статус</th>
+      <th>Ответственный</th><th>Документы</th></tr></thead><tbody>`+
+      d.compliance.map(c=>`<tr><td>${esc(c.moc)}</td><td>${esc(c.status)}</td>
+        <td>${esc(c.responsible||"")}</td>
+        <td>${c.evidence.length? c.evidence.map(e=>esc(e.title||e.kind)).join(", ")
+          :'<span class="tag rejected">нет доказательств</span>'}</td></tr>`).join("")+`</tbody></table>`
+      : `<div class="muted">Метод подтверждения не назначен — это пробел в покрытии.</div>`;
+    h += `</div>`;
+
+    const pend = d.suggestions.filter(s=>s.status==="pending");
+    if(pend.length) h += `<div class="card" style="margin:11px 0"><h2>Предложения агентов</h2>`+
+      pend.map(renderSug).join("")+`</div>`;
+
+    h += `<details><summary>История изменений (${d.revisions.length})</summary>
+      <table><thead><tr><th>Версия</th><th>Автор</th><th>Причина</th><th>Когда</th></tr></thead><tbody>`+
+      d.revisions.map(v=>`<tr><td>${v.version}</td><td>${esc(v.actor||"—")}</td>
+        <td>${esc(v.reason||"")}</td><td>${esc(String(v.created_at).slice(0,16))}</td></tr>`).join("")+
+      `</tbody></table></details>`;
+
+    $("#reqDetail").innerHTML = h;
+    $("#reqCard").classList.remove("hidden");
+    $("#reqCard").scrollIntoView({behavior:"smooth", block:"start"});
+  }catch(e){ showErr(e.message); }
+}
+async function saveReq(id){
+  try{
+    await api("/v1/requirements/"+id, {method:"POST", body: JSON.stringify({
+      text: $("#rqText").value, status: $("#rqStatus").value,
+      owner: $("#rqOwner").value, reason: $("#rqReason").value, actor: me()})});
+    showMsg("Сохранено. Изменение записано в историю ревизий.");
+    openReq(id); loadReqs(); loadStats();
+  }catch(e){ showErr(e.message); }
+}
+
+// ---------- предложения ----------
+function renderSug(s){
+  const kindLabel = {text:"формулировка", rule_link:"пункт АП", moc:"метод подтверждения",
+                     attribute:"атрибут"}[s.kind] || s.kind;
+  let body = "";
+  if(s.kind==="text"){
+    const [l,r] = diffWords(s.text_before, s.text_after);
+    body = `<div class="diff"><div class="before"><h4>Было</h4>${l}</div>
+      <div class="after"><h4>Стало</h4>${r}</div></div>`;
+  } else {
+    body = `<div class="muted" style="margin:7px 0">Предлагается: <code>${
+      esc(JSON.stringify(s.payload))}</code></div>`;
+  }
+  return `<div class="sug"><div class="hd">
+      <b>${esc(s.external_id||("#"+s.requirement_id))}</b>
+      <span class="tag">${esc(s.agent)}</span>
+      <span class="tag">${esc(kindLabel)}</span>
+      ${s.score!=null?`<span class="tag">уверенность ${Number(s.score).toFixed(2)}</span>`:""}
+    </div>
+    ${s.rationale?`<div class="muted" style="font-size:12.5px">${esc(s.rationale)}</div>`:""}
+    ${body}
+    <div class="row" style="margin:0">
+      <button class="ok" onclick="decide(${s.id},'accepted')">Принять</button>
+      <button class="danger" onclick="decide(${s.id},'rejected')">Отклонить</button>
+    </div></div>`;
+}
+async function loadSugs(){
+  try{
+    const p = new URLSearchParams({status:"pending", agent:$("#sAgent").value});
+    const d = await api("/v1/suggestions?"+p);
+    $("#sugList").innerHTML = d.suggestions.length ? d.suggestions.map(renderSug).join("")
+      : `<div class="muted">Предложений нет. Запустите агентов на вкладке «Агенты и отчёты».</div>`;
+  }catch(e){ showErr(e.message); }
+}
+async function decide(id, decision){
+  try{
+    await api("/v1/suggestions/"+id, {method:"POST",
+      body: JSON.stringify({decision, actor: me()})});
+    showMsg(decision==="accepted" ? "Принято и применено к требованию." : "Отклонено.");
+    loadSugs(); loadStats();
+    if(CURRENT_REQ) openReq(CURRENT_REQ);
+  }catch(e){ showErr(e.message); }
+}
+
+// ---------- загрузка документа ----------
+let UPLOAD_FILE = null;
+function pickFile(f){
+  UPLOAD_FILE = f || null;
+  $("#uName").textContent = f ? `${f.name} (${Math.round(f.size/1024)} КБ)` : "";
+  $("#uGo").disabled = !f;
+}
+(function initDrop(){
+  const drop = $("#drop"), input = $("#file");
+  if(!drop) return;
+  input.addEventListener("change", e => pickFile(e.target.files[0]));
+  ["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", e => pickFile(e.dataTransfer.files[0]));
+})();
+
+async function doUpload(){
+  if(!UPLOAD_FILE) return;
+  const b64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1]);
+    r.onerror = rej;
+    r.readAsDataURL(UPLOAD_FILE);
+  });
+  $("#uProgress").classList.remove("hidden");
+  $("#uResult").innerHTML = ""; $("#uGo").disabled = true;
+  showErr("");
+  try{
+    const r = await api("/v1/load", {method:"POST", body: JSON.stringify({
+      filename: UPLOAD_FILE.name, content_base64: b64,
+      as: $("#uAs").value, ruleset: $("#uRuleset").value,
+      owner: $("#uOwner").value, node: $("#uNode").value,
+      run_agents: $("#uAgents").checked, actor: me()})});
+    renderUpload(r);
+    loadStats(); loadHealth();
+  }catch(e){ showErr(e.message); }
+  finally{ $("#uProgress").classList.add("hidden"); $("#uGo").disabled = false; }
+}
+function renderUpload(r){
+  const kind = {rulebook:"справочник авиационных правил",
+                requirements:"документ с требованиями"}[r.kind] || "не определено";
+  let h = `<div class="box ${r.ok?"ok":"err"}">
+    <b>${esc(r.path)}</b> — ${esc(kind)}</div><ul class="steps">`;
+  h += r.steps.map(s=>`<li><span class="mk ${s.ok?"ok":"no"}">${s.ok?"✓":"✗"}</span>
+    <b>${esc(s.name)}:</b> ${esc(s.detail)}</li>`).join("");
+  h += `</ul>`;
+  if(r.warnings && r.warnings.length)
+    h += r.warnings.map(w=>`<div class="box warn">${esc(w)}</div>`).join("");
+  if(r.kind==="rulebook" && r.clauses_loaded)
+    h += `<div class="row"><button onclick="runAgent('classifier')">
+      Подобрать пункты требованиям в базе</button></div>`;
+  if(r.suggestions)
+    h += `<div class="row"><button class="primary" onclick="
+      document.querySelector('nav button[data-view=&quot;sugs&quot;]').click()">
+      Посмотреть ${r.suggestions} предложений</button></div>`;
+  $("#uResult").innerHTML = h;
+}
+async function loadEmb(){
+  try{
+    const d = await api("/v1/embeddings");
+    const cov = d.coverage || {};
+    let cls = d.status==="готова" ? "ok" : (d.external ? "err" : "warn");
+    let h = `<div class="box ${cls}">${esc(d.provider)}:${esc(d.model)} — ${esc(d.status)}</div>`;
+    h += `<div class="kv">
+      <div>тип</div><div>${d.external?"внешняя модель":"офлайн (hash)"}</div>
+      <div>адрес</div><div>${esc(d.base_url||"умолчание провайдера")}</div>
+      <div>размерность в схеме БД</div><div>${d.configured_dim}</div>
+      ${d.model_dim!=null?`<div>размерность модели</div><div>${d.model_dim}</div>`:""}
+      <div>пункты АП с векторами</div><div>${cov.clauses_indexed||0} из ${cov.clauses_total||0}</div>
+      <div>требования с векторами</div><div>${cov.requirements_indexed||0} из ${cov.requirements_total||0}</div>
+    </div>`;
+    if(d.error) h += `<div class="box err">${esc(d.error)}</div>`;
+    if(d.model_dim!=null && d.model_dim!==d.configured_dim)
+      h += `<div class="box err">Размерность модели (${d.model_dim}) не совпадает
+        со схемой БД (${d.configured_dim}). Колонка vector(dim) не меняется
+        на лету: задайте SAPS_EMBEDDING_DIM=${d.model_dim} и создайте схему заново.</div>`;
+    $("#embStatus").innerHTML = h;
+  }catch(e){ showErr(e.message); }
+}
+
+// ---------- мастер импорта ----------
+async function loadDocs(){
+  try{
+    const d = await api("/v1/documents");
+    $("#docRows").innerHTML = d.documents.length ? d.documents.map(x=>`
+      <tr><td>${x.id}</td><td>${esc(x.kind)}</td><td>${esc(x.name)}</td><td>${x.records}</td>
+      <td>${esc(String(x.imported_at).slice(0,16))}</td>
+      <td><button onclick="loadStaging(${x.id})">Открыть</button></td></tr>`).join("")
+      : `<tr><td colspan="6" class="muted">Документов нет. Импортируйте файл:
+         <code>saps import ТЗ.docx</code></td></tr>`;
+  }catch(e){ showErr(e.message); }
+}
+async function loadStaging(docId){
+  CURRENT_DOC = docId;
+  try{
+    const d = await api("/v1/staging?document_id="+docId);
+    $("#stagingRows").innerHTML = d.records.map(r=>{
+      const raw = r.raw||{}; const conf = raw.confidence!=null?raw.confidence:0;
+      const cls = conf>=0.7?"approved":(conf>=0.4?"in_review":"rejected");
+      return `<tr><td>${r.status==="new"?`<input type="checkbox" class="stChk" value="${r.id}" checked>`:""}</td>
+        <td>${esc(r.external_id||"—")}</td><td class="muted">${esc(r.section_path||"")}</td>
+        <td>${esc((r.raw_text||"").slice(0,140))}</td>
+        <td><span class="tag ${cls}">${Number(conf).toFixed(2)}</span></td>
+        <td>${esc(r.status)}${r.note?`<div class="muted">${esc(r.note)}</div>`:""}</td></tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted">Записей нет.</td></tr>`;
+    $("#stagingCard").classList.remove("hidden");
+  }catch(e){ showErr(e.message); }
+}
+function toggleAll(){
+  const on = $("#stAll").checked;
+  document.querySelectorAll(".stChk").forEach(c=>c.checked=on);
+}
+async function promoteSelected(){
+  const ids = [...document.querySelectorAll(".stChk:checked")].map(c=>Number(c.value));
+  if(!ids.length){ showErr("Не отмечено ни одной записи"); return; }
+  try{
+    const r = await api("/v1/staging/promote", {method:"POST", body: JSON.stringify({
+      ids, owner:$("#pOwner").value, node:$("#pNode").value, actor: me()})});
+    showMsg(`Создано: ${r.counts.created}, обновлено: ${r.counts.updated}, пропущено: ${r.counts.skipped}`);
+    if(r.skipped.length) showErr("Пропущены: " + r.skipped.map(s=>
+      `${s.external_id||s.staging_id} (${s.reason})`).join("; "));
+    loadStaging(CURRENT_DOC); loadStats();
+  }catch(e){ showErr(e.message); }
+}
+
+// ---------- агенты и отчёты ----------
+async function runAgent(name){
+  $("#agentOut").textContent = "Выполняется…";
+  try{
+    const r = await api(`/v1/agents/${name}/run`, {method:"POST", body: JSON.stringify({
+      owner:$("#aOwner").value, node:$("#aNode").value, actor: me()})});
+    const c = r.counts;
+    let out = `${r.agent}: обработано ${c.processed}, предложений ${c.suggestions}, `+
+      `находок ${c.findings}, пропущено ${c.skipped}\n`;
+    if(r.errors.length) out += "\nПредупреждения:\n" + r.errors.map(e=>"  • "+e).join("\n") + "\n";
+    if(r.skipped.length) out += "\nПропущено:\n" + r.skipped.slice(0,10).map(s=>
+      `  • ${s.external_id}: ${s.reason}`).join("\n");
+    $("#agentOut").textContent = out;
+    loadStats(); loadSugs();
+  }catch(e){ $("#agentOut").textContent = ""; showErr(e.message); }
+}
+async function reindex(){
+  $("#agentOut").textContent = "Пересчёт эмбеддингов…";
+  try{
+    const r = await api("/v1/index", {method:"POST", body:"{}"});
+    $("#agentOut").textContent = `Обновлено: пунктов АП ${r.clauses}, требований ${r.requirements}`;
+  }catch(e){ $("#agentOut").textContent=""; showErr(e.message); }
+}
+async function doExport(fmt){
+  try{
+    const r = await api("/v1/export", {method:"POST", body: JSON.stringify({
+      format: fmt, node:$("#aNode").value, owner:$("#aOwner").value, actor: me()})});
+    showMsg("Файл сохранён: " + r.file);
+  }catch(e){ showErr(e.message); }
+}
+async function loadPlugins(){
+  try{
+    const d = await api("/v1/plugins");
+    $("#pluginList").innerHTML = d.plugins.map(p=>
+      `<div style="margin-bottom:7px"><b>${esc(p.name)}</b> — ${esc(p.title||p.error||"")}
+       ${p.needs_llm?'<span class="tag">нужна LLM</span>':""}</div>`).join("");
+  }catch(e){ showErr(e.message); }
+}
+
+async function conn(){
+  try{ const h = await (await fetch("/health")).json();
+    $("#conn").textContent = "САПС " + h.version;
+  }catch(e){ $("#conn").textContent = "нет связи"; }
+}
+$("#token").addEventListener("change", ()=>{ loadStats(); loadHealth(); });
+$("#fQuery").addEventListener("keydown", e=>{ if(e.key==="Enter") loadReqs(); });
+conn(); loadStats(); loadHealth();
+setInterval(loadStats, 15000);
+</script>
+</body>
+</html>

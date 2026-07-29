@@ -1,0 +1,107 @@
+# Развёртывание САПС: PostgreSQL с pgvector + приложение.
+#
+#   cp .env.example .env      # заполнить пароли и адрес модели
+#   docker compose up -d
+#   docker compose run --rm saps migrate      # схема БД
+#   docker compose run --rm saps rules load --builtin
+#
+# Полная инструкция — QUICKSTART.md.
+
+services:
+  db:
+    # pgvector/pgvector — официальный образ PostgreSQL с уже собранным
+    # расширением. Ставить vector в обычный postgres пришлось бы
+    # сборкой из исходников при каждом обновлении минорной версии.
+    image: pgvector/pgvector:pg16
+    container_name: saps-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-saps}
+      POSTGRES_USER: ${POSTGRES_USER:-saps}
+      # Пароль обязателен и без умолчания: контейнер с базой
+      # сертификационных данных не должен подниматься с паролем «saps».
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+      # Ускоряет старт и делает сравнение строк предсказуемым.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - saps-db:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready проверяет готовность принимать соединения, а не просто
+      # наличие процесса: без этого приложение стартует раньше базы.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-saps} -d ${POSTGRES_DB:-saps}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    # Порт наружу НЕ публикуется: база доступна только приложению из
+    # внутренней сети compose. Для psql используйте
+    # `docker compose exec db psql -U saps`.
+    networks: [saps]
+
+  saps:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: saps:latest
+    container_name: saps-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SAPS_DB_DSN: postgresql://${POSTGRES_USER:-saps}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-saps}
+      SAPS_DB_SCHEMA: ${SAPS_DB_SCHEMA:-saps}
+      # Наружу слушаем 0.0.0.0 внутри контейнера, но публикуем порт
+      # только на localhost хоста (см. ports ниже) — снаружи система
+      # должна быть за обратным прокси с TLS.
+      SAPS_HOST: 0.0.0.0
+      SAPS_PORT: 8090
+      SAPS_API_TOKEN: ${SAPS_API_TOKEN:?задайте SAPS_API_TOKEN в .env}
+      SAPS_LOG_LEVEL: ${SAPS_LOG_LEVEL:-INFO}
+      SAPS_LOG_JSON: ${SAPS_LOG_JSON:-false}
+      # --- внешняя модель эмбеддингов ---
+      SAPS_EMBEDDING_PROVIDER: ${SAPS_EMBEDDING_PROVIDER:-hash}
+      SAPS_EMBEDDING_MODEL: ${SAPS_EMBEDDING_MODEL:-hash-512}
+      SAPS_EMBEDDING_DIM: ${SAPS_EMBEDDING_DIM:-512}
+      SAPS_EMBEDDING_BASE_URL: ${SAPS_EMBEDDING_BASE_URL:-}
+      SAPS_EMBEDDING_API_KEY: ${SAPS_EMBEDDING_API_KEY:-}
+      SAPS_EMBEDDING_BATCH: ${SAPS_EMBEDDING_BATCH:-32}
+      # --- LLM (необязательна: без неё работают правила) ---
+      SAPS_LLM_PROVIDER: ${SAPS_LLM_PROVIDER:-none}
+      SAPS_LLM_MODEL: ${SAPS_LLM_MODEL:-}
+      SAPS_LLM_BASE_URL: ${SAPS_LLM_BASE_URL:-}
+      SAPS_LLM_API_KEY: ${SAPS_LLM_API_KEY:-}
+      # --- Teamcenter (запись выключена по умолчанию) ---
+      SAPS_TC_URL: ${SAPS_TC_URL:-}
+      SAPS_TC_USER: ${SAPS_TC_USER:-}
+      SAPS_TC_PASSWORD: ${SAPS_TC_PASSWORD:-}
+      SAPS_TC_WRITE: ${SAPS_TC_WRITE:-false}
+    ports:
+      # Только петля: наружу — через nginx/traefik с TLS и, если нужно,
+      # доменной аутентификацией. Прямая публикация 0.0.0.0:8090 отдала бы
+      # данные сертификации в сеть по HTTP.
+      - "127.0.0.1:${SAPS_PORT:-8090}:8090"
+    volumes:
+      # Выгрузки протоколов; сюда же кладут PDF справочников для загрузки.
+      - saps-data:/data
+      # Входящие документы: положите файл в ./inbox на хосте и вызовите
+      # `docker compose exec saps python3 -m saps load /inbox/файл.pdf`.
+      - ./inbox:/inbox:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8090/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # Docker шлёт SIGTERM и ждёт этот срок до SIGKILL. Обработчик сигнала
+    # в serve() даёт текущим запросам доиграть.
+    stop_grace_period: 30s
+    networks: [saps]
+
+volumes:
+  saps-db:
+  saps-data:
+
+networks:
+  saps:
+    driver: bridge
