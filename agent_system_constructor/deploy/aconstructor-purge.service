@@ -1,0 +1,10 @@
+[Unit]
+Description=Удаление прогонов Aconstructor старше 90 дней
+
+[Service]
+Type=oneshot
+User=aconstructor
+Group=aconstructor
+WorkingDirectory=/opt/aconstructor
+EnvironmentFile=/etc/aconstructor/env
+ExecStart=/opt/aconstructor/.venv/bin/aconstructor purge --older-than-days 90

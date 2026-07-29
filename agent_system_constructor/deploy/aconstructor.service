@@ -1,0 +1,37 @@
+[Unit]
+Description=Aconstructor — среда агентов на LangGraph
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=aconstructor
+Group=aconstructor
+WorkingDirectory=/opt/aconstructor
+EnvironmentFile=/etc/aconstructor/env
+ExecStart=/opt/aconstructor/.venv/bin/aconstructor serve --port 8080
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+# Журнал прогонов переживает рестарт, поэтому перезапуск безопасен.
+StateDirectory=aconstructor
+LogsDirectory=aconstructor
+
+# Изоляция: сервису нужны только сеть и свой каталог с базой.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/aconstructor
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

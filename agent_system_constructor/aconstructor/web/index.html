@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aconstructor — среда агентов</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d212a; --line: #2a2f3a;
+    --text: #e6e9ef; --dim: #9aa3b2; --accent: #4c9aff; --ok: #3fb950;
+    --warn: #d29922; --err: #f85149; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --panel:#fff; --panel2:#f0f2f5; --line:#dde1e7;
+            --text:#1a1d23; --dim:#5c6673; --accent:#0b62d6; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 22px;
+           border-bottom:1px solid var(--line); background:var(--panel);
+           position:sticky; top:0; z-index:10; }
+  header h1 { font-size:16px; margin:0; font-weight:650; letter-spacing:.2px; }
+  header .sp { flex:1; }
+  .pill { font-size:12px; color:var(--dim); background:var(--panel2);
+          border:1px solid var(--line); border-radius:20px; padding:3px 11px; }
+  .pill b { color:var(--text); font-weight:600; }
+  main { display:grid; grid-template-columns:340px 1fr; gap:0; min-height:calc(100vh - 53px); }
+  aside { border-right:1px solid var(--line); background:var(--panel);
+          overflow-y:auto; max-height:calc(100vh - 53px); }
+  .side-h { padding:12px 16px 8px; font-size:11px; text-transform:uppercase;
+            letter-spacing:.09em; color:var(--dim); font-weight:650; }
+  .pl { padding:12px 16px; border-bottom:1px solid var(--line); cursor:pointer;
+        border-left:3px solid transparent; }
+  .pl:hover { background:var(--panel2); }
+  .pl.on { background:var(--panel2); border-left-color:var(--accent); }
+  .pl .t { font-weight:600; margin-bottom:3px; }
+  .pl .s { font-size:12.5px; color:var(--dim); }
+  .pl .ag { margin-top:7px; display:flex; flex-wrap:wrap; gap:4px; }
+  .tag { font-size:10.5px; font-family:var(--mono); color:var(--dim);
+         background:var(--bg); border:1px solid var(--line);
+         border-radius:4px; padding:1px 6px; }
+  section { padding:22px 26px; overflow-y:auto; max-height:calc(100vh - 53px); }
+  h2 { margin:0 0 4px; font-size:20px; }
+  .sub { color:var(--dim); margin-bottom:18px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+  button { font:inherit; font-weight:550; padding:8px 15px; border-radius:7px;
+           border:1px solid var(--line); background:var(--panel2); color:var(--text);
+           cursor:pointer; transition:.12s; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary:hover:not(:disabled) { filter:brightness(1.12); }
+  select, input, textarea { font:inherit; background:var(--panel2); color:var(--text);
+           border:1px solid var(--line); border-radius:7px; padding:8px 11px; }
+  textarea { width:100%; font-family:var(--mono); font-size:12.5px; min-height:190px;
+             resize:vertical; line-height:1.5; }
+  .tabs { display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:16px; }
+  .tab { padding:9px 15px; cursor:pointer; color:var(--dim); font-weight:550;
+         border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab:hover { color:var(--text); }
+  .tab.on { color:var(--accent); border-bottom-color:var(--accent); }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:18px; margin-bottom:14px; }
+  .empty { color:var(--dim); text-align:center; padding:44px 20px; }
+  pre { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+        padding:14px; overflow-x:auto; font-family:var(--mono); font-size:12.5px;
+        white-space:pre-wrap; word-break:break-word; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:8px 11px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-size:11px; text-transform:uppercase;
+       letter-spacing:.06em; font-weight:650; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:var(--panel2); }
+  .st { font-size:11px; font-weight:650; padding:2px 9px; border-radius:20px;
+        display:inline-block; font-family:var(--mono); }
+  .st.done{background:rgba(63,185,80,.16);color:var(--ok)}
+  .st.failed{background:rgba(248,81,73,.16);color:var(--err)}
+  .st.running{background:rgba(76,154,255,.16);color:var(--accent)}
+  .st.queued{background:rgba(210,153,34,.16);color:var(--warn)}
+  .st.cancelled{background:var(--panel2);color:var(--dim)}
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .kpi { background:var(--panel); border:1px solid var(--line);
+         border-radius:10px; padding:15px; }
+  .kpi .v { font-size:25px; font-weight:680; letter-spacing:-.5px; }
+  .kpi .l { font-size:11.5px; color:var(--dim); margin-top:3px; }
+  .md h1{font-size:19px;margin:0 0 10px} .md h2{font-size:16px;margin:20px 0 8px}
+  .md table{margin:10px 0} .md code{font-family:var(--mono);background:var(--panel2);
+  padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .md ul{padding-left:20px;margin:8px 0} .md p{margin:8px 0}
+  .err { color:var(--err); background:rgba(248,81,73,.09);
+         border:1px solid rgba(248,81,73,.3); border-radius:8px; padding:11px 14px; }
+  .hint { font-size:12px; color:var(--dim); margin-top:6px; }
+  a { color:var(--accent); }
+  .toast { position:fixed; bottom:22px; right:22px; background:var(--panel);
+           border:1px solid var(--line); border-left:3px solid var(--accent);
+           border-radius:8px; padding:12px 17px; box-shadow:0 8px 28px rgba(0,0,0,.32);
+           z-index:100; max-width:400px; }
+  .toast.err { border-left-color:var(--err); }
+  @media (max-width:900px){ main{grid-template-columns:1fr}
+    aside{max-height:none;border-right:none;border-bottom:1px solid var(--line)} }
+</style>
+</head>
+<body>
+<header>
+  <h1>Aconstructor</h1>
+  <span class="pill" id="hProv">—</span>
+  <span class="pill" id="hQueue">очередь <b>0</b></span>
+  <span class="sp"></span>
+  <span class="pill" id="hAuth"></span>
+  <a class="pill" href="/docs" target="_blank">API</a>
+</header>
+
+<main>
+  <aside>
+    <div class="side-h">Пайплайны</div>
+    <div id="plist"></div>
+  </aside>
+
+  <section>
+    <div id="view"><div class="empty">Загрузка…</div></div>
+  </section>
+</main>
+
+<script>
+const S = { pipelines: [], slug: null, detail: null, tab: 'run', runs: [], run: null,
+            token: localStorage.getItem('ac_token') || '', poll: null };
+
+// --- сеть ------------------------------------------------------------------
+async function api(path, opts = {}) {
+  const h = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (S.token) h['Authorization'] = 'Bearer ' + S.token;
+  const r = await fetch('/api' + path, { ...opts, headers: h });
+  if (r.status === 401) { promptToken(); throw new Error('нужен токен доступа'); }
+  if (!r.ok) {
+    let m = r.statusText;
+    try { m = (await r.json()).detail || m; } catch {}
+    throw new Error(m);
+  }
+  return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
+}
+
+function promptToken() {
+  const t = prompt('Введите API-токен (ACONSTRUCTOR_API_TOKEN):', S.token);
+  if (t !== null) { S.token = t.trim(); localStorage.setItem('ac_token', S.token); }
+}
+
+function toast(msg, isErr) {
+  const d = document.createElement('div');
+  d.className = 'toast' + (isErr ? ' err' : '');
+  d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 4200);
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+// --- очень небольшой markdown → html --------------------------------------
+function md(src) {
+  const lines = String(src || '').split('\n');
+  let out = '', tbl = null, list = false;
+  const inline = t => esc(t)
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+  const closeList = () => { if (list) { out += '</ul>'; list = false; } };
+  const closeTbl = () => {
+    if (tbl) {
+      out += '<table><thead><tr>' + tbl.head.map(h => `<th>${inline(h)}</th>`).join('')
+           + '</tr></thead><tbody>'
+           + tbl.rows.map(r => '<tr>' + r.map(c => `<td>${inline(c)}</td>`).join('') + '</tr>').join('')
+           + '</tbody></table>';
+      tbl = null;
+    }
+  };
+  const cells = l => l.split('|').slice(1, -1).map(c => c.trim());
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.startsWith('|')) {
+      const c = cells(t);
+      if (!tbl) { tbl = { head: c, rows: [] }; }
+      else if (!/^[-: ]+$/.test(c.join(''))) { tbl.rows.push(c); }
+      continue;
+    }
+    closeTbl();
+    if (t.startsWith('## ')) { closeList(); out += `<h2>${inline(t.slice(3))}</h2>`; }
+    else if (t.startsWith('# ')) { closeList(); out += `<h1>${inline(t.slice(2))}</h1>`; }
+    else if (t.startsWith('- ')) { if (!list) { out += '<ul>'; list = true; }
+                                   out += `<li>${inline(t.slice(2))}</li>`; }
+    else if (!t) { closeList(); }
+    else { closeList(); out += `<p>${inline(t)}</p>`; }
+  }
+  closeList(); closeTbl();
+  return out;
+}
+
+// --- отрисовка -------------------------------------------------------------
+function renderSidebar() {
+  document.getElementById('plist').innerHTML = S.pipelines.map(p => `
+    <div class="pl ${p.slug === S.slug ? 'on' : ''}" onclick="pick('${p.slug}')">
+      <div class="t">${esc(p.title)}</div>
+      <div class="s">${esc(p.summary)}</div>
+      <div class="ag">${p.agents.map(a => `<span class="tag">${esc(a)}</span>`).join('')}</div>
+    </div>`).join('');
+}
+
+function render() {
+  const v = document.getElementById('view');
+  if (!S.detail) { v.innerHTML = '<div class="empty">Выберите пайплайн слева</div>'; return; }
+  const d = S.detail;
+  v.innerHTML = `
+    <h2>${esc(d.title)}</h2>
+    <div class="sub">${esc(d.summary)}</div>
+    <div class="tabs">
+      ${['run','runs','graph','stats'].map(t => `<div class="tab ${S.tab===t?'on':''}"
+        onclick="setTab('${t}')">${({run:'Запуск',runs:'История',graph:'Схема',stats:'Метрики'})[t]}</div>`).join('')}
+    </div>
+    <div id="tabbody"></div>`;
+  renderTab();
+}
+
+function renderTab() {
+  const b = document.getElementById('tabbody');
+  if (!b) return;
+  if (S.tab === 'run') renderRun(b);
+  else if (S.tab === 'runs') renderRuns(b);
+  else if (S.tab === 'graph') renderGraph(b);
+  else renderStats(b);
+}
+
+function renderRun(b) {
+  b.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <select id="prov">
+          <option value="">провайдер по умолчанию</option>
+          <option value="fake">fake (оффлайн)</option>
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+          <option value="ollama">ollama</option>
+        </select>
+        <input id="model" placeholder="модель (необязательно)" style="width:230px">
+        <button onclick="resetTask()">Демо-данные</button>
+        <span class="sp" style="flex:1"></span>
+        <button class="primary" id="go" onclick="go()">Запустить</button>
+      </div>
+      <textarea id="task" spellcheck="false"></textarea>
+      <div class="hint">Входные данные в JSON. Пустое поле — демо-данные пайплайна.</div>
+    </div>
+    <div id="result"></div>`;
+  resetTask();
+  if (S.run) showRun(S.run);
+}
+
+function resetTask() {
+  document.getElementById('task').value = JSON.stringify(S.detail.demo_task, null, 2);
+}
+
+async function go() {
+  const btn = document.getElementById('go');
+  const res = document.getElementById('result');
+  let task;
+  try {
+    const raw = document.getElementById('task').value.trim();
+    task = raw ? JSON.parse(raw) : null;
+  } catch (e) { res.innerHTML = `<div class="err">Некорректный JSON: ${esc(e.message)}</div>`; return; }
+
+  btn.disabled = true; btn.textContent = 'Работает…';
+  res.innerHTML = '<div class="card"><div class="empty">Прогон выполняется…</div></div>';
+  try {
+    const run = await api(`/pipelines/${S.slug}/run`, {
+      method: 'POST',
+      body: JSON.stringify({ task, sync: true,
+        provider: document.getElementById('prov').value || null,
+        model: document.getElementById('model').value.trim() || null }),
+    });
+    S.run = run;
+    showRun(run);
+    refreshHeader();
+  } catch (e) {
+    res.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Запустить';
+  }
+}
+
+function showRun(run) {
+  const res = document.getElementById('result');
+  if (!res) return;
+  const arts = (run.result?.artifacts) || {};
+  const files = Object.keys(arts).filter(k => typeof arts[k] === 'string' && arts[k].length > 40);
+  const errs = run.result?.errors || [];
+  res.innerHTML = `
+    <div class="grid" style="margin-bottom:14px">
+      <div class="kpi"><div class="v">${run.findings_n ?? 0}</div><div class="l">находок</div></div>
+      <div class="kpi"><div class="v">${(run.duration_s ?? 0).toFixed(2)}с</div><div class="l">длительность</div></div>
+      <div class="kpi"><div class="v">$${(run.cost_usd ?? 0).toFixed(4)}</div><div class="l">стоимость</div></div>
+      <div class="kpi"><div class="v">${(run.tokens_in ?? 0) + (run.tokens_out ?? 0)}</div><div class="l">токенов</div></div>
+    </div>
+    ${run.error ? `<div class="err" style="margin-bottom:14px">${esc(run.error)}</div>` : ''}
+    ${errs.length ? `<div class="card"><b>Предупреждения узлов</b><ul>${
+      errs.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+    <div class="card md">${md(run.report)}</div>
+    ${files.length ? `<div class="card"><b>Артефакты</b><div class="row" style="margin-top:10px">${
+      files.map(f => `<button onclick="dl('${run.id}','${f}')">${esc(f)}</button>`).join('')
+    }</div></div>` : ''}`;
+}
+
+function dl(id, name) {
+  const u = `/api/runs/${id}/artifacts/${name}` + (S.token ? `?token=${encodeURIComponent(S.token)}` : '');
+  window.open(u, '_blank');
+}
+
+async function renderRuns(b) {
+  b.innerHTML = '<div class="empty">Загрузка…</div>';
+  try {
+    const d = await api(`/runs?pipeline=${S.slug}&limit=50`);
+    S.runs = d.runs;
+    b.innerHTML = d.runs.length ? `<div class="card" style="padding:0">
+      <table><thead><tr><th>Когда</th><th>Статус</th><th>Находок</th>
+      <th>Время</th><th>Стоимость</th><th>Модель</th></tr></thead><tbody>
+      ${d.runs.map(r => `<tr onclick="openRun('${r.id}')">
+        <td>${new Date(r.created_at * 1000).toLocaleString('ru')}</td>
+        <td><span class="st ${r.status}">${r.status}</span></td>
+        <td>${r.findings_n}</td>
+        <td>${r.duration_s ? r.duration_s.toFixed(2) + 'с' : '—'}</td>
+        <td>${r.cost_usd ? '$' + r.cost_usd.toFixed(4) : '—'}</td>
+        <td style="color:var(--dim);font-size:12px">${esc(r.model || '—')}</td>
+      </tr>`).join('')}</tbody></table></div>`
+      : '<div class="empty">Прогонов ещё не было</div>';
+  } catch (e) { b.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+async function openRun(id) {
+  try {
+    const run = await api(`/runs/${id}`);
+    S.run = run; S.tab = 'run'; render();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderGraph(b) {
+  b.innerHTML = `<div class="card"><pre>${esc(S.detail.graph_mermaid)}</pre>
+    <div class="hint">Схема в формате Mermaid — вставьте в mermaid.live или в README.</div></div>`;
+}
+
+async function renderStats(b) {
+  b.innerHTML = '<div class="empty">Загрузка…</div>';
+  try {
+    const s = await api('/stats');
+    b.innerHTML = `
+      <div class="grid" style="margin-bottom:14px">
+        <div class="kpi"><div class="v">${s.total}</div><div class="l">прогонов всего</div></div>
+        <div class="kpi"><div class="v">${s.success_rate !== null ? (s.success_rate*100).toFixed(0)+'%' : '—'}</div><div class="l">успешных</div></div>
+        <div class="kpi"><div class="v">$${s.total_cost_usd.toFixed(2)}</div><div class="l">потрачено</div></div>
+        <div class="kpi"><div class="v">${s.avg_duration_s.toFixed(2)}с</div><div class="l">среднее время</div></div>
+        <div class="kpi"><div class="v">${s.total_findings}</div><div class="l">находок</div></div>
+        <div class="kpi"><div class="v">${s.queue_depth}</div><div class="l">в очереди</div></div>
+      </div>
+      <div class="card" style="padding:0"><table>
+        <thead><tr><th>Пайплайн</th><th>Прогонов</th><th>Среднее время</th></tr></thead>
+        <tbody>${s.by_pipeline.map(r => `<tr><td>${esc(r.pipeline)}</td><td>${r.n}</td>
+          <td>${(r.avg_s || 0).toFixed(2)}с</td></tr>`).join('')}</tbody>
+      </table></div>`;
+  } catch (e) { b.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// --- навигация -------------------------------------------------------------
+async function pick(slug) {
+  S.slug = slug; S.run = null; S.tab = 'run';
+  renderSidebar();
+  document.getElementById('view').innerHTML = '<div class="empty">Загрузка…</div>';
+  try {
+    S.detail = await api('/pipelines/' + slug);
+    location.hash = slug;
+    render();
+  } catch (e) {
+    document.getElementById('view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+function setTab(t) { S.tab = t; render(); }
+
+async function refreshHeader() {
+  try {
+    const h = await (await fetch('/health')).json();
+    document.getElementById('hProv').innerHTML = `<b>${esc(h.provider)}</b> · ${esc(h.model)}`;
+    document.getElementById('hQueue').innerHTML = `очередь <b>${h.queue_depth}</b>`;
+    const a = document.getElementById('hAuth');
+    a.innerHTML = h.auth === 'on' ? '🔒 защищено' : '🔓 без токена';
+    a.style.cursor = 'pointer';
+    a.onclick = promptToken;
+  } catch {}
+}
+
+(async function init() {
+  await refreshHeader();
+  setInterval(refreshHeader, 10000);
+  try {
+    S.pipelines = await api('/pipelines');
+    renderSidebar();
+    const h = location.hash.slice(1);
+    pick(S.pipelines.some(p => p.slug === h) ? h : S.pipelines[0].slug);
+  } catch (e) {
+    document.getElementById('view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

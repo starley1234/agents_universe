@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vlm-services"
+version = "0.1.0"
+description = "Двенадцать продуктовых VLM-сервисов на одной инфраструктуре"
+requires-python = ">=3.10"
+dependencies = ["langchain-core>=0.3"]
+
+[project.optional-dependencies]
+openai = ["langchain-openai>=0.2"]
+anthropic = ["langchain-anthropic>=0.2"]
+images = ["pillow>=10"]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+all = ["langchain-openai>=0.2", "langchain-anthropic>=0.2", "pillow>=10",
+       "fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+dev = ["pytest>=8", "httpx>=0.27", "pillow>=10", "fastapi>=0.110",
+       "uvicorn[standard]>=0.27", "python-multipart>=0.0.9",
+       "langchain-openai>=0.2", "langchain-anthropic>=0.2"]
+
+[project.scripts]
+vlm = "vlmkit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vlmkit*"]
+
+[tool.setuptools.package-data]
+vlmkit = ["web/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
