@@ -1,0 +1,20 @@
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "workspace": "./workspace",
+  "skills": ["files", "memory", "present", "web"],
+
+  "_комментарий_backend": "backend: duckduckgo_lite (по умолчанию) | duckduckgo_html | searxng. DuckDuckGo не требует ключа. Для продакшна надёжнее свой SearXNG (backend: 'searxng', search_base_url обязателен) — вёрстка DuckDuckGo не документирована и может измениться без предупреждения.",
+  "web": {
+    "backend": "duckduckgo_lite",
+    "rate_limit": 1.0,
+    "max_results": 8,
+    "max_fetch_chars": 8000,
+    "_комментарий_allow_local": "allow_local: true разрешает web_fetch обращаться к приватным/loopback-адресам (127.0.0.1, 10.x, 192.168.x и т.п.) — включайте ТОЛЬКО для интранет-сценариев (свой SearXNG на localhost) или тестов. С доступом агента в интернет включать нельзя: это снимает защиту от SSRF.",
+    "allow_local": false
+  },
+
+  "_комментарий_searxng_пример": "Для своего SearXNG вместо duckduckgo_lite: \"web\": {\"backend\": \"searxng\", \"search_base_url\": \"http://127.0.0.1:8888\"}",
+
+  "_комментарий_без_ключа": "Навык web не требует ни секретов, ни отдельной модели — обычный urllib.request+html.parser из stdlib, без единой pip-зависимости."
+}

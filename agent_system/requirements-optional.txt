@@ -1,0 +1,37 @@
+# Ядро агента (agent/core.py, cli.py, tools/files.py, tools/shell.py,
+# mcp.py, store.py) работает на голой стандартной библиотеке Python —
+# этот файл НЕ обязателен для базового использования.
+#
+# Каждая строка ниже нужна только конкретному навыку и подключается
+# независимо; пропустите то, что не используете.
+
+# --- навык "pdf": чтение и распознавание PDF ---
+pymupdf
+
+# --- навык "docparse": чтение Word/Excel/CSV ---
+python-docx
+openpyxl
+
+# --- навык "office": создание Word/Excel/PowerPoint ---
+# (python-docx/openpyxl общие с docparse, добавляется только python-pptx)
+python-pptx
+
+# --- навык "pg_ontology": онтология в PostgreSQL + pgvector ---
+psycopg[binary]
+
+# --- навык "rag": индексация текста и поиск по нему ---
+# Ничего дополнительного не требуется — по умолчанию работает поверх
+# SQLite (agent.db) с локальным офлайн-эмбеддером "hash" (без сети и
+# ключа). Для настоящего провайдера эмбеддингов ключ не нужен — просто
+# укажите embedding_provider/embedding_model в конфиге. Если задан
+# pg_dsn — использует тот же psycopg[binary], что и pg_ontology.
+
+# --- навык "messaging": email/Telegram/MAX ---
+# Ничего дополнительного не требуется — только стандартная библиотека
+# (smtplib, imaplib, urllib). Ниже — только для ТЕСТОВ этого навыка:
+aiosmtpd
+
+# --- тесты навыка pg_ontology: временный embedded Postgres ---
+# (не нужен для работы агента, только чтобы прогнать tests/test_pg_ontology.py
+# без установленного и настроенного PostgreSQL)
+pgserver

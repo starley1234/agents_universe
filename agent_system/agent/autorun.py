@@ -1,0 +1,371 @@
+"""Автономный режим: агент работает часами сам.
+
+Что отличает долгий прогон от одиночного запуска — и почему без этого
+агент через час деградирует:
+
+  1. ЦЕЛЬ ЗАБЫВАЕТСЯ. История обрезается, и в окне остаются последние
+     вызовы инструментов. Решение: цель и план подставляются в КАЖДУЮ
+     итерацию заново, из базы, а не из истории.
+
+  2. ЗАЦИКЛИВАНИЕ. Модель повторяет один и тот же вызов бесконечно.
+     Решение: подпись действия (имя + аргументы). Повтор сверх порога —
+     принудительное вмешательство в промпт.
+
+  3. КОНТЕКСТ КОНЧАЕТСЯ. Каждая итерация — свежий короткий контекст:
+     цель, план, выжимка из памяти, последние события. История одной
+     итерации не тащится в следующую.
+
+  4. НЕТ ОБУЧЕНИЯ. После каждой итерации — рефлексия: что узнал,
+     записать в память, что дальше. Иначе агент ходит по кругу.
+
+Цикл: план → взять пункт → работать → рефлексия → повторить.
+Останов: план выполнен, вышло время, исчерпаны итерации или застой.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from .core import Agent
+from .llm.base import price_of
+from .store import Store
+
+PLANNER = """Ты планировщик. Задача:
+
+{goal}
+
+{known}
+
+Разбей её на 3-7 конкретных проверяемых пунктов. Каждый пункт —
+одна строка, начинается с глагола, результат должен быть проверяем.
+Не пиши преамбулу и нумерацию, только строки пунктов."""
+
+WORKER = """ЦЕЛЬ ПРОГОНА: {goal}
+
+ТЕКУЩИЙ ПУНКТ ПЛАНА: #{task_id} {task}
+
+{memory}
+{recent}
+{warning}
+
+Работай над ТЕКУЩИМ ПУНКТОМ. Когда он выполнен — вызови plan_done с
+кратким результатом. Если пункт невыполним — plan_fail с причиной.
+Важные выводы записывай через remember, объекты и связи — через
+note_entity и link.
+
+Не пересказывай план, действуй."""
+
+REPLAN = """Цель: {goal}
+
+Уже сделано:
+{done}
+
+Не получилось:
+{failed}
+
+Осталось в плане:
+{left}
+
+План работает плохо: {reason}
+
+Составь НОВЫЙ план оставшейся работы — 2-6 пунктов, каждый с новой
+строки, начинается с глагола, результат проверяем. Учти, что уже
+сделано, и не повторяй проваленное тем же способом. Только строки
+пунктов, без преамбулы."""
+
+REFLECT = """Итерация завершена. Пункт: {task}
+
+Что сделано: {summary}
+
+Ответь ТОЛЬКО валидным JSON без пояснений:
+{{"learned": ["факт 1", "факт 2"], "next": "что делать дальше одной фразой", "stuck": false}}
+
+learned — только новое и конкретное, что стоит помнить. Пустой список, если нового нет.
+stuck — true, если прогресса нет и нужно менять подход."""
+
+
+@dataclass
+class AutoResult:
+    run_id: int
+    iterations: int
+    stopped_by: str          # done | time | iterations | stuck | error | stopped
+    summary: str
+    elapsed: float
+    tokens: int = 0
+    cost: float = 0.0
+
+
+class AutoRunner:
+    def __init__(
+        self,
+        agent_factory: Callable[[], Agent],
+        store: Store,
+        max_hours: float = 1.0,
+        max_iterations: int = 50,
+        repeat_limit: int = 3,
+        replan_after_fails: int = 2,
+        on_event: Callable[[str, dict[str, Any]], None] | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> None:
+        self.make_agent = agent_factory
+        self.store = store
+        self.max_seconds = max_hours * 3600
+        self.max_iterations = max_iterations
+        self.repeat_limit = repeat_limit
+        self.replan_after_fails = replan_after_fails
+        self.on_event = on_event or (lambda k, d: None)
+        self.run_id = 0
+        # Кооперативная остановка: веб-морда (agent/webui.py) запускает
+        # автономный прогон в фоновом потоке и должна уметь его прервать
+        # по кнопке "Стоп" — killать поток нельзя (оборвётся SQLite-запись
+        # на середине), поэтому проверяем флаг МЕЖДУ итерациями, там же,
+        # где уже проверяется бюджет времени.
+        self.stop_event = stop_event
+
+    def _emit(self, kind: str, **data: Any) -> None:
+        try:
+            self.on_event(kind, data)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------ ход
+    @staticmethod
+    def _sig(name: str, args: dict[str, Any]) -> str:
+        raw = name + json.dumps(args, sort_keys=True, ensure_ascii=False)[:300]
+        return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+    def _plan(self, goal: str) -> None:
+        known = ""
+        facts = self.store.recall(goal, limit=5)
+        if facts:
+            known = "Уже известно из прошлых прогонов:\n" + \
+                    "\n".join(f"- {f['text']}" for f in facts)
+        agent = self.make_agent()
+        res = agent.run(PLANNER.format(goal=goal, known=known))
+        titles = [ln.strip(" -•*0123456789.\t")
+                  for ln in res.answer.splitlines() if ln.strip()]
+        titles = [t for t in titles if len(t) > 8][:7]
+        if not titles:
+            titles = [goal]
+        self.store.add_tasks(self.run_id, titles)
+        self._emit("plan", items=titles)
+
+    def _replan(self, reason: str) -> bool:
+        """Переделать план оставшейся работы.
+
+        Нужно, когда исходный план оказался негодным: пункты проваливаются
+        или агент буксует. Без этого прогон честно доработает по плохому
+        плану до конца бюджета — самый обидный способ потратить 8 часов.
+        """
+        tasks = self.store.tasks(self.run_id)
+        done = [t for t in tasks if t["status"] == "done"]
+        failed = [t for t in tasks if t["status"] == "failed"]
+        left = [t for t in tasks if t["status"] in ("open", "doing")]
+        if not left:
+            return False
+
+        goal = self.store.get_run(self.run_id)["goal"]
+        fmt = lambda rows: ("\n".join(f"- {t['title']}"
+                                      + (f" → {t['result'][:120]}" if t["result"] else "")
+                                      for t in rows) or "- (пусто)")
+        agent = self.make_agent()
+        res = agent.run(REPLAN.format(goal=goal, reason=reason,
+                                      done=fmt(done), failed=fmt(failed),
+                                      left=fmt(left)))
+        titles = [ln.strip(" -•*0123456789.\t")
+                  for ln in res.answer.splitlines() if ln.strip()]
+        titles = [t for t in titles if len(t) > 8][:6]
+        if not titles:
+            return False
+
+        dropped = self.store.drop_open_tasks(self.run_id)
+        self.store.add_tasks(self.run_id, titles)
+        self.store.remember(f"План пересмотрен: {reason}", tags="replan",
+                            run_id=self.run_id)
+        self.store.log_event(self.run_id, 0, "replan", "replan",
+                             f"{reason}; было {dropped}, стало {len(titles)}")
+        self._emit("replan", reason=reason, items=titles, dropped=dropped)
+        return True
+
+    def _context(self, task: dict[str, Any], warn: str) -> str:
+        facts = self.store.recall(task["title"], limit=6)
+        memory = ("Из памяти:\n" + "\n".join(f"- {f['text']}" for f in facts)
+                  if facts else "")
+        evs = self.store.recent_events(self.run_id, limit=6)
+        recent = ("Последние действия:\n" +
+                  "\n".join(f"- {e['name']}: {e['summary'][:100]}"
+                            for e in evs if e["kind"] == "tool")) if evs else ""
+        return WORKER.format(
+            goal=self.store.get_run(self.run_id)["goal"],
+            task_id=task["id"], task=task["title"],
+            memory=memory, recent=recent, warning=warn)
+
+    def _reflect(self, task: dict[str, Any], summary: str) -> bool:
+        """Возвращает True, если модель сигналит о застое."""
+        agent = self.make_agent()
+        agent.tools = agent.tools           # рефлексия без инструментов
+        res = agent.run(REFLECT.format(task=task["title"],
+                                       summary=summary[:1500]))
+        text = res.answer.strip()
+        # вытаскиваем JSON даже если модель обернула его в текст
+        i, j = text.find("{"), text.rfind("}")
+        if i < 0 or j < i:
+            return False
+        try:
+            data = json.loads(text[i:j + 1])
+        except json.JSONDecodeError:
+            return False
+        for fact in (data.get("learned") or [])[:5]:
+            if isinstance(fact, str) and len(fact.strip()) > 8:
+                self.store.remember(fact.strip(), tags="reflect",
+                                    run_id=self.run_id)
+        if data.get("next"):
+            self.store.log_event(self.run_id, 0, "reflect", "next",
+                                 str(data["next"])[:300])
+        self._emit("reflect", learned=data.get("learned") or [],
+                   next=data.get("next", ""))
+        return bool(data.get("stuck"))
+
+    # ----------------------------------------------------------- запуск
+    def run(self, goal: str, profile: str | None = None,
+            resume: int | None = None) -> AutoResult:
+        t0 = time.time()
+        if resume:
+            self.run_id = resume
+            row = self.store.get_run(resume)
+            if not row:
+                raise ValueError(f"Прогон {resume} не найден")
+            goal = row["goal"]
+            self._emit("resume", run_id=resume, goal=goal)
+        else:
+            self.run_id = self.store.start_run(goal, profile)
+            self._emit("start", run_id=self.run_id, goal=goal)
+            self._plan(goal)
+
+        stop, it, stuck_streak = "iterations", 0, 0
+        replans, replanned_at_fails = 0, 0
+
+        while it < self.max_iterations:
+            if time.time() - t0 > self.max_seconds:
+                stop = "time"
+                break
+            if self.stop_event is not None and self.stop_event.is_set():
+                stop = "stopped"
+                break
+            task = self.store.next_task(self.run_id)
+            if not task:
+                stop = "done"
+                break
+
+            it += 1
+            self.store.set_task(task["id"], "doing")
+            self._emit("iteration", n=it, task=task["title"],
+                       task_id=task["id"],
+                       left=int(time.time() - t0))
+
+            # предупреждение о повторах, если агент топчется
+            warn = ""
+            evs = self.store.recent_events(self.run_id, limit=8)
+            sigs = [e["sig"] for e in evs if e["kind"] == "tool" and e["sig"]]
+            if sigs:
+                top = max(set(sigs), key=sigs.count)
+                if sigs.count(top) >= self.repeat_limit:
+                    warn = ("ВНИМАНИЕ: ты повторяешь одно и то же действие. "
+                            "Смени подход или закрой пункт через plan_fail.")
+
+            agent = self.make_agent()
+            calls: list[str] = []
+
+            def watch(kind: str, data: dict[str, Any]) -> None:
+                if kind == "tool_start":
+                    sig = self._sig(data.get("name", ""), data.get("args") or {})
+                    self.store.log_event(self.run_id, it, "tool",
+                                         data.get("name", ""),
+                                         json.dumps(data.get("args") or {},
+                                                    ensure_ascii=False)[:200],
+                                         sig)
+                    calls.append(data.get("name", ""))
+                self._emit(kind, **data)
+
+            agent.on_event = watch
+            try:
+                res = agent.run(self._context(task, warn))
+            except Exception as exc:                    # прогон не должен падать
+                self.store.log_event(self.run_id, it, "error", "exception",
+                                     str(exc)[:400])
+                self._emit("error", message=str(exc))
+                self.store.set_task(task["id"], "failed", str(exc)[:300])
+                continue
+
+            # Учёт расхода: важно на длинном прогоне — иначе счёт за
+            # сутки работы становится сюрпризом.
+            spent = 0.0
+            price = price_of(agent.llm.model) if agent.llm.billable else (0.0, 0.0)
+            if price:
+                spent = (res.prompt_tokens * price[0]
+                         + res.completion_tokens * price[1]) / 1e6
+            self.store.bump_run(self.run_id, steps=len(res.steps),
+                                calls=res.tool_calls,
+                                chars=sum(len(json.dumps(m, ensure_ascii=False))
+                                          for m in res.messages),
+                                tok_in=res.prompt_tokens,
+                                tok_out=res.completion_tokens,
+                                cost=spent)
+            if res.tokens:
+                self._emit("spend", tokens=res.tokens, cost=spent,
+                           total=(self.store.get_run(self.run_id) or {}).get("cost", 0))
+
+            # если агент не закрыл пункт сам — закрываем по факту работы
+            fresh = [t for t in self.store.tasks(self.run_id)
+                     if t["id"] == task["id"]][0]
+            if fresh["status"] == "doing":
+                self.store.set_task(task["id"], "done", res.answer[:500])
+
+            if self._reflect(task, res.answer):
+                stuck_streak += 1
+            else:
+                stuck_streak = 0
+
+            # Плохой план чиним перепланированием, а не упорством.
+            fails = sum(1 for t in self.store.tasks(self.run_id)
+                        if t["status"] == "failed")
+            if (fails - replanned_at_fails) >= self.replan_after_fails:
+                if self._replan(f"провалено пунктов: {fails}"):
+                    replanned_at_fails = fails
+                    stuck_streak = 0
+                    replans += 1
+            elif stuck_streak >= 2 and replans < 3:
+                if self._replan("агент буксует, прогресса нет"):
+                    stuck_streak = 0
+                    replans += 1
+
+            if stuck_streak >= 3:
+                stop = "stuck"
+                break
+
+        elapsed = time.time() - t0
+        self.store.finish_run(self.run_id,
+                              "done" if stop == "done" else "stopped")
+        done = [t for t in self.store.tasks(self.run_id) if t["status"] == "done"]
+        allt = self.store.tasks(self.run_id)
+        e, r = self.store.graph_stats()
+        row = self.store.get_run(self.run_id) or {}
+        tok = int(row.get("tok_in", 0)) + int(row.get("tok_out", 0))
+        spent = float(row.get("cost", 0) or 0)
+        summary = (
+            f"Прогон #{self.run_id}: {stop}\n"
+            f"Итераций: {it}, время: {elapsed/60:.1f} мин\n"
+            f"План: {len(done)} из {len(allt)} пунктов\n"
+            f"Память: {self.store.fact_count()} фактов, "
+            f"граф: {e} объектов / {r} связей"
+            + (f"\nПлан пересматривался: {replans} раз" if replans else "")
+            + (f"\nТокенов: {tok:,}" if tok else "")
+            + (f", примерно ${spent:.4f}" if spent > 0
+               else " (локальная модель, оплаты нет)" if tok else "")
+        )
+        self._emit("finish", summary=summary, stopped_by=stop)
+        return AutoResult(self.run_id, it, stop, summary, elapsed, tok, spent)
