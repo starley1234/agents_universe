@@ -1,0 +1,308 @@
+# DataForge — платформа интеграции данных, качества, MDM и lineage
+
+Ядро платформы интеграции корпоративных данных из большого ТЗ на
+DataForge: подключение источников (Connect Hub), профилирование и
+контроль качества данных (Quality Engine), сборка «золотой записи» из
+нескольких источников (MDM/матчинг), прослеживаемость происхождения
+данных (lineage), поверх которых — REST API и веб-дашборд.
+
+Независимое приложение, живущее рядом с `agent_system/`,
+`multi_agent_system_ontology/` и `erp_ai/` в этом репозитории — не
+зависит от них в рантайме. Общий стиль (докстрины "почему", тесты на
+реальной инфраструктуре, секреты только в окружении, `Config._SECRET_FIELDS`,
+неизменяемый `audit_log`) позаимствован осознанно.
+
+## Честная граница объёма — что реализовано, а что нет
+
+Полное ТЗ описывает промышленную платформу на Kubernetes с Dagster,
+Temporal, Debezium+Redpanda, Splink, OpenMetadata, Keycloak, React+TS,
+семантической онтологией и оркестрацией бизнес-процессов — продукт на
+многие месяцы разработки командой. Вместо имитации широты через
+заглушки выбран противоположный подход: реализовать **три несущих
+модуля платформы полностью и по-настоящему** (Connect Hub + Quality
+Engine + MDM/матчинг, со сквозной прослеживаемостью), на реальной
+инфраструктуре, с честными тестами — и явно не реализовывать то, что
+не влезло в объём одной сессии.
+
+### Реализовано (по-настоящему, с тестами на реальной инфраструктуре)
+
+- **Connect Hub** (`dataforge/connectors/`) — единый протокол
+  `Connector` (`discover/read_full/read_changes/write_back`, см. ТЗ
+  §5.1) с тремя РЕАЛЬНЫМИ реализациями:
+  - `FileConnector` — CSV/XLSX/JSON/XML, автоматическое профилирование
+    схемы по выборке записей (batch-режим, источник только для чтения);
+  - `SqlConnector` — PostgreSQL и SQLite через общий код на DB-API 2.0
+    (PEP 249): `discover` через `information_schema`/`PRAGMA
+    table_info`, инкрементальное чтение по монотонному курсору,
+    `write_back` через UPDATE/INSERT. ЧЕСТНО: в песочнице этой сессии
+    нет реальных MySQL/MSSQL/Oracle серверов (и Docker для их подъёма)
+    — вместо тестирования этих диалектов моками выбраны два РЕАЛЬНЫХ,
+    но доступных здесь движка (PostgreSQL и SQLite); добавление
+    MySQL/MSSQL/Oracle — это регистрация ещё одного диалекта в
+    `SqlConnector._detect_dialect`/`_connect`, без переписывания ядра;
+  - `OneCODataConnector` — 1С:Предприятие через стандартный OData:
+    `discover()` парсит EDMX `$metadata`, `read_full()` — пагинация
+    `$top/$skip`, `read_changes()` — план обмена `SelectChanges` с
+    параметрами `DataExchangePoint`/`MessageNo` (взяты из официальной
+    документации протокола, не придуманы) + `NotifyChangesReceived`
+    для подтверждения курсора, fallback `filter_by_date`, `write_back()`
+    — `PATCH` с `If-Match`/`DataVersion` (оптимистичная блокировка,
+    обработка HTTP 412 как построчной ошибки, не исключения), Basic/
+    Bearer аутентификация. ЧЕСТНО: тестируется на локальном
+    fake-HTTP-сервере, эмулирующем именно эти документированные
+    эндпоинты — реального сервера 1С:Предприятия в этой сборке нет.
+  - `dataforge/connectors/factory.py` — сборка коннектора из записи
+    `source` в БД; секреты (DSN источника, ключ 1С) НИКОГДА не хранятся
+    в JSONB-конфиге источника — только имя переменной окружения
+    (`config.dsn_env`) или общая конфигурация приложения.
+- **Ingest-пайплайн** (`dataforge/pipeline/ingest.py`) —
+  `ingest_full`/`ingest_changes`: Connector → Bronze (append-only,
+  история выгрузок сохраняется) + автоматическая запись lineage-ребра
+  `source:... -> bronze:dataset:...`; `promote_quality` — Bronze →
+  Silver/карантин через Quality Engine + lineage-рёбра
+  `bronze:record:... -> silver:record:...` на КАЖДУЮ продвинутую
+  запись.
+- **Quality Engine** (`dataforge/quality/engine.py`, ТЗ K2) —
+  `profile_dataset()`: автоматическая статистика по полям
+  (total/null/distinct/min/max/примеры). `run_quality_checks()`:
+  декларативные правила без кода (`not_null`, `unique`, `regex`,
+  `range`, `allowed_values`), severity `error`/`warning` — нарушение
+  `error` уводит запись в карантин вместо Silver, `warning` фиксируется
+  в отчёте, но не блокирует. Без Great Expectations (решение
+  пользователя "минимум зависимостей"), но семантика правил намеренно
+  похожа на GX-expectations для прямолинейной миграции при росте
+  объёма.
+- **MDM / матчинг** (`dataforge/mdm/matching.py`, ТЗ K1, §3.3) —
+  `find_match_candidates()`: попарное сравнение Silver-записей через
+  `rapidfuzz` (нечёткие строки, регистронезависимо) + точное сравнение
+  чисел, взвешенные поля; `apply_survivorship()`: приоритет источников
+  на уровне ОТДЕЛЬНОГО ПОЛЯ (`survivorship_rule`), с детерминированным
+  fallback на первое непустое значение; `merge_candidate()`: сборка
+  «золотой записи» с привязкой всех исходных Silver-записей и
+  lineage-рёбер; `auto_merge_high_confidence()`: guardrail — численный
+  порог (`match_auto_threshold`), НЕ "на глаз", ниже порога кандидат
+  остаётся в stewardship-очереди для человека; `reject_candidate()`.
+- **Lineage** (`dataforge/db/store.py`: `lineage_edge`,
+  `trace_lineage()`, ТЗ K4) — граф рёбер `from_asset -> to_asset`,
+  обратный обход от любого актива (например `gold:entity:5`) до
+  исходного источника через рекурсивный BFS; каждый шаг пайплайна
+  (`ingest_full`, `promote_quality`, `merge_candidate`) САМ пишет свои
+  рёбра — никакого централизованного "оркестратора lineage".
+- **Неизменяемый аудит** (`audit_log`) — только `INSERT` в коде
+  `Store`, как в остальных проектах репозитория.
+- **HTTP API** на FastAPI (`dataforge/api/server.py`) — REST,
+  токен-защита, доменные ошибки как 400/404/502/503 (не 500).
+- **Веб-дашборд** (`dataforge/web/dashboard.html`) — вкладки: обзор,
+  источники (регистрация, discover, ingest), каталог данных
+  (Bronze/Silver/Gold с числом строк), качество (профилирование,
+  прогон проверок, карантин), MDM (поиск дублей, stewardship-очередь,
+  слияние/отклонение), золотые записи, построение цепочки lineage,
+  журнал аудита.
+
+### НЕ реализовано (осознанно, не притворяемся, что готово)
+
+- **Ontology / семантическая модель** (ТЗ §3.2) — объекты, actions,
+  бизнес-язык поверх сырых таблиц — не реализовано; платформа работает
+  напрямую с `gold_entity`/`entity_type` как со строкой, без
+  формального реестра типов объектов и связей.
+- **Process Orchestrator / оркестрация бизнес-процессов** (ТЗ §5,
+  "Слой ... Process Orchestr.") — write-back и обратная запись как
+  сквозной сценарий продемонстрированы в `erp_ai/` (соседний проект
+  этого репозитория, тот же паттерн guardrails/confirmation
+  gates/audit trail/rollback); здесь write-back есть на уровне
+  коннектора (`SqlConnector.write_back`,
+  `OneCODataConnector.write_back`), но НЕТ отдельного процесса
+  "расхождение → задача человеку → корректировка → запись в источник"
+  (кейс K3 ТЗ) — платформа предоставляет строительные блоки
+  (Connector.write_back, agent_proposal-подобный паттерн из erp_ai
+  переиспользуем), но сам процесс не собран.
+- **Real-time мониторинг производства** (K5) — единая панель сквозного
+  статуса заказов/операций — не реализована, платформа работает с
+  универсальными Bronze/Silver/Gold, а не с производственной моделью.
+- **AI Copilot** (ТЗ §3.6, K6) — ассистирующий слой поверх публичных
+  API через function calling — не реализован в этой сессии; архитектура
+  API уже готова принять такой слой (все действия — обычные REST-вызовы
+  с валидацией и аудитом), но сам LLM-компонент не написан.
+- **CDC через Debezium/Redpanda** — инкрементальное чтение реализовано
+  через универсальный "курсор по монотонному полю" (SQL) и план обмена
+  (1С), НЕ через захват изменений на уровне транзакционного лога БД
+  (WAL/binlog) — для этого понадобился бы реальный Debezium+Kafka
+  кластер, что вне выбранного стека "минимум зависимостей".
+- **Dagster/Temporal** — пайплайн реализован как простой
+  детерминированный Python-код (`dataforge/pipeline/ingest.py`), без
+  DAG-оркестратора и без сохранения состояния долгоживущих процессов;
+  для объёма этой сессии (несколько последовательных шагов без
+  ветвления) полноценный оркестратор был бы преждевременной сложностью.
+- **OpenMetadata/полноценный каталог с glossary** — каталог реализован
+  как таблицы `source`/`dataset`/`data_profile` в PostgreSQL, без
+  отдельного сервиса каталога, поиска по глоссарию, тегирования.
+- **Splink** — вероятностный матчинг реализован на `rapidfuzz`
+  (взвешенное сравнение полей), без байесовской модели вероятности
+  совпадения (EM-алгоритм, blocking rules) — для объёма нескольких
+  сотен записей на демонстрационных данных этого достаточно, для
+  промышленного объёма (тысячи-миллионы записей) потребовался бы
+  блокинг и более строгая вероятностная модель.
+- **Keycloak/RBAC/ABAC** — нет ролей/атрибутивного контроля доступа,
+  только единый токен на весь API (как и в `erp_ai/`).
+- **React+TypeScript фронтенд** — дашборд на vanilla JS без сборки, как
+  в остальных проектах этого репозитория.
+- **Object storage (MinIO)/настоящий Lakehouse (Iceberg/DuckDB)** —
+  Bronze/Silver хранятся как JSONB-записи в PostgreSQL, а не как
+  файлы в колоночном формате на объектном хранилище — для объёма
+  демонстрации (сотни-тысячи записей) этого достаточно; для
+  промышленных объёмов (миллионы строк) потребовалась бы миграция на
+  настоящий Lakehouse.
+- **Kubernetes/Terraform/Prometheus/Langfuse** — не нужны для объёма,
+  который реально реализован; добавлены бы карго-культом.
+- **`pull_counterparties`-подобная асимметрия мастер-систем**: как и в
+  `erp_ai/`, если понадобится развести правила мастер-данных по
+  конкретным справочникам 1С отдельно от общего MDM-модуля — это
+  предмет отдельной доработки, здесь единая MDM-логика работает
+  универсально по `entity_type`, без специфики конкретного справочника
+  1С.
+
+## Требования
+
+- Python 3.10+
+- PostgreSQL 14+ (без `pgvector` — не нужен для этого объёма)
+- `pip install -r requirements.txt` (FastAPI/uvicorn/psycopg/rapidfuzz/openpyxl)
+- Для тестов: `pip install -r requirements-dev.txt` (`pgserver` —
+  embedded PostgreSQL, `httpx` — HTTP-клиент для тестов API)
+
+## Быстрый старт
+
+```bash
+cd data_forge
+pip install -r requirements.txt
+
+cp .env.example .env
+# отредактируйте DB_DSN — реальный PostgreSQL, например:
+# DB_DSN=postgresql://forge:forge@localhost:5432/dataforge
+
+export $(grep -v '^#' .env | xargs)
+make serve      # http://127.0.0.1:8200/dashboard
+```
+
+Для тестов (нужен `pgserver`, БД поднимается автоматически во время
+тестового прогона, реальная PostgreSQL не требуется):
+
+```bash
+pip install -r requirements-dev.txt
+make test       # 300 проверок, ~25 секунд
+```
+
+## Сценарий — пошагово (K1 + K2 + K4: качество данных → golden record → lineage)
+
+```bash
+# 1. Зарегистрировать источник (CSV-файл с дублирующимися контрагентами)
+curl -X POST localhost:8200/v1/sources \
+  -d '{"name":"crm","kind":"file","config":{"path":"/data/customers.csv"}}'
+
+# 2. Обнаружить схему источника
+curl -X POST localhost:8200/v1/sources/1/discover
+
+# 3. Выгрузить в Bronze
+curl -X POST localhost:8200/v1/sources/1/ingest/full -d '{"dataset":"customers.csv"}'
+
+# 4. Задать правило качества и прогнать проверку (Bronze -> Silver/карантин)
+curl -X POST localhost:8200/v1/datasets/1/quality-rules \
+  -d '{"rule_type":"not_null","field_name":"name","severity":"error"}'
+curl -X POST localhost:8200/v1/datasets/1/quality-run
+
+# 5. Найти дубли среди Silver-записей (вероятностный матчинг)
+curl -X POST localhost:8200/v1/mdm/match \
+  -d '{"entity_type":"counterparty","dataset_id":1,"fields":["name","inn"]}'
+
+# 6. Человек подтверждает слияние -> собирается golden record
+curl -X POST localhost:8200/v1/mdm/candidates/1/merge -d '{"decided_by":"human:ivanov"}'
+
+# 7. Проследить полную цепочку происхождения золотой записи
+curl "localhost:8200/v1/lineage/trace?asset=gold:entity:1"
+```
+
+## HTTP API
+
+```
+GET  /health                          — жив ли сервис (без токена)
+GET  /dashboard, /                    — веб-интерфейс
+
+GET  /v1/sources                      — список источников
+POST /v1/sources                      — зарегистрировать источник
+POST /v1/sources/{id}/discover        — профилирование схемы источника
+POST /v1/sources/{id}/ingest/full     — полная выгрузка в Bronze
+POST /v1/sources/{id}/ingest/changes  — инкрементальная выгрузка
+
+GET  /v1/datasets                     — список датасетов
+GET  /v1/datasets/{id}                — детали + профиль полей
+POST /v1/datasets/{id}/profile        — профилирование Bronze
+GET  /v1/datasets/{id}/bronze         — сырые записи
+GET  /v1/datasets/{id}/silver         — очищенные записи
+
+GET  /v1/datasets/{id}/quality-rules  — правила качества
+POST /v1/datasets/{id}/quality-rules  — создать правило
+POST /v1/datasets/{id}/quality-run    — прогнать проверки
+GET  /v1/datasets/{id}/quarantine     — карантин датасета
+POST /v1/quarantine/{id}/resolve      — отметить решённым
+
+POST /v1/mdm/match                    — найти кандидатов на дубли
+GET  /v1/mdm/candidates               — очередь stewardship
+POST /v1/mdm/candidates/{id}/merge    — подтвердить слияние -> golden record
+POST /v1/mdm/candidates/{id}/reject   — отклонить кандидата
+POST /v1/mdm/auto-merge               — авто-слияние выше порога (guardrail)
+POST /v1/mdm/survivorship             — задать приоритет источников для поля
+
+GET  /v1/gold                         — золотые записи
+GET  /v1/gold/{id}                    — детали + связанные исходные записи
+
+GET  /v1/lineage/trace                — цепочка lineage по asset
+
+GET  /v1/audit                        — журнал аудита (неизменяемый)
+GET  /v1/audit/{entity_type}/{entity_id}
+GET  /v1/dashboard/stats
+```
+
+Токен: если задан `FORGE_API_TOKEN`, все маршруты кроме `/health` и
+`/dashboard` требуют заголовок `Authorization: Bearer <token>`.
+
+## Архитектура кода
+
+```
+dataforge/
+  config.py            — Config: DB_DSN обязателен, MDM-пороги, секреты
+  server.py             — python3 -m dataforge.server: uvicorn.run
+  db/
+    store.py             — PostgreSQL Store: 17 таблиц (Bronze/Silver/
+                            Gold, качество, MDM, lineage, аудит)
+  connectors/
+    base.py               — протокол Connector, DatasetSchema, Cursor
+    files.py              — CSV/XLSX/JSON/XML (read-only)
+    sql.py                — PostgreSQL/SQLite через общий DB-API код
+    onec_odata.py          — 1С через стандартный OData
+    factory.py             — сборка коннектора из записи source
+  quality/
+    engine.py              — profile_dataset, run_quality_checks
+  mdm/
+    matching.py             — compare_records, find_match_candidates,
+                              apply_survivorship, merge_candidate,
+                              auto_merge_high_confidence
+  pipeline/
+    ingest.py               — ingest_full, ingest_changes, promote_quality
+  api/
+    server.py               — FastAPI, все REST-маршруты
+  web/
+    dashboard.html           — веб-интерфейс на vanilla JS
+tests/
+  test_config.py                 (18 проверок)
+  test_store.py                  (87 проверок)
+  test_quality_engine.py         (25 проверок)
+  test_mdm_matching.py           (34 проверки)
+  test_connector_files.py        (20 проверок)
+  test_connector_sql.py          (19 проверок)
+  test_connector_onec_odata.py   (20 проверок)
+  test_connector_factory.py      (12 проверок)
+  test_pipeline.py               (20 проверок)
+  test_api.py                    (45 проверок)
+```
+
+**Итого 300 проверок**, все зелёные, `pyflakes` чист по `dataforge/` и
+`tests/`.
