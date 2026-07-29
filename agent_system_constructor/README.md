@@ -9,9 +9,12 @@
 
 ```bash
 make install
-make test        # 54 проверки, < 1 с
-python -m aconstructor run energy-hacker
+make test        # 105 проверок, ~3 с
+make serve       # веб-интерфейс на http://127.0.0.1:8080
 ```
+
+Три способа работы: веб-интерфейс, REST API и CLI. Прогоны пишутся в
+журнал на диске — видно, что запускали, чем кончилось и сколько стоило.
 
 ---
 
@@ -28,12 +31,52 @@ python -m aconstructor run energy-hacker
 | `urban-scout` | Urban-Scout | cartographer, architect | ЗОУИТ → архитектурный объём |
 
 ```bash
-python -m aconstructor list                    # все пайплайны
-python -m aconstructor run urban-scout         # отчёт в stdout
-python -m aconstructor run doc-restorer --out out   # + артефакты (.py, .lsp)
-python -m aconstructor graph cert-validator    # схема графа в Mermaid
-python -m aconstructor run-all                 # прогнать всё
+aconstructor list                     # все пайплайны
+aconstructor run urban-scout          # отчёт в stdout, прогон в журнал
+aconstructor run doc-restorer --out out    # + артефакты (.py, .lsp)
+aconstructor graph cert-validator     # схема графа в Mermaid
+aconstructor run-all                  # прогнать всё
+aconstructor history --status failed  # что падало
+aconstructor show <run_id>            # отчёт прошлого прогона
+aconstructor stats                    # успешность, траты, среднее время
+aconstructor doctor                   # самопроверка перед боем
 ```
+
+---
+
+## Интерфейс и API
+
+```bash
+make serve                            # http://127.0.0.1:8080
+```
+
+В интерфейсе: каталог пайплайнов, редактор входного JSON с демо-данными,
+запуск с выбором провайдера, отчёт с таблицами, скачивание артефактов,
+история прогонов и метрики. Ничего не тянется с CDN — работает в закрытом
+контуре завода.
+
+REST (полная схема на `/docs`):
+
+| метод | ручка | зачем |
+|---|---|---|
+| `GET` | `/api/pipelines` | каталог |
+| `GET` | `/api/pipelines/{slug}` | демо-данные и схема графа |
+| `POST` | `/api/pipelines/{slug}/run` | запуск; `sync:true` — дождаться результата |
+| `GET` | `/api/runs` | журнал с фильтрами |
+| `GET` | `/api/runs/{id}` | прогон целиком |
+| `GET` | `/api/runs/{id}/artifacts/{name}` | скачать скрипт Revit/AutoCAD |
+| `GET` | `/health`, `/metrics` | liveness и Prometheus |
+
+```bash
+curl -X POST localhost:8080/api/pipelines/energy-hacker/run \
+     -H 'Content-Type: application/json' \
+     -d '{"sync": true, "task": {"site": {...}}}'
+```
+
+**Про доступ.** Без `ACONSTRUCTOR_API_TOKEN` сервис слушает только
+localhost и отказывается стартовать на внешнем адресе — иначе кто угодно
+сможет тратить ваши токены LLM. Подробности и деплой:
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ---
 
@@ -60,6 +103,13 @@ python -m aconstructor run-all                 # прогнать всё
 - **№7** — отступы вычитаются из габарита, посадка проверяется по высоте,
   парковке и инсоляции.
 
+### Про пустой вход
+
+`task_input()` подставляет демо-данные, только если ключа в задаче **нет**.
+Пустой список от клиента — осмысленный вход («участков не нашлось»), и
+подменять его демо-данными значит выставить счёт за чужую выдумку.
+Раньше здесь стояло `task.get(key) or demo()`, что делало ровно это.
+
 ### Про деньги в отчётах
 
 Экономия считается честно: плата за мощность выставляется помесячно,
@@ -75,12 +125,17 @@ python -m aconstructor run-all                 # прогнать всё
 
 ```
 aconstructor/
-  config.py      Settings: провайдер, модель, ключи, каталоги
-  llm.py         фабрика LLM + EchoChatModel (оффлайн-заглушка)
-  core.py        BaseState, Agent, Pipeline, реестр, run_pipeline
-  textutil.py    детерминированные метрики сходства
+  config.py       Settings: провайдер, модель, ключи, каталоги
+  llm.py          фабрика LLM + EchoChatModel (оффлайн-заглушка)
+  core.py         BaseState, Agent, Pipeline, реестр, run_pipeline
+  textutil.py     детерминированные метрики сходства
+  store.py        журнал прогонов на SQLite
+  runner.py       очередь, пул воркеров, учёт токенов, таймауты
+  api.py          REST + веб-интерфейс (FastAPI)
+  cli.py          командная строка
+  web/index.html  интерфейс без внешних зависимостей
   data/samples.py демо-данные для всех семи
-  pipelines/     семь модулей, каждый регистрирует себя сам
+  pipelines/      семь модулей, каждый регистрирует себя сам
 ```
 
 Общее состояние (`BaseState`) одинаково у всех: `task`, `trace`,
@@ -156,8 +211,17 @@ python -m aconstructor run patent-clearance --provider openai --model gpt-4o
 
 ## Тесты
 
-`make test` — 54 проверки: сквозной прогон всех семи графов, разбор ответов
-модели, и предметные инварианты — что нерелевантный патент не всплывает,
-что несдвигаемая операция остаётся на месте, что запрещённый IFRA
-компонент исчезает из рецептуры, что скрипт Revit компилируется, а скобки
-AutoLISP сбалансированы.
+`make test` — 105 проверок, ~3 с, без сети и ключей:
+
+- **пайплайны** — сквозной прогон всех семи графов и предметные инварианты:
+  нерелевантный патент не всплывает, несдвигаемая операция остаётся на
+  месте, запрещённый IFRA компонент исчезает из рецептуры, скрипт Revit
+  компилируется, скобки AutoLISP сбалансированы;
+- **журнал** — жизненный цикл прогона, артефакты, чистка, и главное: запись
+  переживает перезапуск процесса;
+- **исполнитель** — очередь, таймауты, переполнение, падение пайплайна не
+  убивает воркер, стоимость считается по самому длинному префиксу модели;
+- **API** — контракты ручек, 404/409/429, авторизация, скачивание
+  артефактов;
+- **интерфейс** — синтаксис JS и рендер markdown в node, включая
+  экранирование HTML: отчёт строится из данных клиента.

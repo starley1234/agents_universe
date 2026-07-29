@@ -15,7 +15,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, register, step
+from ..core import Agent, BaseState, Pipeline, register, step, task_input
 from ..data import samples
 
 MAX_ROUNDS = 2
@@ -64,7 +64,7 @@ REVIEWER = Agent(
 
 
 def node_engineer(state: dict) -> dict:
-    proj = state["task"].get("project") or samples.cert_project()
+    proj = task_input(state["task"], "project", samples.cert_project)
     data = ENGINEER.run_json(
         json.dumps({"sections": proj["sections"], "evidence": proj["evidence"]}, ensure_ascii=False),
         default={},

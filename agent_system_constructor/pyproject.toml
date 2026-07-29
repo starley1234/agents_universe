@@ -16,13 +16,24 @@ dependencies = [
 openai = ["langchain-openai>=0.2"]
 anthropic = ["langchain-anthropic>=0.2"]
 all = ["langchain-openai>=0.2", "langchain-anthropic>=0.2"]
-dev = ["pytest>=8", "langchain-openai>=0.2", "langchain-anthropic>=0.2"]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "langchain-openai>=0.2",
+    "langchain-anthropic>=0.2",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
 
 [project.scripts]
 aconstructor = "aconstructor.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["aconstructor*"]
+
+[tool.setuptools.package-data]
+aconstructor = ["web/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

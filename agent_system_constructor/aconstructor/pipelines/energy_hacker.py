@@ -16,7 +16,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, Pipeline as _P, register, step  # noqa: F401
+from ..core import Agent, BaseState, Pipeline, register, step, task_input
 from ..data import samples
 
 HOURS = 24
@@ -81,7 +81,7 @@ def _feasible(job: dict, start: int) -> bool:
 
 
 def node_prophet(state: dict) -> dict:
-    site = state["task"].get("site") or samples.energy_site()
+    site = task_input(state["task"], "site", samples.energy_site)
     data = PROPHET.run_json(
         json.dumps({"prices": site["tariff"]["energy_usd_mwh"], "weather": site["weather"],
                     "baseline_kw": site["baseline_kw"]}, ensure_ascii=False),

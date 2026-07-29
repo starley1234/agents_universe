@@ -17,7 +17,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, register, step
+from ..core import Agent, BaseState, Pipeline, register, step, task_input
 from ..data import samples
 
 RT_TOLERANCE = 0.15  # минуты
@@ -64,8 +64,8 @@ def _spectral_match(peak_mz: list[int], ref_mz: list[int]) -> float:
 def node_identify(state: dict) -> dict:
     """Сопоставить пики с базой сырья: RT-окно + сходство масс-спектра."""
     task = state["task"]
-    data = task.get("gcms") or samples.gcms()
-    db = task.get("ingredients") or samples.ingredient_db()
+    data = task_input(task, "gcms", samples.gcms)
+    db = task_input(task, "ingredients", samples.ingredient_db)
     identified = []
     for peak in data["peaks"]:
         scored = []

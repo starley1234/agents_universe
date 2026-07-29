@@ -17,7 +17,8 @@ from typing import Annotated, Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, agent_node, merge_lists, register, step
+from ..core import (Agent, BaseState, Pipeline, merge_lists, register, step,
+                    task_input)
 from ..data import samples
 from ..textutil import coverage, cosine
 
@@ -71,7 +72,7 @@ def node_scout(state: dict) -> dict:
     """Каждый свежий патент — в набор признаков."""
     task = state["task"]
     out: list[dict] = []
-    for pat in task.get("patents", samples.patents()):
+    for pat in task_input(task, "patents", samples.patents):
         data = SCOUT.run_json(
             f"Патент {pat['id']} «{pat['title']}».\nФормула:\n{pat['claim']}",
             default={"domain": pat.get("domain", ""), "elements": []},
@@ -87,7 +88,7 @@ def node_scout(state: dict) -> dict:
 def node_product(state: dict) -> dict:
     """Продукт стартапа — в перечень технических возможностей."""
     task = state["task"]
-    product = task.get("product") or samples.product()
+    product = task_input(task, "product", samples.product)
     data = PRODUCT.run_json(
         f"Продукт «{product['name']}».\nОписание:\n{product['description']}",
         default={"capabilities": [], "tech_summary": product["description"]},

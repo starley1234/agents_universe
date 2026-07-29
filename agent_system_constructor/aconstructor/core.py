@@ -121,6 +121,20 @@ def parse_json(raw: str) -> Any | None:
     return None
 
 
+_MISSING = object()
+
+
+def task_input(task: dict, key: str, demo: Callable[[], Any]) -> Any:
+    """Взять вход из задачи, подставив демо-данные только если ключа нет.
+
+    Именно `key not in task`, а не `task.get(key) or demo()`: пустой список
+    от клиента — это осмысленный вход («участков не найдено»), и подменять
+    его демо-данными значит вернуть счёт за чужую выдумку.
+    """
+    value = task.get(key, _MISSING)
+    return demo() if value is _MISSING else value
+
+
 def step(name: str, **payload: Any) -> dict[str, Any]:
     """Запись в трассу — единый формат для логов и отчётов."""
     return {"node": name, "ts": round(time.time(), 3), **payload}

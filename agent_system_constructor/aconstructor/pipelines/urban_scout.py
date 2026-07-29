@@ -17,7 +17,7 @@ from typing import Annotated, Any
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, merge_lists, register, step
+from ..core import Agent, BaseState, Pipeline, merge_lists, register, step, task_input
 from ..data import samples
 
 # упрощённые нормы: коэффициент застройки и парковка на 100 м2
@@ -61,7 +61,7 @@ ARCHITECT = Agent(
 
 def node_cartographer(state: dict) -> dict:
     """Вычесть охранные зоны из габарита участка."""
-    parcels = state["task"].get("parcels") or samples.parcels()
+    parcels = task_input(state["task"], "parcels", samples.parcels)
     out = []
     for p in parcels:
         data = CARTOGRAPHER.run_json(
@@ -152,7 +152,7 @@ def _fit(plot: dict, b: dict) -> dict:
 
 def node_architect(state: dict) -> dict:
     """Примерка Lego-объёмов на каждое пятно."""
-    types = state["task"].get("buildings") or samples.building_types()
+    types = task_input(state["task"], "buildings", samples.building_types)
     fits = []
     for plot in state["buildable"]:
         variants = [_fit(plot, b) for b in types]

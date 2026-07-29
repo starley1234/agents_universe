@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, merge_lists, register, step
+from ..core import Agent, BaseState, Pipeline, merge_lists, register, step, task_input
 from ..data import samples
 from ..textutil import cosine, norm_code
 
@@ -111,7 +111,7 @@ def _merge(primary: dict, fallback: dict) -> dict:
 
 
 def node_engineer(state: dict) -> dict:
-    req = state["task"].get("request") or samples.part_request()
+    req = task_input(state["task"], "request", samples.part_request)
     text = f"{req['name']}\n{req['drawing_notes']}"
     data = ENGINEER.run_json(text, default={})
     params = _merge(data.get("params") or {}, extract_params(text))
@@ -130,7 +130,7 @@ def node_engineer(state: dict) -> dict:
 
 def node_scout(state: dict) -> dict:
     """Каждый лот прайса — в нормализованные параметры."""
-    listings = state["task"].get("listings") or samples.supplier_listings()
+    listings = task_input(state["task"], "listings", samples.supplier_listings)
     out = []
     for lot in listings:
         data = SCOUT.run_json(f"{lot['raw_code']} | {lot['text']}", default={})

@@ -1,10 +1,10 @@
 .venv/
 out/
+data/
 __pycache__/
 *.egg-info/
 .pytest_cache/
 .env
-data/
+tests/
+docs/
 *.db
-*.db-wal
-*.db-shm

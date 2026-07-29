@@ -18,7 +18,7 @@ from typing import Annotated, Any
 from langgraph.graph import END, START, StateGraph
 
 from ..config import Settings
-from ..core import Agent, BaseState, Pipeline, merge_lists, register, step
+from ..core import Agent, BaseState, Pipeline, merge_lists, register, step, task_input
 from ..data import samples
 
 SNAP_PX = 30.0  # допуск привязки конца линии к штуцеру оборудования
@@ -82,7 +82,7 @@ def _point_on_segment(pt, a, b) -> float:
 
 def node_vision(state: dict) -> dict:
     """Символы + привязка надписей. Геометрия — кодом, смысл — моделью."""
-    dwg = state["task"].get("drawing") or samples.drawing()
+    dwg = task_input(state["task"], "drawing", samples.drawing)
     syms = [dict(s) for s in dwg["symbols"]]
     for s in syms:  # ближайшая надпись в радиусе — это его подпись
         near = [t for t in dwg["texts"] if _dist(s["xy"], t["xy"]) < 90]

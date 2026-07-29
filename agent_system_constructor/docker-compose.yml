@@ -1,0 +1,37 @@
+services:
+  aconstructor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: aconstructor:latest
+    container_name: aconstructor
+    restart: unless-stopped
+    ports:
+      # Наружу не выставляем: перед публикацией поставьте reverse-proxy с TLS
+      # и задайте ACONSTRUCTOR_API_TOKEN.
+      - "127.0.0.1:8080:8080"
+    environment:
+      ACONSTRUCTOR_PROVIDER: "${ACONSTRUCTOR_PROVIDER:-fake}"
+      ACONSTRUCTOR_MODEL: "${ACONSTRUCTOR_MODEL:-}"
+      ACONSTRUCTOR_API_KEY: "${ACONSTRUCTOR_API_KEY:-}"
+      ACONSTRUCTOR_BASE_URL: "${ACONSTRUCTOR_BASE_URL:-}"
+      ACONSTRUCTOR_API_TOKEN: "${ACONSTRUCTOR_API_TOKEN:-}"
+      ACONSTRUCTOR_WORKERS: "${ACONSTRUCTOR_WORKERS:-2}"
+      ACONSTRUCTOR_TIMEOUT: "${ACONSTRUCTOR_TIMEOUT:-600}"
+      ACONSTRUCTOR_LOG: "${ACONSTRUCTOR_LOG:-INFO}"
+    volumes:
+      - aconstructor-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  aconstructor-data:
