@@ -17,6 +17,9 @@
   GET    /v1/conversations/<id>   — сообщения диалога
   GET    /v1/graph                — граф онтологии для визуализации
   POST   /v1/chain/start          — {"goal", "agents": [slug, ...]}
+  GET/POST /v1/workflows           — долгие прикладные задачи и их статусы
+  GET/POST /v1/workflows/<id>      — детали / обновление статуса и state
+  POST   /v1/workflows/<id>/artifact — зарегистрировать результат задачи
   GET    /v1/chain/<id>           — статус+шаги цепочки
   POST   /v1/maintenance/run      — запустить один цикл обслуживания вручную
   GET    /v1/onboarding/status    — пуста ли база / есть ли демо-агенты
@@ -201,6 +204,22 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send(200, {"conversation": conv, "messages": st.messages(cid)})
             return
+        if path == "/v1/workflows":
+            with self._store() as st:
+                self._send(200, {"workflows": st.list_workflows(qi("limit", 50), str(q.get("status", [""])[0]))})
+            return
+        if path.startswith("/v1/workflows/"):
+            raw_id = path[len("/v1/workflows/"):].split("/", 1)[0]
+            if raw_id.isdigit():
+                with self._store() as st:
+                    workflow = st.get_workflow(int(raw_id))
+                    if not workflow:
+                        self._send(404, {"error": f"workflow {raw_id} не найден"})
+                        return
+                    self._send(200, {"workflow": workflow,
+                                     "steps": st.workflow_steps(int(raw_id)),
+                                     "artifacts": st.workflow_artifacts(int(raw_id))})
+                return
         if path == "/v1/graph":
             with self._store() as st:
                 self._send(200, st.graph_data(qi("limit", 500)))
@@ -248,6 +267,56 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
 
     def _route_post(self, path: str, data: dict[str, Any]) -> None:
+        if path == "/v1/workflows":
+            kind = str(data.get("kind") or "").strip()
+            if not kind:
+                self._send(400, {"error": "поле 'kind' обязательно"})
+                return
+            initial_status = str(data.get("status") or "draft")
+            with self._store() as st:
+                wid = st.create_workflow(kind, title=str(data.get("title") or ""),
+                                         input=data.get("input") if isinstance(data.get("input"), dict) else {},
+                                         state=data.get("state") if isinstance(data.get("state"), dict) else {},
+                                         status=initial_status)
+                for ord_, step in enumerate(data.get("steps") or [], 1):
+                    if isinstance(step, dict) and str(step.get("kind") or "").strip():
+                        st.add_workflow_step(wid, ord_, str(step["kind"]),
+                                             step.get("input") if isinstance(step.get("input"), dict) else {})
+                self._send(201, {"id": wid, "workflow": st.get_workflow(wid),
+                                 "steps": st.workflow_steps(wid)})
+            return
+        if path.startswith("/v1/workflows/"):
+            rest = path[len("/v1/workflows/"):]
+            raw_id, _, action = rest.partition("/")
+            if not raw_id.isdigit():
+                self._send(400, {"error": "некорректный id workflow"})
+                return
+            wid = int(raw_id)
+            with self._store() as st:
+                if not st.get_workflow(wid):
+                    self._send(404, {"error": f"workflow {wid} не найден"})
+                    return
+                if action == "artifact":
+                    required = ("kind", "name", "path")
+                    missing = [k for k in required if not str(data.get(k) or "").strip()]
+                    if missing:
+                        self._send(400, {"error": "обязательные поля: " + ", ".join(missing)})
+                        return
+                    aid = st.add_artifact(wid, str(data["kind"]), str(data["name"]), str(data["path"]),
+                                          str(data.get("mime_type") or "application/octet-stream"),
+                                          int(data.get("size_bytes") or 0),
+                                          data.get("meta") if isinstance(data.get("meta"), dict) else {},
+                                          data.get("step_id"))
+                    self._send(201, {"id": aid})
+                    return
+                if action in ("", "state"):
+                    ok = st.set_workflow(wid, status=data.get("status"),
+                                         state=data.get("state") if isinstance(data.get("state"), dict) else None,
+                                         error=data.get("error") if "error" in data else None)
+                    self._send(200, {"updated": ok, "workflow": st.get_workflow(wid)})
+                    return
+            self._send(404, {"error": f"нет workflow-маршрута {action!r}"})
+            return
         if path == "/v1/chat":
             message = (data.get("message") or "").strip()
             if not message:

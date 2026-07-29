@@ -217,6 +217,150 @@ class Store:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS ix_doc_chunk_tsv "
             "ON doc_chunk USING GIN(tsv)")
+        # Долгие прикладные задания: создание сайта, инвентаризация помещения
+        # и другие workflow не должны жить только в памяти HTTP-запроса.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workflow(
+                id SERIAL PRIMARY KEY,
+                kind TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                input JSONB DEFAULT '{}',
+                state JSONB DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'draft',
+                created DOUBLE PRECISION NOT NULL,
+                updated DOUBLE PRECISION NOT NULL,
+                finished DOUBLE PRECISION,
+                error TEXT DEFAULT ''
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_workflow_status ON workflow(status, id DESC)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workflow_step(
+                id SERIAL PRIMARY KEY,
+                workflow_id INTEGER NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
+                ord INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                input JSONB DEFAULT '{}',
+                output JSONB DEFAULT '{}',
+                error TEXT DEFAULT '',
+                started DOUBLE PRECISION,
+                finished DOUBLE PRECISION,
+                UNIQUE(workflow_id, ord)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workflow_artifact(
+                id SERIAL PRIMARY KEY,
+                workflow_id INTEGER NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
+                step_id INTEGER REFERENCES workflow_step(id) ON DELETE SET NULL,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                mime_type TEXT DEFAULT 'application/octet-stream',
+                size_bytes BIGINT DEFAULT 0,
+                meta JSONB DEFAULT '{}',
+                created DOUBLE PRECISION NOT NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS ix_artifact_workflow ON workflow_artifact(workflow_id, id)")
+
+    # ----------------------------------------------------------- workflows
+    _WORKFLOW_STATUSES = {"draft", "waiting_for_answer", "queued", "running",
+                          "review_required", "completed", "failed", "cancelled"}
+    _STEP_STATUSES = {"pending", "running", "done", "failed", "skipped"}
+
+    @staticmethod
+    def _json(value: Any) -> str:
+        return json.dumps(value if value is not None else {}, ensure_ascii=False)
+
+    @staticmethod
+    def _workflow_row(row: tuple) -> dict[str, Any]:
+        keys = ("id", "kind", "title", "input", "state", "status", "created",
+                "updated", "finished", "error")
+        return dict(zip(keys, row))
+
+    def create_workflow(self, kind: str, title: str = "", input: dict[str, Any] | None = None,
+                        state: dict[str, Any] | None = None, status: str = "draft") -> int:
+        if not kind.strip():
+            raise ValueError("kind workflow обязателен")
+        if status not in self._WORKFLOW_STATUSES:
+            raise ValueError(f"Недопустимый статус workflow: {status}")
+        now = self._now()
+        cur = self.conn.cursor()
+        cur.execute("INSERT INTO workflow(kind,title,input,state,status,created,updated) "
+                    "VALUES(%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s) RETURNING id",
+                    (kind.strip(), title, self._json(input), self._json(state), status, now, now))
+        return int(cur.fetchone()[0])
+
+    def get_workflow(self, workflow_id: int) -> dict[str, Any] | None:
+        cur = self.conn.cursor()
+        cur.execute("SELECT id,kind,title,input,state,status,created,updated,finished,error "
+                    "FROM workflow WHERE id=%s", (workflow_id,))
+        row = cur.fetchone()
+        return self._workflow_row(row) if row else None
+
+    def list_workflows(self, limit: int = 50, status: str = "") -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        if status:
+            cur.execute("SELECT id,kind,title,input,state,status,created,updated,finished,error "
+                        "FROM workflow WHERE status=%s ORDER BY id DESC LIMIT %s", (status, limit))
+        else:
+            cur.execute("SELECT id,kind,title,input,state,status,created,updated,finished,error "
+                        "FROM workflow ORDER BY id DESC LIMIT %s", (limit,))
+        return [self._workflow_row(r) for r in cur.fetchall()]
+
+    def set_workflow(self, workflow_id: int, *, status: str | None = None,
+                     state: dict[str, Any] | None = None, error: str | None = None) -> bool:
+        if status is not None and status not in self._WORKFLOW_STATUSES:
+            raise ValueError(f"Недопустимый статус workflow: {status}")
+        fields, values = [], []
+        if status is not None:
+            fields.append("status=%s"); values.append(status)
+            if status in {"completed", "failed", "cancelled"}:
+                fields.append("finished=%s"); values.append(self._now())
+        if state is not None:
+            fields.append("state=%s::jsonb"); values.append(self._json(state))
+        if error is not None:
+            fields.append("error=%s"); values.append(error)
+        if not fields:
+            return self.get_workflow(workflow_id) is not None
+        fields.append("updated=%s"); values.append(self._now())
+        values.append(workflow_id)
+        cur = self.conn.cursor()
+        cur.execute(f"UPDATE workflow SET {', '.join(fields)} WHERE id=%s", values)
+        return bool(cur.rowcount)
+
+    def add_workflow_step(self, workflow_id: int, ord: int, kind: str,
+                          input: dict[str, Any] | None = None) -> int:
+        cur = self.conn.cursor()
+        cur.execute("INSERT INTO workflow_step(workflow_id,ord,kind,input) VALUES(%s,%s,%s,%s::jsonb) RETURNING id",
+                    (workflow_id, ord, kind, self._json(input)))
+        return int(cur.fetchone()[0])
+
+    def workflow_steps(self, workflow_id: int) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT id,workflow_id,ord,kind,status,input,output,error,started,finished "
+                    "FROM workflow_step WHERE workflow_id=%s ORDER BY ord", (workflow_id,))
+        keys = ("id", "workflow_id", "ord", "kind", "status", "input", "output", "error", "started", "finished")
+        return [dict(zip(keys, r)) for r in cur.fetchall()]
+
+    def add_artifact(self, workflow_id: int, kind: str, name: str, path: str,
+                     mime_type: str = "application/octet-stream", size_bytes: int = 0,
+                     meta: dict[str, Any] | None = None, step_id: int | None = None) -> int:
+        cur = self.conn.cursor()
+        cur.execute("INSERT INTO workflow_artifact(workflow_id,step_id,kind,name,path,mime_type,size_bytes,meta,created) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) RETURNING id",
+                    (workflow_id, step_id, kind, name, path, mime_type, size_bytes,
+                     self._json(meta), self._now()))
+        return int(cur.fetchone()[0])
+
+    def workflow_artifacts(self, workflow_id: int) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT id,workflow_id,step_id,kind,name,path,mime_type,size_bytes,meta,created "
+                    "FROM workflow_artifact WHERE workflow_id=%s ORDER BY id", (workflow_id,))
+        keys = ("id", "workflow_id", "step_id", "kind", "name", "path", "mime_type", "size_bytes", "meta", "created")
+        return [dict(zip(keys, r)) for r in cur.fetchall()]
 
     @staticmethod
     def _vec(v: list[float] | None) -> str | None:
