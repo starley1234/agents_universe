@@ -66,29 +66,56 @@ def read_ruleset(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def load_ruleset(store: Store, path: str | Path, *,
-                 embedder: Any = None) -> dict[str, Any]:
-    """Загрузить справочник в базу. Повторная загрузка обновляет пункты."""
-    data = read_ruleset(path)
+def load_ruleset_dict(store: Store, data: dict[str, Any], *,
+                      embedder: Any = None, source: str = "") -> dict[str, Any]:
+    """Загрузить уже разобранный справочник (из JSON или из PDF).
+
+    Эмбеддинги считаются ПАЧКОЙ, а не по одному: у внешней модели это
+    разница между одним HTTP-запросом на 32 пункта и 400 запросами на
+    справочник — минуты ожидания против секунд.
+    """
     ruleset = str(data["ruleset"]).strip()
-    loaded = 0
-    for clause in data["clauses"]:
+    clauses = data["clauses"]
+    name = Path(source).name if source else str(data.get("title", ""))
+
+    prepared = []
+    for clause in clauses:
         code = str(clause["clause"]).strip()
         title = str(clause.get("title", "")).strip()
         text = str(clause.get("text", "")).strip()
         keywords = str(clause.get("keywords", "")).strip()
-        embedding = None
-        if embedder is not None:
-            embedding = embedder.embed_one(
-                " ".join(filter(None, [code, title, text, keywords])))
+        meta = dict(clause.get("meta") or {})
+        if name:
+            meta.setdefault("source", name)
+        prepared.append((code, title, text, keywords, meta))
+
+    vectors: list[Any] = [None] * len(prepared)
+    if embedder is not None and prepared:
+        texts = [" ".join(filter(None, [c, t, body, kw]))
+                 for c, t, body, kw, _ in prepared]
+        vectors = list(embedder.embed(texts))
+        if len(vectors) != len(prepared):
+            raise RulesError(
+                f"Эмбеддер вернул {len(vectors)} векторов на {len(prepared)} "
+                "пунктов — загрузка прервана, чтобы не записать пункты с "
+                "чужими векторами.")
+
+    for (code, title, text, keywords, meta), vector in zip(prepared, vectors):
         store.upsert_clause(ruleset, code, title=title, text=text,
-                            keywords=keywords, embedding=embedding,
-                            meta={"source": Path(path).name})
-        loaded += 1
-    store.log("system", "rules_load", detail=f"{ruleset}: {loaded} пунктов",
-              data={"ruleset": ruleset, "file": str(path)})
-    return {"ruleset": ruleset, "loaded": loaded,
+                            keywords=keywords, embedding=vector, meta=meta)
+
+    store.log("system", "rules_load",
+              detail=f"{ruleset}: {len(prepared)} пунктов",
+              data={"ruleset": ruleset, "source": name})
+    return {"ruleset": ruleset, "loaded": len(prepared),
             "title": data.get("title", "")}
+
+
+def load_ruleset(store: Store, path: str | Path, *,
+                 embedder: Any = None) -> dict[str, Any]:
+    """Загрузить справочник из JSON-файла. Повторная загрузка обновляет."""
+    return load_ruleset_dict(store, read_ruleset(path), embedder=embedder,
+                             source=str(path))
 
 
 def load_builtin(store: Store, name: str = "", *, embedder: Any = None

@@ -41,6 +41,7 @@ from .export.reports import (compliance_docx, compliance_xlsx, export_path,
 from .ingest.pipeline import import_file, promote, promote_all
 from .ingest.sync import pull_item, push_batch
 from .ingest.teamcenter import TeamcenterClient, TeamcenterError
+from .ingest.pdf import PdfError
 from .ingest.word import ParseError
 from .llm import build_embedder, build_llm
 from .plugins import base as plugins
@@ -76,6 +77,33 @@ def _tc(cfg: Config) -> TeamcenterClient:
 
 # --- команды ---------------------------------------------------------------
 def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
+    if args.auto_dim:
+        # Размерность колонки vector(dim) фиксируется НАВСЕГДА при
+        # создании схемы. Спросить её у модели одним запросом дешевле,
+        # чем обнаружить несовпадение после загрузки справочника.
+        from .llm.embeddings import (EmbeddingError, is_external,
+                                     probe_embedding_dim)
+        if not is_external(cfg.embedding_provider):
+            print("--auto-dim работает только с внешней моделью эмбеддингов "
+                  f"(сейчас провайдер {cfg.embedding_provider!r}).",
+                  file=sys.stderr)
+            return 2
+        try:
+            dim = probe_embedding_dim(
+                cfg.embedding_provider, cfg.embedding_model,
+                base_url=cfg.embedding_base_url,
+                api_key=cfg.embedding_api_key, timeout=cfg.embedding_timeout)
+        except EmbeddingError as exc:
+            print(f"Не удалось спросить размерность у модели: {exc}",
+                  file=sys.stderr)
+            return 2
+        if dim != cfg.embedding_dim:
+            print(f"Модель {cfg.embedding_model!r} даёт вектор размерности "
+                  f"{dim} — схема будет создана под неё "
+                  f"(было задано {cfg.embedding_dim}).")
+            print(f"Добавьте в окружение: export SAPS_EMBEDDING_DIM={dim}")
+            cfg.embedding_dim = dim
+
     with _store(cfg) as st:
         st.init_schema()
         print(f"Схема {cfg.db_schema!r} создана/обновлена.")
@@ -164,6 +192,94 @@ def cmd_import(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_load(cfg: Config, args: argparse.Namespace) -> int:
+    """Одна команда: загрузить документ, система разбирается сама."""
+    from .ingest.autoload import autoload
+
+    def say(msg: str) -> None:
+        if not args.quiet:
+            print(f"  … {msg}")
+
+    with _store(cfg) as st:
+        try:
+            result = autoload(st, cfg, args.path, actor=args.actor,
+                              kind=args.as_kind, ruleset=args.ruleset,
+                              owner=args.owner, node=args.node,
+                              engine=args.engine,
+                              run_agents=not args.no_agents,
+                              promote=not args.no_promote,
+                              force=args.force, progress=say)
+        except (ParseError, PdfError) as exc:
+            print(f"Ошибка: {exc}", file=sys.stderr)
+            return 2
+        print()
+        print(result.report())
+        print()
+        if result.kind == "rulebook":
+            print(f"Готово: справочник «{result.ruleset}» загружен "
+                  f"({result.clauses_loaded} пунктов).")
+            print("Дальше: saps agent classifier — подобрать пункты "
+                  "требованиям в базе.")
+        elif result.requirements_created:
+            print(f"Готово: требований в базе +{result.requirements_created}.")
+            if result.suggestions:
+                print(f"Ждут вашего решения: {result.suggestions} предложений "
+                      "— saps suggestions")
+            print("Состояние: saps health --by-node")
+        return 0 if result.ok else 1
+
+
+def cmd_embeddings(cfg: Config, args: argparse.Namespace) -> int:
+    """Проверка и настройка внешней модели эмбеддингов."""
+    from .llm.embeddings import (EmbeddingError, is_external,
+                                 probe_embedding_dim)
+
+    provider = args.provider or cfg.embedding_provider
+    model = args.model or cfg.embedding_model
+    base_url = args.base_url or cfg.embedding_base_url
+
+    print(f"Провайдер: {provider}")
+    print(f"Модель:    {model}")
+    if is_external(provider):
+        print(f"Адрес:     {base_url or '(умолчание провайдера)'}")
+        print(f"Ключ:      {'задан' if cfg.embedding_api_key else 'не задан'}")
+    else:
+        print("Режим:     офлайн (сравнение слов, а не смысла)")
+
+    if not is_external(provider):
+        print(f"\nРазмерность: {cfg.embedding_dim} (задаётся параметром)")
+        return 0
+
+    print("\nПробный запрос к серверу…")
+    try:
+        dim = probe_embedding_dim(provider, model, base_url=base_url,
+                                  api_key=cfg.embedding_api_key,
+                                  timeout=cfg.embedding_timeout)
+    except EmbeddingError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    print(f"✓ Модель отвечает, размерность вектора: {dim}")
+
+    if dim == cfg.embedding_dim:
+        print(f"✓ Совпадает с SAPS_EMBEDDING_DIM={cfg.embedding_dim}")
+    else:
+        print(f"\n⚠ SAPS_EMBEDDING_DIM={cfg.embedding_dim}, а модель даёт "
+              f"{dim}.")
+        print(f"  Схема БД создаётся с колонкой vector({cfg.embedding_dim}) "
+              "и потом не меняется (ограничение pgvector).")
+        print(f"  Задайте перед созданием схемы:  "
+              f"export SAPS_EMBEDDING_DIM={dim}")
+        return 1
+
+    if args.check_db:
+        with _store(cfg) as st:
+            stats = st.stats()
+            print(f"\nВ базе: пунктов АП {stats['clauses']}, требований "
+                  f"{stats['requirements']}")
+            print("Переиндексировать под текущую модель: saps index --force")
+    return 0
+
+
 def cmd_staging(cfg: Config, args: argparse.Namespace) -> int:
     with _store(cfg) as st:
         if args.doc is None:
@@ -244,6 +360,13 @@ def cmd_rules(cfg: Config, args: argparse.Namespace) -> int:
 def cmd_index(cfg: Config, args: argparse.Namespace) -> int:
     with _store(cfg) as st:
         emb = _embedder(cfg)
+        if args.force:
+            # Смена модели эмбеддингов делает старые векторы бессмысленными:
+            # они лежат в другом пространстве, и поиск начинает возвращать
+            # случайные пункты. Сбрасываем, чтобы пересчитать всё заново.
+            cleared = st.clear_embeddings()
+            print(f"Сброшено векторов: пунктов АП {cleared['clauses']}, "
+                  f"требований {cleared['requirements']}")
         n_clauses = index_clauses(st, emb)
         n_reqs = index_requirements(st, emb)
         print(f"Пересчитано эмбеддингов: пунктов АП {n_clauses}, "
@@ -545,12 +668,46 @@ def build_parser() -> argparse.ArgumentParser:
                    help="сразу загрузить встроенные справочники АП")
     i.add_argument("--indexes", action="store_true",
                    help="построить векторные индексы")
+    i.add_argument("--auto-dim", action="store_true",
+                   help="спросить размерность у внешней модели эмбеддингов "
+                        "и создать схему под неё")
     i.set_defaults(func=cmd_init)
 
     sub.add_parser("check", help="самопроверка окружения").set_defaults(
         func=cmd_check)
 
-    imp = sub.add_parser("import", help="импорт Word/Excel")
+    ld = sub.add_parser("load",
+                        help="загрузить документ (PDF/Word/Excel) — "
+                             "система сама определит, что это, и всё сделает")
+    ld.add_argument("path")
+    ld.add_argument("--as", dest="as_kind", default="",
+                    choices=["rulebook", "requirements"],
+                    help="переопределить назначение документа")
+    ld.add_argument("--ruleset", default="",
+                    help="набор правил для справочника, например АП-25")
+    ld.add_argument("--owner", default="", help="ответственный за требования")
+    ld.add_argument("--node", default="", help="узел изделия")
+    ld.add_argument("--engine", default="", choices=["", "pymupdf", "pypdf"],
+                    help="движок чтения PDF")
+    ld.add_argument("--no-agents", action="store_true",
+                    help="не запускать агентов после загрузки")
+    ld.add_argument("--no-promote", action="store_true",
+                    help="оставить записи в staging для ручной проверки")
+    ld.add_argument("--force", action="store_true",
+                    help="загрузить, даже если файл уже импортировали")
+    ld.add_argument("-q", "--quiet", action="store_true")
+    ld.set_defaults(func=cmd_load)
+
+    em = sub.add_parser("embeddings",
+                        help="проверить внешнюю модель эмбеддингов")
+    em.add_argument("--provider", default="")
+    em.add_argument("--model", default="")
+    em.add_argument("--base-url", default="")
+    em.add_argument("--check-db", action="store_true",
+                    help="показать состояние индексов в базе")
+    em.set_defaults(func=cmd_embeddings)
+
+    imp = sub.add_parser("import", help="импорт Word/Excel (низкоуровневый)")
     imp.add_argument("path")
     imp.add_argument("--promote", action="store_true",
                      help="сразу перенести распознанное в production")
@@ -582,6 +739,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     idx = sub.add_parser("index", help="пересчитать эмбеддинги")
     idx.add_argument("--build-indexes", action="store_true")
+    idx.add_argument("--force", action="store_true",
+                     help="сбросить старые векторы и пересчитать всё "
+                          "(нужно при смене модели эмбеддингов)")
     idx.set_defaults(func=cmd_index)
 
     ag = sub.add_parser("agent", help="запуск агента")
@@ -665,7 +825,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nПрервано.", file=sys.stderr)
         return 130
-    except (ConfigError, StoreError, RulesError, ParseError) as exc:
+    except (ConfigError, StoreError, RulesError, ParseError,
+            PdfError) as exc:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return 2
 

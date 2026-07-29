@@ -186,7 +186,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/config":
             self._send(200, {"config": self.cfg.to_dict(),
                              "moc_codes": MOC_CODES,
-                             "rulesets": list_builtin()})
+                             "rulesets": list_builtin(),
+                             "external_embeddings":
+                                 self.cfg.uses_external_embeddings(),
+                             "pdf_engines": _pdf_engines()})
+            return
+        if path == "/v1/embeddings":
+            self._send(200, self._embedding_status())
             return
         if path == "/v1/stats":
             self._send(200, st.stats())
@@ -326,6 +332,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, result.to_dict())
             return
 
+        if path == "/v1/load":
+            # Приём файла: путь на сервере ЛИБО содержимое в base64.
+            # base64 нужен, чтобы инженер мог перетащить файл в браузер,
+            # не имея доступа к файловой системе сервера.
+            return self._route_load(data)
+
         if path == "/v1/rules/load":
             result = load_builtin(st, str(data.get("ruleset", "")),
                                   embedder=self.embedder())
@@ -364,6 +376,71 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": f"нет маршрута POST {path}"})
 
     # --- операции ----------------------------------------------------------
+    def _route_load(self, data: dict[str, Any]) -> None:
+        """POST /v1/load — загрузить документ (PDF/Word/Excel) целиком."""
+        import base64
+        import tempfile
+
+        from ..ingest.autoload import autoload
+        from ..ingest.pdf import PdfError
+        from ..ingest.word import ParseError
+
+        st = self.store()
+        raw = data.get("content_base64")
+        server_path = str(data.get("path", "") or "").strip()
+        tmp_path: Path | None = None
+
+        if raw:
+            name = str(data.get("filename", "upload.pdf"))
+            suffix = Path(name).suffix or ".pdf"
+            try:
+                blob = base64.b64decode(raw, validate=True)
+            except Exception:                                # noqa: BLE001
+                self._send(400, {"error": "content_base64 не декодируется"})
+                return
+            if len(blob) > MAX_BODY:
+                self._send(400, {"error": "файл слишком большой"})
+                return
+            fd = tempfile.NamedTemporaryFile(delete=False, suffix=suffix,
+                                             prefix="saps_upload_")
+            fd.write(blob)
+            fd.close()
+            tmp_path = Path(fd.name)
+            target = tmp_path
+            display = name
+        elif server_path:
+            target = Path(server_path)
+            display = target.name
+            if not target.exists():
+                self._send(400, {"error": f"Файл не найден на сервере: "
+                                          f"{server_path}"})
+                return
+        else:
+            self._send(400, {"error": "нужен 'path' или 'content_base64'"})
+            return
+
+        try:
+            result = autoload(
+                st, self.cfg, target, actor=self._actor(data),
+                kind=str(data.get("as", "") or ""),
+                ruleset=str(data.get("ruleset", "") or ""),
+                owner=str(data.get("owner", "") or ""),
+                node=str(data.get("node", "") or ""),
+                engine=str(data.get("engine", "") or ""),
+                run_agents=bool(data.get("run_agents", True)),
+                promote=bool(data.get("promote", True)),
+                force=bool(data.get("force", False)))
+        except (ParseError, PdfError) as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
+        payload = result.to_dict()
+        payload["path"] = display
+        self._send(200, payload)
+
     def _run_agent(self, name: str, st: Store,
                    data: dict[str, Any]) -> dict[str, Any]:
         owner = str(data.get("owner", ""))
@@ -385,6 +462,36 @@ class Handler(BaseHTTPRequestHandler):
             return GapAgent(self.cfg, st).run(owner=owner, node_code=node).to_dict()
         raise ValueError(
             f"Агент {name!r} неизвестен. Доступны: editor, classifier, gap")
+
+    def _embedding_status(self) -> dict[str, Any]:
+        """Состояние модели эмбеддингов и покрытие индексами."""
+        from ..llm.embeddings import EmbeddingError, probe_embedding_dim
+        cfg = self.cfg
+        out: dict[str, Any] = {
+            "provider": cfg.embedding_provider,
+            "model": cfg.embedding_model,
+            "external": cfg.uses_external_embeddings(),
+            "configured_dim": cfg.embedding_dim,
+            "base_url": cfg.embedding_base_url,
+            "batch": cfg.embedding_batch,
+            "coverage": self.store().embedding_coverage(),
+        }
+        if not out["external"]:
+            out["status"] = "офлайн-эмбеддер (сравнение слов, не смысла)"
+            return out
+        try:
+            dim = probe_embedding_dim(
+                cfg.embedding_provider, cfg.embedding_model,
+                base_url=cfg.embedding_base_url,
+                api_key=cfg.embedding_api_key, timeout=cfg.embedding_timeout)
+        except EmbeddingError as exc:
+            out["status"] = "недоступна"
+            out["error"] = str(exc)
+            return out
+        out["model_dim"] = dim
+        out["status"] = ("готова" if dim == cfg.embedding_dim
+                         else "размерность не совпадает со схемой БД")
+        return out
 
     def _export(self, st: Store, data: dict[str, Any]) -> dict[str, Any]:
         fmt = str(data.get("format", "xlsx")).lower()
@@ -411,6 +518,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             raise ValueError("format: docx | xlsx | requirements")
         return {"file": str(path), "format": fmt}
+
+
+def _pdf_engines() -> list[str]:
+    from ..ingest.pdf import available_engines
+    return available_engines()
 
 
 def _int(value: Any, default: int) -> int:

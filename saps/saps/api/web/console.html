@@ -81,6 +81,15 @@
   .rq .hd{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
   .rq .txt{margin-top:7px;white-space:pre-wrap}
   details summary{cursor:pointer;color:var(--acc);font-size:13px;margin-top:7px}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;
+        background:var(--soft);transition:border-color .15s}
+  .drop.over{border-color:var(--acc);background:#eaf2fd}
+  .pick{color:var(--acc);cursor:pointer;text-decoration:underline}
+  .steps{list-style:none;padding:0;margin:10px 0}
+  .steps li{padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .steps li:last-child{border-bottom:none}
+  .steps .mk{font-weight:700;margin-right:7px}
+  .steps .mk.ok{color:var(--ok)} .steps .mk.no{color:var(--err)}
   code{background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12.5px}
   .pill{font-size:12px;color:var(--dim);background:var(--soft);padding:4px 10px;border-radius:99px}
   .pill.alert{background:var(--warn);color:#fff;font-weight:700}
@@ -98,6 +107,7 @@
     <button data-view="dash" class="active">Обзор</button>
     <button data-view="reqs">Требования</button>
     <button data-view="sugs">Предложения агентов</button>
+    <button data-view="upload">Загрузка</button>
     <button data-view="wizard">Мастер импорта</button>
     <button data-view="tools">Агенты и отчёты</button>
   </nav>
@@ -155,6 +165,47 @@
         <span class="muted">Агент не меняет данные сам: изменение вносится только после вашего решения.</span>
       </div>
       <div id="sugList"></div>
+    </div>
+  </section>
+
+  <!-- ЗАГРУЗКА ДОКУМЕНТА -->
+  <section id="view-upload" class="hidden">
+    <div class="card">
+      <h2>Загрузить документ — система разберётся сама</h2>
+      <div id="drop" class="drop">
+        <b>Перетащите сюда файл</b> или <label class="pick">выберите
+          <input type="file" id="file" accept=".pdf,.docx,.xlsx" hidden></label>
+        <div class="muted" style="margin-top:6px">
+          PDF со справочником авиационных правил, ТЗ в Word, перечень
+          требований в Excel — назначение определится автоматически.
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <select id="uAs">
+          <option value="">определить автоматически</option>
+          <option value="rulebook">справочник авиационных правил</option>
+          <option value="requirements">документ с требованиями</option>
+        </select>
+        <input id="uRuleset" placeholder="набор правил (АП-25)" size="14">
+        <input id="uOwner" placeholder="ответственный" size="14">
+        <input id="uNode" placeholder="узел изделия" size="14">
+        <label class="muted"><input type="checkbox" id="uAgents" checked>
+          запустить агентов</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="uGo" onclick="doUpload()" disabled>
+          Загрузить</button>
+        <span id="uName" class="muted"></span>
+      </div>
+      <div id="uProgress" class="hidden box warn">Обрабатываю документ…
+        для большого справочника это может занять минуту.</div>
+      <div id="uResult"></div>
+    </div>
+    <div class="card">
+      <h2>Модель эмбеддингов</h2>
+      <div class="row"><button onclick="loadEmb()">Проверить</button>
+        <span class="muted">Семантический поиск по требованиям и пунктам АП.</span></div>
+      <div id="embStatus" class="muted">—</div>
     </div>
   </section>
 
@@ -235,10 +286,11 @@ async function api(path, opts){
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("nav button").forEach(x=>x.classList.remove("active"));
   b.classList.add("active");
-  ["dash","reqs","sugs","wizard","tools"].forEach(v=>
+  ["dash","reqs","sugs","upload","wizard","tools"].forEach(v=>
     $("#view-"+v).classList.toggle("hidden", v!==b.dataset.view));
   if(b.dataset.view==="sugs") loadSugs();
   if(b.dataset.view==="wizard") loadDocs();
+  if(b.dataset.view==="upload") loadEmb();
   if(b.dataset.view==="reqs") loadReqs();
   if(b.dataset.view==="tools") loadPlugins();
   if(b.dataset.view==="dash"){ loadStats(); loadHealth(); }
@@ -427,6 +479,88 @@ async function decide(id, decision){
     showMsg(decision==="accepted" ? "Принято и применено к требованию." : "Отклонено.");
     loadSugs(); loadStats();
     if(CURRENT_REQ) openReq(CURRENT_REQ);
+  }catch(e){ showErr(e.message); }
+}
+
+// ---------- загрузка документа ----------
+let UPLOAD_FILE = null;
+function pickFile(f){
+  UPLOAD_FILE = f || null;
+  $("#uName").textContent = f ? `${f.name} (${Math.round(f.size/1024)} КБ)` : "";
+  $("#uGo").disabled = !f;
+}
+(function initDrop(){
+  const drop = $("#drop"), input = $("#file");
+  if(!drop) return;
+  input.addEventListener("change", e => pickFile(e.target.files[0]));
+  ["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", e => pickFile(e.dataTransfer.files[0]));
+})();
+
+async function doUpload(){
+  if(!UPLOAD_FILE) return;
+  const b64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1]);
+    r.onerror = rej;
+    r.readAsDataURL(UPLOAD_FILE);
+  });
+  $("#uProgress").classList.remove("hidden");
+  $("#uResult").innerHTML = ""; $("#uGo").disabled = true;
+  showErr("");
+  try{
+    const r = await api("/v1/load", {method:"POST", body: JSON.stringify({
+      filename: UPLOAD_FILE.name, content_base64: b64,
+      as: $("#uAs").value, ruleset: $("#uRuleset").value,
+      owner: $("#uOwner").value, node: $("#uNode").value,
+      run_agents: $("#uAgents").checked, actor: me()})});
+    renderUpload(r);
+    loadStats(); loadHealth();
+  }catch(e){ showErr(e.message); }
+  finally{ $("#uProgress").classList.add("hidden"); $("#uGo").disabled = false; }
+}
+function renderUpload(r){
+  const kind = {rulebook:"справочник авиационных правил",
+                requirements:"документ с требованиями"}[r.kind] || "не определено";
+  let h = `<div class="box ${r.ok?"ok":"err"}">
+    <b>${esc(r.path)}</b> — ${esc(kind)}</div><ul class="steps">`;
+  h += r.steps.map(s=>`<li><span class="mk ${s.ok?"ok":"no"}">${s.ok?"✓":"✗"}</span>
+    <b>${esc(s.name)}:</b> ${esc(s.detail)}</li>`).join("");
+  h += `</ul>`;
+  if(r.warnings && r.warnings.length)
+    h += r.warnings.map(w=>`<div class="box warn">${esc(w)}</div>`).join("");
+  if(r.kind==="rulebook" && r.clauses_loaded)
+    h += `<div class="row"><button onclick="runAgent('classifier')">
+      Подобрать пункты требованиям в базе</button></div>`;
+  if(r.suggestions)
+    h += `<div class="row"><button class="primary" onclick="
+      document.querySelector('nav button[data-view=&quot;sugs&quot;]').click()">
+      Посмотреть ${r.suggestions} предложений</button></div>`;
+  $("#uResult").innerHTML = h;
+}
+async function loadEmb(){
+  try{
+    const d = await api("/v1/embeddings");
+    const cov = d.coverage || {};
+    let cls = d.status==="готова" ? "ok" : (d.external ? "err" : "warn");
+    let h = `<div class="box ${cls}">${esc(d.provider)}:${esc(d.model)} — ${esc(d.status)}</div>`;
+    h += `<div class="kv">
+      <div>тип</div><div>${d.external?"внешняя модель":"офлайн (hash)"}</div>
+      <div>адрес</div><div>${esc(d.base_url||"умолчание провайдера")}</div>
+      <div>размерность в схеме БД</div><div>${d.configured_dim}</div>
+      ${d.model_dim!=null?`<div>размерность модели</div><div>${d.model_dim}</div>`:""}
+      <div>пункты АП с векторами</div><div>${cov.clauses_indexed||0} из ${cov.clauses_total||0}</div>
+      <div>требования с векторами</div><div>${cov.requirements_indexed||0} из ${cov.requirements_total||0}</div>
+    </div>`;
+    if(d.error) h += `<div class="box err">${esc(d.error)}</div>`;
+    if(d.model_dim!=null && d.model_dim!==d.configured_dim)
+      h += `<div class="box err">Размерность модели (${d.model_dim}) не совпадает
+        со схемой БД (${d.configured_dim}). Колонка vector(dim) не меняется
+        на лету: задайте SAPS_EMBEDDING_DIM=${d.model_dim} и создайте схему заново.</div>`;
+    $("#embStatus").innerHTML = h;
   }catch(e){ showErr(e.message); }
 }
 

@@ -693,6 +693,37 @@ class Store:
                 f"UPDATE {self.s}.requirement SET tc_synced_at=now() WHERE id=%s",
                 (req_id,))
 
+    def clear_embeddings(self) -> dict[str, int]:
+        """Сбросить все векторы (смена модели эмбеддингов).
+
+        Векторы разных моделей лежат в РАЗНЫХ пространствах: косинус
+        между ними бессмысленен, и поиск начинает возвращать случайные
+        пункты — молча, без единой ошибки. Поэтому при смене модели
+        старые векторы обязаны быть сброшены и пересчитаны, а не
+        дополнены новыми.
+        """
+        c = self.conn.execute(
+            f"UPDATE {self.s}.rule_clause SET embedding=NULL "
+            "WHERE embedding IS NOT NULL")
+        r = self.conn.execute(
+            f"UPDATE {self.s}.requirement SET embedding=NULL "
+            "WHERE embedding IS NOT NULL")
+        return {"clauses": c.rowcount, "requirements": r.rowcount}
+
+    def embedding_coverage(self) -> dict[str, int]:
+        """Сколько объектов уже проиндексировано — для диагностики."""
+        def n(sql: str) -> int:
+            return int(self._scalar(sql) or 0)
+        return {
+            "clauses_total": n(f"SELECT COUNT(*) FROM {self.s}.rule_clause"),
+            "clauses_indexed": n(f"SELECT COUNT(*) FROM {self.s}.rule_clause "
+                                 "WHERE embedding IS NOT NULL"),
+            "requirements_total": n(f"SELECT COUNT(*) FROM {self.s}.requirement"),
+            "requirements_indexed": n(
+                f"SELECT COUNT(*) FROM {self.s}.requirement "
+                "WHERE embedding IS NOT NULL"),
+        }
+
     def stats(self) -> dict[str, Any]:
         def n(sql: str, args: tuple = ()) -> int:
             return int(self._scalar(sql, args) or 0)

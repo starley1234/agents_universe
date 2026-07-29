@@ -1,10 +1,11 @@
-.PHONY: help install test check init demo serve clean lint
+.PHONY: help install test check init demo load serve clean lint
 
 help:
 	@echo "make install — поставить зависимости (psycopg + pgserver для тестов)"
-	@echo "make test    — все тесты (436 проверок, ~12 с, embedded PostgreSQL)"
+	@echo "make test    — все тесты (555 проверок, ~11 с, embedded PostgreSQL)"
 	@echo "make check   — самопроверка окружения"
 	@echo "make init    — создать схему БД и загрузить справочники АП"
+	@echo "make load FILE=... — загрузить документ (PDF/Word/Excel)"
 	@echo "make demo    — сквозной сценарий на временной базе, без настройки"
 	@echo "make serve   — рабочее место инженера на localhost:8090"
 	@echo "make clean   — убрать временные файлы"
@@ -21,6 +22,7 @@ test:
 	@python3 tests/test_teamcenter.py
 	@python3 tests/test_config_export.py
 	@python3 tests/test_api.py
+	@python3 tests/test_pdf_autoload.py
 
 check:
 	@python3 -m saps check
@@ -30,6 +32,9 @@ init:
 
 demo:
 	@python3 tools/demo.py
+
+load:
+	@python3 -m saps load "$(FILE)"
 
 serve:
 	@python3 -m saps serve

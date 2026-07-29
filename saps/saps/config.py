@@ -102,6 +102,9 @@ class Config:
     embedding_base_url: str = ""
     embedding_api_key: str = ""
     embedding_timeout: int = 60
+    #: Сколько текстов слать одним запросом к внешней модели. Справочник
+    #: АП — сотни пунктов; по запросу на пункт индексация занимает минуты.
+    embedding_batch: int = 32
 
     # --- пороги качества требований (ТЗ п.3.2, Агент-Редактор) ---------
     #: Ниже этой оценки требование помечается как проблемное в индикаторе
@@ -208,6 +211,8 @@ class Config:
                                           self.embedding_api_key)
         self.embedding_timeout = _env_int("SAPS_EMBEDDING_TIMEOUT",
                                           self.embedding_timeout)
+        self.embedding_batch = _env_int("SAPS_EMBEDDING_BATCH",
+                                        self.embedding_batch)
 
         self.quality_min_score = _env_float("SAPS_QUALITY_MIN",
                                             self.quality_min_score)
@@ -234,6 +239,12 @@ class Config:
             raise ConfigError("classify_top_k должен быть >= 1")
         if self.embedding_dim < 8:
             raise ConfigError("embedding_dim слишком мал (минимум 8)")
+        if self.embedding_batch < 1:
+            raise ConfigError("embedding_batch должен быть >= 1")
+        if self.uses_external_embeddings() and not self.embedding_model:
+            raise ConfigError(
+                "Для внешней модели эмбеддингов нужно имя модели "
+                "(SAPS_EMBEDDING_MODEL) — сервер должен знать, что грузить.")
         if self.host not in ("127.0.0.1", "localhost") and not self.api_token:
             raise ConfigError(
                 f"host={self.host!r} — не localhost. Задайте SAPS_API_TOKEN: "
@@ -252,6 +263,11 @@ class Config:
                 "доказательствами) живёт в схеме БД. Пример: "
                 "SAPS_DB_DSN=postgresql://saps:saps@localhost:5432/saps")
         return self.db_dsn
+
+    def uses_external_embeddings(self) -> bool:
+        """Работает ли система с внешней (сетевой) моделью эмбеддингов."""
+        from .llm.embeddings import is_external
+        return is_external(self.embedding_provider)
 
     def effective_classify_min(self) -> float:
         """Порог классификатора с поправкой на шкалу эмбеддера.

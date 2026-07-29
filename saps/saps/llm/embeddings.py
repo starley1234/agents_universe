@@ -90,23 +90,43 @@ class HashEmbedder(BaseEmbedder):
         return out
 
 
+#: Сколько текстов отправлять одним запросом. Справочник АП — это
+#: сотни пунктов; по одному запросу на пункт загрузка занимает минуты и
+#: создаёт лишнюю нагрузку. Слишком большая пачка упирается в лимит
+#: тела запроса у сервера, поэтому 32 — компромисс, проверенный на
+#: LM Studio и OpenAI.
+DEFAULT_BATCH = 32
+
+
 class OpenAIEmbedder(BaseEmbedder):
-    """Любой сервер с OpenAI-совместимым /v1/embeddings."""
+    """Любой сервер с OpenAI-совместимым /v1/embeddings.
+
+    Покрывает внешнюю модель в любом виде: LM Studio на соседней
+    машине, vLLM/llama.cpp в контуре, Ollama в режиме /v1, облачный
+    OpenAI. Различаются только base_url и ключ.
+
+    ДВЕ ВЕЩИ, КОТОРЫХ НЕТ В НАИВНОЙ РЕАЛИЗАЦИИ И БЕЗ КОТОРЫХ БОЛЬНО:
+    пакетная отправка (иначе загрузка справочника на 400 пунктов — это
+    400 HTTP-запросов) и автоопределение размерности (иначе первая же
+    попытка проиндексировать данные падает на несовпадении с vector(dim)
+    в схеме БД).
+    """
 
     name = "openai"
 
     def __init__(self, dim: int, model: str, base_url: str,
-                 api_key: str = "", timeout: int = 60) -> None:
+                 api_key: str = "", timeout: int = 60,
+                 batch: int = DEFAULT_BATCH) -> None:
         super().__init__(dim)
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.batch = max(1, int(batch))
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        body = {"model": self.model, "input": list(texts)}
+    # --- транспорт ------------------------------------------------------
+    def _post(self, texts: list[str]) -> list[list[float]]:
+        body = {"model": self.model, "input": texts}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -119,45 +139,120 @@ class OpenAIEmbedder(BaseEmbedder):
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
+            hint = ""
+            if exc.code == 404:
+                hint = (f" Проверьте адрес: ожидается базовый URL с /v1, "
+                        f"запрос уходит на {self.base_url}/embeddings.")
+            elif exc.code in (401, 403):
+                hint = " Похоже на проблему с ключом (SAPS_EMBEDDING_API_KEY)."
+            elif exc.code == 400:
+                hint = (f" Часто это неверное имя модели "
+                        f"({self.model!r}) — сверьте его со списком "
+                        "загруженных моделей на сервере.")
             raise EmbeddingError(
-                f"HTTP {exc.code} от сервера эмбеддингов: {detail}") from exc
+                f"HTTP {exc.code} от сервера эмбеддингов "
+                f"{self.base_url}: {detail}.{hint}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise EmbeddingError(
-                f"Не достучались до {self.base_url}: {exc}") from exc
+                f"Не достучались до сервера эмбеддингов {self.base_url}: "
+                f"{exc}. Проверьте, что сервер запущен и доступен по сети "
+                "(SAPS_EMBEDDING_BASE_URL).") from exc
         except json.JSONDecodeError as exc:
-            raise EmbeddingError("Ответ сервера эмбеддингов не JSON") from exc
+            raise EmbeddingError(
+                f"Ответ {self.base_url} не является JSON") from exc
 
         try:
             items = sorted(data["data"], key=lambda d: d.get("index", 0))
-            vectors = [list(map(float, item["embedding"])) for item in items]
+            return [list(map(float, item["embedding"])) for item in items]
         except (KeyError, TypeError, ValueError) as exc:
             raise EmbeddingError(
                 f"Неожиданная структура ответа: {str(data)[:300]}") from exc
 
-        for v in vectors:
+    def probe_dim(self) -> int:
+        """Спросить у модели размерность вектора одним коротким запросом.
+
+        Нужно до создания схемы БД: колонка vector(dim) фиксируется
+        навсегда, и ошибиться здесь дороже, чем сделать один запрос.
+        """
+        vectors = self._post(["проверка размерности"])
+        if not vectors:
+            raise EmbeddingError(
+                "Сервер эмбеддингов вернул пустой ответ на пробный запрос")
+        return len(vectors[0])
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        out: list[list[float]] = []
+        chunk = list(texts)
+        for start in range(0, len(chunk), self.batch):
+            out.extend(self._post(chunk[start:start + self.batch]))
+
+        if len(out) != len(chunk):
+            raise EmbeddingError(
+                f"Сервер вернул {len(out)} векторов на {len(chunk)} текстов — "
+                "ответ неполный, данные индексировать нельзя.")
+        for v in out:
             if len(v) != self.dim:
                 raise EmbeddingError(
-                    f"Модель вернула вектор размерности {len(v)}, а схема БД "
-                    f"рассчитана на {self.dim}. Размерность фиксируется при "
-                    "создании схемы (vector(dim)) и не меняется на лету: "
-                    "задайте SAPS_EMBEDDING_DIM под вашу модель ДО первого "
-                    "запуска или создайте новую схему.")
-        return vectors
+                    f"Модель {self.model!r} вернула вектор размерности "
+                    f"{len(v)}, а схема БД рассчитана на {self.dim}. "
+                    "Размерность колонки vector(dim) фиксируется при создании "
+                    "схемы и не меняется на лету (ограничение pgvector).\n"
+                    f"Решение: задайте SAPS_EMBEDDING_DIM={len(v)} и создайте "
+                    "схему заново (saps init) либо используйте отдельную "
+                    "схему через SAPS_DB_SCHEMA.")
+        return out
+
+
+#: Провайдеры внешних (сетевых) моделей эмбеддингов.
+EXTERNAL_PROVIDERS = ("openai", "local", "lmstudio", "llamacpp", "vllm",
+                      "ollama", "external", "openai_like")
+
+#: Умолчания адреса по провайдеру. Ollama слушает 11434, LM Studio — 1234;
+#: подставлять один адрес для всех значило бы гарантированную ошибку
+#: соединения у половины пользователей.
+_DEFAULT_URLS = {
+    "openai": "https://api.openai.com/v1",
+    "ollama": "http://localhost:11434/v1",
+}
+_DEFAULT_LOCAL_URL = "http://localhost:1234/v1"
+
+
+def is_external(provider: str) -> bool:
+    return (provider or "hash").strip().lower() in EXTERNAL_PROVIDERS
 
 
 def build_embedder(provider: str, model: str, *, dim: int,
                    base_url: str = "", api_key: str = "",
-                   timeout: int = 60) -> BaseEmbedder:
+                   timeout: int = 60, batch: int = DEFAULT_BATCH
+                   ) -> BaseEmbedder:
     key = (provider or "hash").strip().lower()
     if key in ("hash", "offline", ""):
         return HashEmbedder(dim)
-    if key in ("openai", "local", "lmstudio", "llamacpp", "vllm", "ollama"):
-        url = base_url or ("https://api.openai.com/v1" if key == "openai"
-                           else "http://localhost:1234/v1")
-        return OpenAIEmbedder(dim, model, url, api_key, timeout)
+    if key in EXTERNAL_PROVIDERS:
+        url = base_url or _DEFAULT_URLS.get(key, _DEFAULT_LOCAL_URL)
+        return OpenAIEmbedder(dim, model, url, api_key, timeout, batch)
     raise EmbeddingError(
         f"Неизвестный провайдер эмбеддингов {provider!r}. Доступны: hash "
-        "(офлайн), openai, local/lmstudio/llamacpp/vllm/ollama.")
+        f"(офлайн), {', '.join(EXTERNAL_PROVIDERS)}.")
+
+
+def probe_embedding_dim(provider: str, model: str, *, base_url: str = "",
+                        api_key: str = "", timeout: int = 60) -> int:
+    """Узнать размерность внешней модели, не создавая схему БД.
+
+    Отдельная функция, потому что вызывается ДО того, как известна
+    размерность: build_embedder требует dim, а мы его как раз выясняем.
+    """
+    if not is_external(provider):
+        raise EmbeddingError(
+            f"Автоопределение размерности имеет смысл только для внешней "
+            f"модели; провайдер {provider!r} работает офлайн и его "
+            "размерность задаётся параметром.")
+    probe = build_embedder(provider, model, dim=1, base_url=base_url,
+                           api_key=api_key, timeout=timeout)
+    return probe.probe_dim()          # type: ignore[union-attr]
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:
