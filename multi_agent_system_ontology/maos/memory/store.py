@@ -345,6 +345,21 @@ class Store:
         keys = ("id", "workflow_id", "ord", "kind", "status", "input", "output", "error", "started", "finished")
         return [dict(zip(keys, r)) for r in cur.fetchall()]
 
+    def set_workflow_step(self, step_id: int, status: str, output: dict[str, Any] | None = None,
+                          error: str = "") -> bool:
+        if status not in self._STEP_STATUSES:
+            raise ValueError(f"Недопустимый статус шага: {status}")
+        now = self._now()
+        cur = self.conn.cursor()
+        fields = ["status=%s", "error=%s"]
+        values: list[Any] = [status, error]
+        if output is not None:
+            fields.append("output=%s::jsonb"); values.append(self._json(output))
+        if status == "running": fields.append("started=%s"); values.append(now)
+        if status in {"done", "failed", "skipped"}: fields.append("finished=%s"); values.append(now)
+        values.append(step_id); cur.execute(f"UPDATE workflow_step SET {', '.join(fields)} WHERE id=%s", values)
+        return bool(cur.rowcount)
+
     def add_artifact(self, workflow_id: int, kind: str, name: str, path: str,
                      mime_type: str = "application/octet-stream", size_bytes: int = 0,
                      meta: dict[str, Any] | None = None, step_id: int | None = None) -> int:
