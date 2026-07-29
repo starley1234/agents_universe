@@ -45,7 +45,8 @@ class HybridLLM:
         return self.cfg.default_local_model
 
     def chat(self, messages: list[dict], task: str,
-             agent_llm_ref: str = "") -> HybridReply:
+             agent_llm_ref: str = "",
+             tools: list[dict] | None = None) -> HybridReply:
         primary_ref = self.choose_ref(task, agent_llm_ref)
         overrides = {"retries": self.cfg.llm_retries,
                     "retry_base": self.cfg.llm_retry_base}
@@ -54,17 +55,18 @@ class HybridLLM:
         except LLMError:
             # неизвестный провайдер в конфиге агента — сразу пробуем
             # дефолтную локальную, это ошибка конфигурации, а не сети
-            return self._fallback(messages, primary_ref, None)
+            return self._fallback(messages, primary_ref, None, tools)
         try:
-            reply = llm.chat(messages)
+            reply = llm.chat(messages, tools)
             return HybridReply(reply, primary_ref, used_fallback=False)
         except LLMError as exc:
             if not self.cfg.fallback_to_local:
                 raise
-            return self._fallback(messages, primary_ref, exc)
+            return self._fallback(messages, primary_ref, exc, tools)
 
     def _fallback(self, messages: list[dict], primary_ref: str,
-                  cause: LLMError | None) -> HybridReply:
+                  cause: LLMError | None,
+                  tools: list[dict] | None = None) -> HybridReply:
         local_ref = self.cfg.default_local_model
         provider, _ = parse_model_ref(primary_ref) if "::" in primary_ref else ("", "")
         if provider == "local" or local_ref == primary_ref:
@@ -75,7 +77,7 @@ class HybridLLM:
         try:
             llm = build_from_ref(local_ref, retries=self.cfg.llm_retries,
                                  retry_base=self.cfg.llm_retry_base)
-            reply = llm.chat(messages)
+            reply = llm.chat(messages, tools)
             return HybridReply(reply, local_ref, used_fallback=True)
         except LLMError as exc2:
             raise LLMError(

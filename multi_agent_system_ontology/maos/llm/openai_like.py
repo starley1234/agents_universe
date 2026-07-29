@@ -2,9 +2,12 @@
 
 Покрывает local (llama.cpp server / vLLM / LM Studio / Ollama в режиме
 /v1), openai и openrouter — все различаются только base_url/ключом.
-MAOS-агенты НЕ вызывают инструменты через LLM tool-calls (см. docstring
-maos/llm/base.py) — оркестрация детерминированная, поэтому здесь нет
-части протокола про tools/tool_choice, только простой chat.
+Поддерживает tool-calling (function calling) — MAOS-агенты, которым
+назначены инструменты (agent.tools в БД, см. maos/agents/toolbox.py),
+работают циклом "модель -> инструмент -> модель"
+(maos/agents/runtime.py), как agent_system; агенты без инструментов
+используют тот же драйвер с tools=None и получают обычный текстовый
+ответ без изменений в поведении.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .base import BaseLLM, LLMError, LLMReply, Usage
+from .base import BaseLLM, LLMError, LLMReply, ToolCall, Usage
 
 
 class OpenAILike(BaseLLM):
@@ -34,12 +37,20 @@ class OpenAILike(BaseLLM):
         self.timeout = timeout
         self.temperature = temperature
 
-    def _chat_once(self, messages: list[dict[str, Any]]) -> LLMReply:
+    @staticmethod
+    def _tools_payload(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{"type": "function", "function": t} for t in tools]
+
+    def _chat_once(self, messages: list[dict[str, Any]],
+                   tools: list[dict[str, Any]] | None = None) -> LLMReply:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
         }
+        if tools:
+            body["tools"] = self._tools_payload(tools)
+            body["tool_choice"] = "auto"
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
@@ -71,16 +82,22 @@ class OpenAILike(BaseLLM):
             msg = data["choices"][0]["message"]
         except (KeyError, IndexError) as exc:
             raise LLMError(f"Неожиданная структура ответа: {str(data)[:300]}") from exc
-        text = (msg.get("content") or "").strip()
-        if not text:
-            # reasoning-модели (DeepSeek-R1, Qwen thinking и т.п.) иногда
-            # кладут текст в reasoning_content, оставляя content пустым.
-            for key in ("reasoning_content", "reasoning", "thinking"):
-                alt = msg.get(key)
-                if isinstance(alt, str) and alt.strip():
-                    text = alt.strip()
-                    break
-        return LLMReply(text=text, usage=_usage_from(data), raw=data)
+
+        calls: list[ToolCall] = []
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except json.JSONDecodeError:
+                args = {"__raw__": raw_args}
+            calls.append(
+                ToolCall(id=tc.get("id", f"call_{len(calls)}"),
+                         name=fn.get("name", ""), arguments=args)
+            )
+        text, from_reasoning = cls._text_parts(msg)
+        return LLMReply(text=text, tool_calls=calls, from_reasoning=from_reasoning,
+                        usage=_usage_from(data), raw=data)
 
 
 def _usage_from(data: dict[str, Any]) -> Usage:

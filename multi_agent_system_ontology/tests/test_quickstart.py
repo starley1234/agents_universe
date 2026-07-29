@@ -118,6 +118,8 @@ def main() -> int:
                      row is not None and row["name"] == spec.name)
                 check(f"агент {spec.slug} получил llm_ref по умолчанию из cfg",
                      row["llm_ref"] == cfg.default_local_model)
+                check(f"агент {spec.slug} получил свои навыки (tools)",
+                     row["tools"] == spec.tools)
 
             section("demo_agents_status: после посева всё присутствует")
             status1 = demo_agents_status(store)

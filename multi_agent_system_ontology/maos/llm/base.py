@@ -5,6 +5,12 @@
 `local::llama3` или `openrouter::anthropic/claude-3` (см. parse_model_ref
 в maos/llm/registry.py). Здесь — только протокол драйвера и то, что
 общее для всех: учёт токенов и повтор при временном сбое сети.
+
+Tool-calling: агент MAOS МОЖЕТ вызывать инструменты (файлы, веб-поиск,
+RAG и т.п.) — см. maos/agents/runtime.py и maos/agents/toolbox.py. Это
+ОПЦИОНАЛЬНАЯ способность конкретной личности (поле agent.tools в БД);
+агент без инструментов работает как раньше — чистый синтезатор ответа
+без цикла "модель -> инструмент -> модель".
 """
 from __future__ import annotations
 
@@ -30,13 +36,29 @@ class Usage:
 
 
 @dataclass
+class ToolCall:
+    """Запрос модели на вызов инструмента."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
 class LLMReply:
-    """Ответ модели: чистый текст (агенты MAOS не вызывают tool-calls на
-    уровне LLM — оркестрация детерминированная, см. maos/orchestrator/)."""
+    """Ответ модели: текст и/или список запросов на вызов инструментов."""
 
     text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
+    #: текст взят из reasoning_content, а content был пуст — см. core.py
+    #: agent_system, тот же класс проблемы с reasoning-моделями.
+    from_reasoning: bool = False
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def wants_tools(self) -> bool:
+        return bool(self.tool_calls)
 
 
 class LLMError(RuntimeError):
@@ -78,15 +100,17 @@ class BaseLLM:
         self.retried = 0
         self.on_retry: Callable[[int, str, float], None] | None = None
 
-    def _chat_once(self, messages: list[dict[str, Any]]) -> LLMReply:
+    def _chat_once(self, messages: list[dict[str, Any]],
+                   tools: list[dict[str, Any]] | None = None) -> LLMReply:
         raise NotImplementedError
 
-    def chat(self, messages: list[dict[str, Any]]) -> LLMReply:
+    def chat(self, messages: list[dict[str, Any]],
+             tools: list[dict[str, Any]] | None = None) -> LLMReply:
         """Вызов с повтором при временных сбоях (растущая пауза 2/4/8с)."""
         last: LLMError | None = None
         for attempt in range(self.retries + 1):
             try:
-                reply = self._chat_once(messages)
+                reply = self._chat_once(messages, tools)
                 self.calls += 1
                 self.usage = self.usage + reply.usage
                 return reply
@@ -109,6 +133,20 @@ class BaseLLM:
         if not self.billable:
             return 0.0
         return None  # цены не встроены в MAOS — учитывается provider::model в БД
+
+    @staticmethod
+    def _text_parts(msg: dict[str, Any]) -> tuple[str, bool]:
+        """Текст и признак «взят из reasoning». reasoning-модели (DeepSeek-R1,
+        Qwen thinking и т.п.) иногда кладут рассуждение в reasoning_content,
+        оставляя content пустым."""
+        text = (msg.get("content") or "").strip()
+        if text:
+            return text, False
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            alt = msg.get(key)
+            if isinstance(alt, str) and alt.strip():
+                return alt.strip(), True
+        return "", False
 
     def __repr__(self) -> str:  # pragma: no cover - диагностика
         return f"<{type(self).__name__} model={self.model!r}>"

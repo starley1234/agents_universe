@@ -2,7 +2,7 @@
 
 help:
 	@echo "make quickstart  — ОДНА команда: embedded Postgres + демо-агенты + сервер"
-	@echo "make test        — все тесты (348 проверок, нужен PostgreSQL/pgserver)"
+	@echo "make test        — все тесты (437 проверок, нужен PostgreSQL/pgserver)"
 	@echo "make check       — самопроверка окружения (импорт, конфиг)"
 	@echo "make serve       — поднять HTTP API/дашборд на localhost:8090 (нужен DB_DSN)"
 	@echo "make maintenance — один цикл фонового обслуживания вручную"
@@ -21,6 +21,9 @@ test:
 	@python3 tests/test_api.py
 	@python3 tests/test_quickstart.py
 	@python3 tests/test_dashboard.py
+	@python3 tests/test_tools.py
+	@python3 tests/test_rag.py
+	@python3 tests/test_agent_tools_loop.py
 
 check:
 	@python3 -c "import maos.config, maos.memory.store, maos.orchestrator.service; \

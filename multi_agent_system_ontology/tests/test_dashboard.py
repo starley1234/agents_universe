@@ -89,9 +89,15 @@ def main() -> int:
 
     section("dashboard.html: элементы управления агентами/чатом/цепочками/графом")
     for element_id in ("a-save", "a-slug", "a-name", "a-desc", "a-prompt",
-                       "c-send", "c-input", "c-agent", "ch-start", "ch-goal",
-                       "ch-agents", "graphCanvas", "statsGrid", "modelsTable"):
+                       "a-tools", "c-send", "c-input", "c-agent", "ch-start",
+                       "ch-goal", "ch-agents", "graphCanvas", "statsGrid",
+                       "modelsTable"):
         check(f"элемент #{element_id} присутствует", f'id="{element_id}"' in html)
+
+    section("dashboard.html: TTS-озвучка ответа в чате")
+    check("вызывает /v1/tts/speak", "/v1/tts/speak" in html)
+    check("функция speakText объявлена", "function speakText" in html)
+    check("кнопка озвучки привязана к ответу агента", "data-speak" in html)
 
     section("dashboard.html: встроенный JS синтаксически корректен")
     node = shutil.which("node")

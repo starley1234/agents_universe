@@ -5,11 +5,10 @@
 часть архитектурных идей позаимствованы осознанно (см. `agent_system/`
 для сравнения), код и версионирование — отдельные.
 
-Система про несколько именованных **агентов-личностей** (не один
-инструментальный агент), которые:
+Система про несколько именованных **агентов-личностей**, которые:
 
 - хранятся как записи в **обязательной** PostgreSQL + pgvector базе
-  (identity, голос, LLM-привязка, системный промпт);
+  (identity, голос, LLM-привязка, системный промпт, набор навыков);
 - выбираются под запрос **семантическим роутером** — векторным поиском
   по описаниям, без обращения к LLM для самого решения "кто отвечает";
 - пользуются **гибридным LLM-роутингом**: локальная модель по
@@ -19,6 +18,12 @@
   экстренной суммаризацией при маленьком окне модели), mid-term
   "кванты памяти" (вопрос-ответ + вектор + метка `provider::model`),
   long-term граф сущностей и связей;
+- ОПЦИОНАЛЬНО умеют вызывать **инструменты** (файлы, веб-поиск, RAG,
+  создание офисных документов) — циклом «модель -> инструмент ->
+  модель», как в `agent_system`; агент без назначенных навыков
+  остаётся чистым синтезатором ответа, как и было в исходном ТЗ;
+- умеют **говорить** — реальный TTS-клиент OmniVoice для голосового
+  ответа личности;
 - периодически проходят **фоновое обслуживание** ("Deep Thinking"):
   дистилляция старых диалогов, дедупликация квантов памяти, слияние
   дублей графа.
@@ -36,6 +41,9 @@
   устанавливать PostgreSQL вручную НЕ нужно — см. ниже.
 - `pip install -r requirements.txt` (`psycopg[binary]`, `pgserver` —
   embedded PostgreSQL, нужен и для тестов, и для `make quickstart`).
+- `pip install -r requirements-optional.txt` — только если агенту нужен
+  навык `office` (создание Word/Excel/PowerPoint). Остальные навыки
+  (`files`/`web`/`rag`) работают на голой stdlib.
 
 ## Режим быстрого старта — одна команда, без установки PostgreSQL
 
@@ -80,7 +88,7 @@ cp .env.example .env
 # DB_DSN=postgresql://maos:maos@localhost:5432/maos
 
 export $(grep -v '^#' .env | xargs)   # или используйте python-dotenv
-make test       # 348 проверок — нужен pgserver (embedded Postgres для тестов)
+make test       # 437 проверок — нужен pgserver (embedded Postgres для тестов)
 make serve      # http://127.0.0.1:8090/dashboard
 ```
 
@@ -211,6 +219,8 @@ GET  /v1/chains                — история цепочек
 POST /v1/maintenance/run       — один цикл фонового обслуживания вручную
 GET  /v1/onboarding/status     — пуста ли база / каких демо-агентов не хватает
 POST /v1/onboarding/seed       — создать демо-агентов (идемпотентно)
+GET  /v1/tts/voices            — список голосов сервера TTS
+POST /v1/tts/speak             — {"text","voice"?,"agent_slug"?} -> аудио
 ```
 
 Токен: если задан `MAOS_API_TOKEN`, все маршруты кроме `/health` и
@@ -242,14 +252,79 @@ POST /v1/onboarding/seed       — создать демо-агентов (ид�
 обновляется каждые 15 секунд без перезагрузки страницы. Токен
 запрашивается один раз в поле шапки и применяется ко всем запросам.
 
-## TTS (ТЗ п.8) — только интерфейс в этой сборке
+## Навыки и инструменты агентов
 
-`maos/tts/provider.py` даёт конфигурацию (`agent.voice_provider`,
-`agent.voice_id`, переменная `TTS_PROVIDER`) и фабрику
-`build_tts_provider(...)`, но **реальная генерация звука через внешние
-API (OpenAI TTS/ElevenLabs/Piper) не реализована** — осознанный
-технический долг, см. docstring модуля. `synthesize()` кидает понятную
-ошибку вместо тихой заглушки.
+Агенту можно назначить набор навыков полем `agent.tools` (через запятую:
+`files,web,office,rag`) — тогда ход диалога с ним выполняется циклом
+«модель -> инструмент -> модель» (`maos/agents/loop.py`), перенесённым
+и адаптированным из `agent_system/agent/core.py`. Агент без `tools`
+остаётся чистым синтезатором ответа — поведение не меняется.
+
+- **files** (`maos/tools/files.py`) — чтение/запись/точечная правка/
+  поиск в СВОЕЙ изолированной рабочей папке (`workspace_root/<slug>`,
+  та же защита от выхода за пределы через `..`/симлинки, что в
+  `agent_system/agent/tools/base.py:Workspace`). Разные агенты не видят
+  файлы друг друга.
+- **web** (`maos/tools/web.py`) — поиск (DuckDuckGo/SearXNG) и загрузка
+  страниц с защитой от SSRF (резолвинг хоста и проверка на приватные/
+  служебные адреса перед каждым запросом и каждым редиректом), без
+  единой pip-зависимости.
+- **office** (`maos/tools/office_docs.py`) — создание Word/Excel/
+  PowerPoint из markdown/JSON (`python-docx`/`openpyxl`/`python-pptx`,
+  ленивый импорт).
+- **rag** (`maos/skills/rag.py`) — индексация текста и гибридный поиск
+  (векторный через pgvector + полнотекстовый через `tsvector`) на той
+  же PostgreSQL-базе, что и остальная память MAOS; включая RAG на
+  онтологии (`rag_query_entity` — поиск по фрагментам, привязанным к
+  конкретному объекту графа).
+
+Лимит шагов вызова инструментов на ОДИН ход диалога — `max_tool_steps`
+(по умолчанию 8): без него агент со сломанной моделью мог бы звать
+инструменты бесконечно на каждое сообщение.
+
+## TTS: реальный клиент OmniVoice (ТЗ п.8)
+
+`maos/tts/provider.py` — рабочий HTTP-клиент OmniVoice Official API:
+
+```
+POST {TTS_BASE_URL}/tts/v1/synthesize   {"text","voice","audio_format"}
+GET  {TTS_BASE_URL}/voices
+```
+
+Настройка:
+
+```bash
+TTS_PROVIDER=omnivoice
+TTS_BASE_URL=http://localhost:9000     # адрес вашего сервера OmniVoice
+TTS_API_KEY=                           # если сервер требует ключ
+TTS_AUDIO_FORMAT=mp3                   # mp3 | wav | ogg | opus | flac
+```
+
+Голос конкретного агента — поля `voice_provider`/`voice_id` в его
+профиле. HTTP API:
+
+```
+GET  /v1/tts/voices                 — список голосов сервера
+POST /v1/tts/speak                  — {"text","voice"?,"agent_slug"?}
+                                       -> БИНАРНЫЙ аудио-ответ
+                                       (Content-Type: audio/*)
+```
+
+Если `voice` не передан явно, но передан `agent_slug` — используется
+голос, настроенный для этого агента. В дашборде под каждым ответом
+агента в чате есть кнопка «🔊 озвучить», проигрывающая аудио прямо в
+браузере.
+
+Спецификация OmniVoice не фиксирует схему ответа `/tts/v1/synthesize`
+(`schema: {}` в OpenAPI) — клиент поддерживает оба реалистичных
+варианта: сырые аудио-байты (`Content-Type: audio/*`) и JSON-обёртку
+(`audio_base64`/`url`), определяя формат по фактическому Content-Type
+ответа, а не по документации.
+
+OpenAI TTS/ElevenLabs/Piper остаются НЕ РЕАЛИЗОВАННЫМИ — только
+интерфейс и конфигурация (нет согласованной спецификации для них в этой
+сессии); `synthesize()` кидает `NotImplementedError` с понятным
+сообщением вместо тихой заглушки.
 
 ## Структура проекта
 
@@ -257,32 +332,40 @@ API (OpenAI TTS/ElevenLabs/Piper) не реализована** — осозна
 maos/
   config.py            — Config: DB_DSN обязателен, provider::model, память
   memory/store.py       — PostgreSQL+pgvector: agent/conversation/message/
-                          memory_quantum/onto_entity/onto_relation/chain_*
-  llm/                  — base-протокол, OpenAI-совместимый драйвер,
-                          реестр provider::model, эмбеддинги (hash/openai)
+                          memory_quantum/onto_entity/onto_relation/chain_*/
+                          doc_chunk (фрагменты для rag)
+  llm/                  — base-протокол (+ tool-calling), OpenAI-совместимый
+                          драйвер, реестр provider::model, эмбеддинги
   orchestrator/
     hybrid.py            — гибридный роутинг + fallback
     context.py           — short/mid-term контроль контекста
     router.py            — semantic router (векторный, без LLM)
     service.py           — Orchestrator: полный цикл /v1/chat
     chain.py             — ChainRunner: детерминированная цепочка
-  agents/runtime.py      — AgentRuntime: один ход диалога от лица агента
+  agents/
+    runtime.py           — AgentRuntime: ход диалога, с опциональным
+                          инструментальным циклом (если у агента есть tools)
+    loop.py              — run_tool_loop: цикл «модель -> инструмент -> модель»
+  tools/                — files/web/office_docs (перенос из agent_system),
+                          base.py (Tool/Workspace/ToolRegistry), toolbox.py
+                          (сборка набора по agent.tools, изоляция workspace)
+  skills/rag.py          — индексация + гибридный поиск (векторный + FTS)
   maintenance/           — distill/dedup/synthesize_graph, run_forever
   maintenance_runner.py  — CLI: python3 -m maos.maintenance_runner [--once]
   demo_seed.py            — идемпотентный посев демо-агентов (быстрый старт)
   quickstart.py           — CLI: python3 -m maos.quickstart (embedded Postgres)
-  tts/provider.py        — интерфейс TTS (без реализации звука)
+  tts/provider.py        — РЕАЛЬНЫЙ клиент OmniVoice + интерфейс остальных
   api/server.py          — HTTP API на stdlib (без внешних зависимостей)
-  web/dashboard.html      — Admin Panel + Chat UI + Graph Visualization,
-                          с приветственным онбордингом для пустой базы
-tests/                   — 348 проверок, реальный embedded Postgres+pgvector
+  web/dashboard.html      — Admin Panel + Chat UI (с озвучкой ответов) +
+                          Graph Visualization, приветственный онбординг
+tests/                   — 437 проверок, реальный embedded Postgres+pgvector
                           (pgserver) и реальные HTTP-серверы, без моков
 ```
 
 ## Тесты
 
 ```bash
-make test   # 348 проверок, ~10 секунд
+make test   # 437 проверок, ~20 секунд
 ```
 
 Философия тестов — как в `agent_system`: реальная инфраструктура

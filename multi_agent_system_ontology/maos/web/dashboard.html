@@ -192,11 +192,15 @@
     <div class="two-col">
       <div class="field"><label>Голос: провайдер</label>
         <select id="a-voice-provider">
-          <option value="">none</option><option value="openai">openai</option>
+          <option value="">none</option><option value="omnivoice">omnivoice</option>
+          <option value="openai">openai</option>
           <option value="elevenlabs">elevenlabs</option><option value="piper">piper</option>
         </select></div>
       <div class="field"><label>Голос: id</label><input id="a-voice-id" type="text" placeholder="alloy"></div>
     </div>
+    <div class="field"><label>Навыки (инструменты)</label>
+      <input id="a-tools" type="text" placeholder="files,web">
+      <span class="hint">через запятую: files, web, office, rag — пусто = агент без инструментов (только синтез ответа)</span></div>
     <div class="field"><label>Системный промпт</label>
       <textarea id="a-prompt" placeholder="Ты полезный ассистент..." style="min-height:100px"></textarea></div>
     <div class="row">
@@ -454,6 +458,7 @@ async function loadAgents(){
             <span>slug: <code>${esc(a.slug)}</code></span>
             <span>LLM: <code>${esc(a.llm_ref) || 'дефолт'}</code></span>
             <span>голос: ${a.voice_provider ? esc(a.voice_provider) : '<span class="muted">нет</span>'}</span>
+            <span>навыки: ${a.tools ? a.tools.split(',').map(t=>`<span class="tag">${esc(t.trim())}</span>`).join('') : '<span class="muted">нет</span>'}</span>
           </div>
         </div>
         <div class="actions">
@@ -488,6 +493,7 @@ async function editAgent(slug){
     document.getElementById('a-voice-provider').value = a.voice_provider;
     document.getElementById('a-voice-id').value = a.voice_id;
     document.getElementById('a-llm-ref').value = a.llm_ref;
+    document.getElementById('a-tools').value = a.tools;
     document.getElementById('a-prompt').value = a.system_prompt;
     document.getElementById('a-cancel').classList.remove('hidden');
     document.getElementById('a-msg').textContent = '';
@@ -499,7 +505,7 @@ function resetAgentForm(){
   document.getElementById('agentFormTitle').textContent = 'Создать агента';
   document.getElementById('a-slug').disabled = false;
   document.getElementById('a-cancel').classList.add('hidden');
-  ['a-slug','a-name','a-desc','a-keywords','a-avatar','a-voice-id','a-llm-ref','a-prompt']
+  ['a-slug','a-name','a-desc','a-keywords','a-avatar','a-voice-id','a-llm-ref','a-tools','a-prompt']
     .forEach(id=>document.getElementById(id).value='');
   document.getElementById('a-voice-provider').value = '';
 }
@@ -527,6 +533,7 @@ document.getElementById('a-save').addEventListener('click', async ()=>{
     voice_provider: document.getElementById('a-voice-provider').value,
     voice_id: document.getElementById('a-voice-id').value,
     llm_ref: document.getElementById('a-llm-ref').value,
+    tools: document.getElementById('a-tools').value,
     system_prompt: document.getElementById('a-prompt').value,
   };
   try{
@@ -581,14 +588,19 @@ async function sendChatMessage(){
     const agDiv = document.createElement('div');
     agDiv.className = 'chat-msg agent';
     agDiv.style.borderLeft = `3px solid ${colorFor(data.agent_slug)}`;
+    const answerId = 'ans-' + Math.random().toString(36).slice(2, 9);
     agDiv.innerHTML = `<div class="meta">
         <b style="color:${colorFor(data.agent_slug)}">${esc(data.agent_slug)}</b>
         <code>${esc(data.provider_model)}</code>
         <span class="muted">роутинг: ${esc(data.route_method)}</span>
         ${data.used_fallback ? '<span class="fallback">⚠ fallback на локальную модель</span>' : ''}
-      </div>${esc(data.answer)}`;
+        <span class="clickable" data-speak="${data.agent_slug}" data-target="${answerId}">🔊 озвучить</span>
+      </div><span id="${answerId}">${esc(data.answer)}</span>`;
     log.appendChild(agDiv);
     log.scrollTop = log.scrollHeight;
+    agDiv.querySelector('[data-speak]')?.addEventListener('click', (ev)=>{
+      speakText(document.getElementById(answerId).textContent, ev.target.dataset.speak, ev.target);
+    });
   }catch(e){
     const errDiv = document.createElement('div');
     errDiv.className = 'err-box';
@@ -602,6 +614,29 @@ document.getElementById('c-send').addEventListener('click', sendChatMessage);
 document.getElementById('c-input').addEventListener('keydown', (e)=>{
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendChatMessage(); }
 });
+async function speakText(text, agentSlug, triggerEl){
+  const original = triggerEl.textContent;
+  triggerEl.textContent = '⏳ синтез…';
+  try{
+    const headers = {'Content-Type':'application/json'};
+    const t = token();
+    if (t) headers['Authorization'] = 'Bearer ' + t;
+    const res = await fetch('/v1/tts/speak', {method:'POST', headers,
+      body: JSON.stringify({text, agent_slug: agentSlug})});
+    if (!res.ok){
+      const err = await res.json().catch(()=>({}));
+      throw new Error(err.error || ('HTTP ' + res.status));
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.play();
+    triggerEl.textContent = original;
+  }catch(e){
+    triggerEl.textContent = original;
+    showToast('TTS: ' + e.message);
+  }
+}
 
 // ------------------------------------------------------------------- chain
 async function loadChainView(){

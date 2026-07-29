@@ -28,11 +28,15 @@ class DemoAgentSpec:
     description: str
     keywords: str
     system_prompt: str
+    tools: str = ""
 
 
 #: Три личности, покрывающие разные роли — специально с непересекающейся
 #: лексикой в description/keywords, чтобы semantic router и keyword-
-#: фолбэк уверенно различали их даже на офлайн hash-эмбеддере.
+#: фолбэк уверенно различали их даже на офлайн hash-эмбеддере. Каждой
+#: назначен характерный навык — чтобы после `make quickstart` сразу было
+#: видно, что MAOS-агенты умеют не только синтезировать текст, но и
+#: реально работать с файлами/вебом/памятью через инструментальный цикл.
 DEMO_AGENTS: tuple[DemoAgentSpec, ...] = (
     DemoAgentSpec(
         slug="coder",
@@ -44,6 +48,7 @@ DEMO_AGENTS: tuple[DemoAgentSpec, ...] = (
                        "по существу, приводи рабочий код, объясняй "
                        "решения кратко. Если задача неоднозначна — "
                        "уточни детали, а не додумывай."),
+        tools="files",
     ),
     DemoAgentSpec(
         slug="writer",
@@ -55,6 +60,7 @@ DEMO_AGENTS: tuple[DemoAgentSpec, ...] = (
                        "Пиши ясно, живо, без канцелярита. Подстраивай "
                        "тон под задачу: деловой для писем, яркий для "
                        "рекламы."),
+        tools="web",
     ),
     DemoAgentSpec(
         slug="analyst",
@@ -65,6 +71,7 @@ DEMO_AGENTS: tuple[DemoAgentSpec, ...] = (
         system_prompt=("Ты аналитик данных. Опирайся на цифры и факты, "
                        "явно указывай допущения, если данных не хватает "
                        "— так и скажи, не додумывай числа."),
+        tools="rag",
     ),
 )
 
@@ -94,7 +101,8 @@ def seed_demo_agents(store: Store, cfg: Config,
         store.create_agent(
             spec.slug, spec.name, description=spec.description,
             keywords=spec.keywords, llm_ref=cfg.default_local_model,
-            system_prompt=spec.system_prompt, description_embedding=emb)
+            system_prompt=spec.system_prompt, tools=spec.tools,
+            description_embedding=emb)
         created.append(spec.slug)
     return created
 

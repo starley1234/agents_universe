@@ -6,7 +6,8 @@
 
 Схема:
   agent            — личность агента: identity, voice, LLM-привязка,
-                      системный промпт, эмбеддинг описания (для роутинга)
+                      системный промпт, эмбеддинг описания (для роутинга),
+                      список навыков (tools) для инструментального цикла
   conversation      — диалог (может быть мультиагентным)
   message           — одно сообщение диалога: кто сказал, какой моделью,
                       сколько токенов — экономика оплачивается прозрачно
@@ -15,6 +16,9 @@
   onto_relation     — long-term граф: связь между сущностями
   chain_run         — детерминированная ручная цепочка Agent_A -> Agent_B
   chain_step        — один шаг цепочки (аналог pipeline_stage в agent_system)
+  doc_chunk         — фрагменты документов для навыка rag (перенесён из
+                      agent_system/agent/skills/rag.py) с векторным и
+                      полнотекстовым поиском
 
 Импорт psycopg — ленивый (внутри Store.__init__), чтобы модуль
 импортировался даже без установленного пакета (для генерации схемы/CLI
@@ -92,6 +96,7 @@ class Store:
                 voice_id TEXT DEFAULT '',
                 llm_ref TEXT DEFAULT '',      -- provider::model, '' = глобальный дефолт
                 system_prompt TEXT DEFAULT '',
+                tools TEXT DEFAULT '',        -- через запятую: files,web,rag,office
                 description_embedding VECTOR({dim}),
                 enabled BOOLEAN DEFAULT TRUE,
                 created DOUBLE PRECISION,
@@ -194,6 +199,24 @@ class Store:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS ix_chain_step_run "
             "ON chain_step(chain_run_id, ord)")
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS doc_chunk(
+                id SERIAL PRIMARY KEY,
+                source TEXT NOT NULL,
+                ord INTEGER DEFAULT 0,
+                text TEXT NOT NULL,
+                entity_refs JSONB DEFAULT '[]',
+                embedding VECTOR({dim}),
+                tsv TSVECTOR,
+                created DOUBLE PRECISION
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_doc_chunk_source "
+            "ON doc_chunk(source, ord)")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_doc_chunk_tsv "
+            "ON doc_chunk USING GIN(tsv)")
 
     @staticmethod
     def _vec(v: list[float] | None) -> str | None:
@@ -208,23 +231,24 @@ class Store:
                      keywords: str = "", avatar: str = "",
                      voice_provider: str = "", voice_id: str = "",
                      llm_ref: str = "", system_prompt: str = "",
+                     tools: str = "",
                      description_embedding: list[float] | None = None) -> int:
         now = self._now()
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO agent(slug,name,description,keywords,avatar,"
-            "voice_provider,voice_id,llm_ref,system_prompt,"
+            "voice_provider,voice_id,llm_ref,system_prompt,tools,"
             "description_embedding,created,updated) "
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (slug, name, description, keywords, avatar, voice_provider,
-             voice_id, llm_ref, system_prompt,
+             voice_id, llm_ref, system_prompt, tools,
              self._vec(description_embedding), now, now))
         return int(cur.fetchone()[0])
 
     def update_agent(self, slug: str, **fields: Any) -> bool:
         allowed = {"name", "description", "keywords", "avatar",
                   "voice_provider", "voice_id", "llm_ref", "system_prompt",
-                  "enabled"}
+                  "tools", "enabled"}
         emb = fields.pop("description_embedding", None)
         sets, params = [], []
         for k, v in fields.items():
@@ -251,7 +275,7 @@ class Store:
 
     _AGENT_COLS = ("id", "slug", "name", "description", "keywords", "avatar",
                   "voice_provider", "voice_id", "llm_ref", "system_prompt",
-                  "enabled", "created", "updated")
+                  "tools", "enabled", "created", "updated")
 
     def _agent_row(self, row: tuple) -> dict[str, Any]:
         return dict(zip(self._AGENT_COLS, row))
@@ -642,6 +666,89 @@ class Store:
             "UPDATE chain_run SET status=%s, updated=%s, finished=%s WHERE id=%s",
             (status, now, now, chain_run_id))
 
+    # ------------------------------------------------------- doc_chunk (RAG)
+    def add_chunks(self, source: str, texts: list[str],
+                  embeddings: list[list[float] | None] | None = None,
+                  entity_refs: list[tuple[str, str]] | None = None) -> list[int]:
+        """Индексирует source: заменяет ВСЕ старые фрагменты этого источника
+        новыми (переиндексация обновлённого документа не плодит дублей)."""
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM doc_chunk WHERE source=%s", (source,))
+        refs = json.dumps([list(r) for r in (entity_refs or [])], ensure_ascii=False)
+        embs = embeddings or [None] * len(texts)
+        ids: list[int] = []
+        now = self._now()
+        for i, (text, emb) in enumerate(zip(texts, embs)):
+            cur.execute(
+                "INSERT INTO doc_chunk(source,ord,text,entity_refs,embedding,"
+                "tsv,created) VALUES(%s,%s,%s,%s,%s,to_tsvector('simple',%s),%s) "
+                "RETURNING id",
+                (source, i, text, refs, self._vec(emb), text, now))
+            ids.append(int(cur.fetchone()[0]))
+        return ids
+
+    def semantic_search_chunks(self, embedding: list[float], limit: int = 6,
+                               source: str | None = None) -> list[dict[str, Any]]:
+        cur = self.conn.cursor()
+        vec = self._vec(embedding)
+        if source:
+            cur.execute("""
+                SELECT source, ord, text, entity_refs,
+                       1 - (embedding <=> %s) AS score
+                FROM doc_chunk WHERE embedding IS NOT NULL AND source=%s
+                ORDER BY embedding <=> %s LIMIT %s
+            """, (vec, source, vec, limit))
+        else:
+            cur.execute("""
+                SELECT source, ord, text, entity_refs,
+                       1 - (embedding <=> %s) AS score
+                FROM doc_chunk WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s LIMIT %s
+            """, (vec, vec, limit))
+        return [{"source": s, "ord": o, "text": t, "entity_refs": refs,
+                "score": float(sc)}
+                for s, o, t, refs, sc in cur.fetchall()]
+
+    def fts_chunks(self, query: str, limit: int = 6) -> list[dict[str, Any]]:
+        """Полнотекстовый поиск через tsvector/plainto_tsquery — ловит точные
+        термины и словоформы, которые эмбеддинг может не различить."""
+        cur = self.conn.cursor()
+        cur.execute("""
+            SELECT source, ord, text, entity_refs
+            FROM doc_chunk
+            WHERE tsv @@ plainto_tsquery('simple', %s)
+            ORDER BY ts_rank(tsv, plainto_tsquery('simple', %s)) DESC
+            LIMIT %s
+        """, (query, query, limit))
+        return [{"source": s, "ord": o, "text": t, "entity_refs": refs}
+                for s, o, t, refs in cur.fetchall()]
+
+    def entity_chunks(self, kind: str, name: str) -> list[dict[str, Any]]:
+        """Фрагменты, привязанные к объекту онтологии (entity_refs при
+        индексации) — для RAG на онтологии."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT id, source, ord, text, entity_refs FROM doc_chunk")
+        wanted = (kind, name)
+        out = []
+        for cid, source, ord_, text, entity_refs in cur.fetchall():
+            try:
+                have = {tuple(r) for r in (entity_refs or [])}
+            except TypeError:
+                have = set()
+            if wanted in have:
+                out.append({"id": cid, "source": source, "ord": ord_, "text": text})
+        return out
+
+    def chunk_count(self) -> int:
+        cur = self.conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM doc_chunk")
+        return int(cur.fetchone()[0])
+
+    def chunk_sources(self) -> list[str]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT DISTINCT source FROM doc_chunk ORDER BY source")
+        return [r[0] for r in cur.fetchall()]
+
     # ------------------------------------------------------------ metrics
     def memory_stats(self) -> dict[str, Any]:
         """Для GET /v1/memory/stats — статистика использования БД и токенов."""
@@ -671,6 +778,7 @@ class Store:
             "memory_quanta_tokens": int(quanta_tokens),
             "onto_entities": entities,
             "onto_relations": relations,
+            "doc_chunks": self.chunk_count(),
             "tokens_by_model": by_model,
         }
 

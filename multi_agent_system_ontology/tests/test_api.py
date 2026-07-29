@@ -89,6 +89,33 @@ class EchoingHandler(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
+class FakeOmniVoiceHandler(BaseHTTPRequestHandler):
+    calls: list[dict] = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):  # noqa: N802
+        n = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(n).decode("utf-8"))
+        type(self).calls.append(body)
+        out = f"AUDIO:{body['text']}:{body['voice']}".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def do_GET(self):  # noqa: N802
+        if self.path == "/voices":
+            out = json.dumps({"voices": [{"id": "alloy"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+
 class _ApiCtx:
     """Поднимает реальный maos.api.server.Handler на localhost, реальный
     фейковый LLM-сервер и передаёт DSN временной базы в общем кластере."""
@@ -98,13 +125,20 @@ class _ApiCtx:
         self.llm_port = self.llm_httpd.server_address[1]
         threading.Thread(target=self.llm_httpd.serve_forever, daemon=True).start()
 
+        FakeOmniVoiceHandler.calls = []
+        self.tts_httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeOmniVoiceHandler)
+        self.tts_port = self.tts_httpd.server_address[1]
+        threading.Thread(target=self.tts_httpd.serve_forever, daemon=True).start()
+
         import os
         os.environ["LOCAL_BASE_URL"] = f"http://127.0.0.1:{self.llm_port}/v1"
 
         self.cfg = Config(db_dsn=_fresh_dsn(), embedding_provider="hash",
                           embedding_model="hash-256", embedding_dim=32,
                           default_local_model="local::llama3",
-                          complexity_char_threshold=10_000, llm_retries=0)
+                          complexity_char_threshold=10_000, llm_retries=0,
+                          tts_provider="omnivoice",
+                          tts_base_url=f"http://127.0.0.1:{self.tts_port}")
         api_server.Handler.cfg = self.cfg
         api_server.Handler.token = token
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), api_server.Handler)
@@ -140,6 +174,20 @@ class _ApiCtx:
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def post_raw(self, path: str, body: dict) -> tuple[int, bytes, str]:
+        """Как post(), но возвращает СЫРЫЕ байты тела и Content-Type — для
+        бинарных ответов (например /v1/tts/speak), которые не JSON."""
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data,
+            headers=self._headers(), method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return (resp.status, resp.read(),
+                       resp.headers.get("Content-Type", ""))
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(), exc.headers.get("Content-Type", "")
+
     def close(self) -> None:
         import os
         os.environ.pop("LOCAL_BASE_URL", None)
@@ -147,6 +195,8 @@ class _ApiCtx:
         self.httpd.server_close()
         self.llm_httpd.shutdown()
         self.llm_httpd.server_close()
+        self.tts_httpd.shutdown()
+        self.tts_httpd.server_close()
 
 
 def main() -> int:
@@ -287,6 +337,35 @@ def main() -> int:
         demo_slugs = {"coder", "writer", "analyst"}
         check("демо-агенты реально видны в общем списке /v1/agents",
              demo_slugs <= {a["slug"] for a in data29["agents"]})
+
+        section("TTS: GET /v1/tts/voices и POST /v1/tts/speak (реальный OmniVoice)")
+        code30, data30 = ctx.get("/v1/tts/voices")
+        check("tts/voices -> 200", code30 == 200)
+        check("голос alloy виден", any(v["id"] == "alloy" for v in data30["voices"]))
+
+        code31, audio31, ctype31 = ctx.post_raw(
+            "/v1/tts/speak", {"text": "привет", "voice": "alloy"})
+        check("tts/speak -> 200", code31 == 200)
+        check("Content-Type — audio/*", ctype31.startswith("audio/"))
+        check("аудио реально пришло от фейкового OmniVoice",
+             audio31 == "AUDIO:привет:alloy".encode("utf-8"))
+
+        code32, _ = ctx.post("/v1/tts/speak", {"text": "", "voice": "alloy"})
+        check("пустой text -> 400", code32 == 400)
+
+        code33, _ = ctx.post("/v1/tts/speak", {"text": "текст"})
+        check("без voice и без agent_slug -> 400", code33 == 400)
+
+        ctx.post("/v1/agents", {"slug": "narrator", "name": "Narrator",
+                                "voice_provider": "omnivoice", "voice_id": "rachel"})
+        code34, audio34, _ = ctx.post_raw(
+            "/v1/tts/speak", {"text": "текст от агента", "agent_slug": "narrator"})
+        check("голос по agent_slug используется, если voice не передан",
+             code34 == 200 and audio34 == "AUDIO:текст от агента:rachel".encode("utf-8"))
+
+        code35, _ = ctx.post("/v1/tts/speak",
+                             {"text": "текст", "agent_slug": "ghost_agent"})
+        check("несуществующий agent_slug для TTS -> 404", code35 == 404)
     finally:
         ctx.close()
 

@@ -85,9 +85,37 @@ class Config:
     maintenance_distill_after_messages: int = 20  # диалог этой длины -> квант
     maintenance_dedup_similarity: float = 0.97     # выше — считать дублем
 
-    # --- TTS (интерфейс провайдера, см. maos/tts/) ---
-    tts_provider: str = "none"          # none | openai | elevenlabs | piper
+    # --- TTS (реальный клиент OmniVoice, см. maos/tts/) ---
+    tts_provider: str = "none"          # none | omnivoice | openai | elevenlabs | piper
     tts_default_voice: str = ""
+    # Адрес и ключ сервера OmniVoice (или совместимого) — по тому же
+    # принципу, что embedding_base_url: секрет только из окружения.
+    tts_base_url: str = ""
+    tts_api_key: str = ""
+    tts_timeout: int = 60
+    tts_audio_format: str = "mp3"       # mp3 | wav | ogg | opus | flac
+
+    # --- инструменты MAOS-агентов (опционально, см. agent.tools в БД) ---
+    # Рабочая папка КАЖДОГО агента — своя подпапка workspace_root/<slug>,
+    # изолированная так же строго, как agent_system/agent/tools/base.py:
+    # Workspace (нельзя выйти за пределы через '..'/симлинки/абсолютный путь).
+    workspace_root: str = "./workspace"
+    # Предел шагов инструментального цикла ОДНОГО хода диалога (не всей
+    # сессии) — без него агент со сломанной моделью мог бы звать
+    # инструменты бесконечно на каждое сообщение пользователя.
+    max_tool_steps: int = 8
+    # Обрезка результата инструмента при добавлении в историю — то же
+    # решение, что agent_system/agent/core.py: голова и хвост
+    # информативны, середина длинного вывода обычно нет.
+    tool_result_limit: int = 4000
+
+    # --- навык "web" (веб-поиск/загрузка страниц без MCP) ---
+    web_backend: str = "duckduckgo_lite"   # duckduckgo_lite | duckduckgo_html | searxng
+    web_search_base_url: str = ""          # обязателен для backend=searxng
+    web_timeout: int = 15
+    web_rate_limit: float = 1.0
+    web_max_results: int = 8
+    web_allow_local: bool = False          # только для интранет-сценариев/тестов
 
     # --- HTTP API/веб ---
     host: str = "127.0.0.1"
@@ -121,11 +149,19 @@ class Config:
                self.embedding_base_url or None, self.embedding_api_key or None,
                self.embedding_timeout)
 
+    def resolve_web_config(self):
+        """WebConfig (maos/tools/web.py) из полей web_* этого конфига."""
+        from .tools.web import WebConfig
+        return WebConfig(
+            backend=self.web_backend, search_base_url=self.web_search_base_url,
+            timeout=self.web_timeout, rate_limit=self.web_rate_limit,
+            max_results=self.web_max_results, allow_local=self.web_allow_local)
+
     #: поля-секреты: разрешены ТОЛЬКО из переменных окружения, никогда
     #: из JSON-конфига — тот же принцип, что у messaging.* в agent_system
     #: (MessagingConfig.from_dict фильтрует пароли/токены). Конфиг можно
     #: класть в git, не боясь утечки ключа внешнего сервера эмбеддингов.
-    _SECRET_FIELDS = ("api_token", "embedding_api_key")
+    _SECRET_FIELDS = ("api_token", "embedding_api_key", "tts_api_key")
 
     @classmethod
     def load(cls, path: str | None = None, **overrides: Any) -> "Config":
@@ -152,6 +188,11 @@ class Config:
             "embedding_api_key": "MAOS_EMBEDDING_API_KEY",
             "tts_provider": "TTS_PROVIDER",
             "tts_default_voice": "TTS_DEFAULT_VOICE",
+            "tts_base_url": "TTS_BASE_URL",
+            "tts_api_key": "TTS_API_KEY",
+            "tts_audio_format": "TTS_AUDIO_FORMAT",
+            "workspace_root": "MAOS_WORKSPACE_ROOT",
+            "web_search_base_url": "MAOS_WEB_SEARCH_BASE_URL",
             "host": "MAOS_HOST",
             "api_token": "MAOS_API_TOKEN",
         }
@@ -165,6 +206,8 @@ class Config:
             cfg.embedding_dim = int(os.environ["MAOS_EMBEDDING_DIM"])
         if os.getenv("MAOS_EMBEDDING_TIMEOUT"):
             cfg.embedding_timeout = int(os.environ["MAOS_EMBEDDING_TIMEOUT"])
+        if os.getenv("TTS_TIMEOUT"):
+            cfg.tts_timeout = int(os.environ["TTS_TIMEOUT"])
 
         for k, v in overrides.items():
             if v is not None and hasattr(cfg, k):
@@ -179,6 +222,8 @@ class Config:
             d["api_token"] = "***"
         if d.get("embedding_api_key"):
             d["embedding_api_key"] = "***"
+        if d.get("tts_api_key"):
+            d["tts_api_key"] = "***"
         return d
 
 

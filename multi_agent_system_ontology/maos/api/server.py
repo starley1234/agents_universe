@@ -26,6 +26,12 @@
                                     quickstart-режиме — полезно и на
                                     "боевом" DB_DSN, если хочется быстро
                                     посмотреть, как всё работает)
+  GET    /v1/tts/voices           — список голосов сервера TTS (OmniVoice)
+  POST   /v1/tts/speak            — {"text","voice"?,"audio_format"?} ->
+                                    БИНАРНЫЙ аудио-ответ (Content-Type:
+                                    audio/*), голос агента по умолчанию,
+                                    если voice не передан и указан
+                                    agent_slug
 
 Токен: если задан MAOS_API_TOKEN (или cfg.api_token), требуется заголовок
 Authorization: Bearer <token>. Без него сервер слушает только localhost —
@@ -48,16 +54,29 @@ from ..maintenance.service import MaintenanceService
 from ..memory.store import Store, StoreError
 from ..orchestrator.chain import ChainError, ChainRunner
 from ..orchestrator.service import Orchestrator
+from ..tts.provider import TTSError, build_tts_provider
 
 MAX_BODY = 1_000_000
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_AGENT_WRITABLE_FIELDS = (
+    "name", "description", "keywords", "avatar", "voice_provider",
+    "voice_id", "llm_ref", "system_prompt", "tools", "enabled",
+)
 
 
 def _make_embedder(cfg: Config):
     provider, model, base_url, api_key, timeout = cfg.resolve_embedding()
     return build_embedder(provider, model, dim=cfg.embedding_dim,
                           base_url=base_url, api_key=api_key, timeout=timeout)
+
+
+def _make_tts(cfg: Config, voice_override: str = "", format_override: str = ""):
+    return build_tts_provider(
+        cfg.tts_provider, voice_id=voice_override,
+        base_url=cfg.tts_base_url, api_key=cfg.tts_api_key,
+        timeout=cfg.tts_timeout,
+        audio_format=format_override or cfg.tts_audio_format)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -87,6 +106,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_audio(self, audio: bytes, mime: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Length", str(len(audio)))
+        self.end_headers()
+        self.wfile.write(audio)
 
     def _authorized(self) -> bool:
         if not self.token:
@@ -127,6 +153,8 @@ class Handler(BaseHTTPRequestHandler):
             self._route_get(path, qs)
         except StoreError as exc:
             self._send(503, {"error": str(exc)})
+        except TTSError as exc:
+            self._send(502, {"error": str(exc)})
         except (ChainError, ValueError) as exc:
             self._send(400, {"error": str(exc)})
         except Exception as exc:
@@ -194,6 +222,10 @@ class Handler(BaseHTTPRequestHandler):
             with self._store() as st:
                 self._send(200, demo_agents_status(st))
             return
+        if path == "/v1/tts/voices":
+            tts = _make_tts(self.cfg)
+            self._send(200, {"voices": tts.list_voices()})
+            return
         self._send(404, {"error": f"нет маршрута {path}"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -208,6 +240,8 @@ class Handler(BaseHTTPRequestHandler):
             self._route_post(self.path, data)
         except StoreError as exc:
             self._send(503, {"error": str(exc)})
+        except TTSError as exc:
+            self._send(502, {"error": str(exc)})
         except (ChainError, ValueError) as exc:
             self._send(400, {"error": str(exc)})
         except Exception as exc:
@@ -258,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                     voice_id=data.get("voice_id", ""),
                     llm_ref=data.get("llm_ref", ""),
                     system_prompt=data.get("system_prompt", ""),
+                    tools=data.get("tools", ""),
                     description_embedding=emb)
                 self._send(200, {"id": aid, "slug": slug})
             return
@@ -271,9 +306,7 @@ class Handler(BaseHTTPRequestHandler):
             slug = path[len("/v1/agents/"):]
             with self._store() as st:
                 fields = {k: v for k, v in data.items()
-                          if k in ("name", "description", "keywords", "avatar",
-                                   "voice_provider", "voice_id", "llm_ref",
-                                   "system_prompt", "enabled")}
+                          if k in _AGENT_WRITABLE_FIELDS}
                 if "description" in fields:
                     embedder = _make_embedder(self.cfg)
                     fields["description_embedding"] = embedder.embed_one(
@@ -310,6 +343,29 @@ class Handler(BaseHTTPRequestHandler):
                 created = seed_demo_agents(st, self.cfg, embedder)
                 self._send(200, {"created": created,
                                  "status": demo_agents_status(st)})
+            return
+        if path == "/v1/tts/speak":
+            text = (data.get("text") or "").strip()
+            if not text:
+                self._send(400, {"error": "поле 'text' обязательно"})
+                return
+            voice = (data.get("voice") or "").strip()
+            audio_format = (data.get("audio_format") or "").strip()
+            if not voice and data.get("agent_slug"):
+                with self._store() as st:
+                    agent = st.get_agent(data["agent_slug"])
+                if not agent:
+                    self._send(404, {"error": f"агент {data['agent_slug']!r} не найден"})
+                    return
+                voice = agent.get("voice_id") or ""
+            if not voice:
+                self._send(400, {"error": "поле 'voice' обязательно (или "
+                                          "укажите agent_slug с настроенным голосом)"})
+                return
+            tts = _make_tts(self.cfg, voice_override=voice,
+                            format_override=audio_format)
+            audio, mime = tts.synthesize(text)
+            self._send_audio(audio, mime)
             return
         self._send(404, {"error": f"нет маршрута {path}"})
 
