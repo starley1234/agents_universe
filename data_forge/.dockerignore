@@ -1,0 +1,43 @@
+# Не тащим в build-контекст ничего, что не нужно образу или содержит
+# секреты/мусор — быстрее docker build, безопаснее (не попадёт в слои).
+
+.git/
+.gitignore
+
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Секреты — НИКОГДА не должны попасть в образ (docker history показал
+# бы значения из COPY, даже если файл потом удалить в следующем слое)
+.env
+.env.*
+!.env.example
+
+# Тесты и dev-инструменты не нужны в проде — requirements-dev.txt
+# (pgserver и т.п.) не устанавливается в прод-образ вовсе
+tests/
+requirements-dev.txt
+Makefile
+
+# Документация и ТЗ — не нужны рантайму
+README.md
+tz.txt
+*.md
+
+# Артефакты сборки/данных, если случайно оказались рядом
+**/pgdata/
+**/.pgserver/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+.DS_Store
+*.swp

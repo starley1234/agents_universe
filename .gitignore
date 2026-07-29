@@ -1,21 +1,74 @@
+## Виртуальные окружения Python — не индексируем, ставятся через
+## python3 -m venv .venv && pip install -r ...
+.venv/
+venv/
+env/
+ENV/
+
 # Секретные переменные (самое важное)
 .env
 .env.*
 !.env.example  # оставляем пример, чтобы знать, какие ключи нужны
 
-# Python
-.venv/
-venv/
-ENV/
+## Байткод и кэши Python
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Сборка и метаданные
 *.egg-info/
 dist/
 build/
-
-# Локальные данные приложения (из вашего описания)
-*.db           # база SQLite (store.py)
 out/           # папка с результатами прогонов
+
+## Рантайм-артефакты agent_system: база состояния (память/онтология/план)
+## и рабочая папка агента по умолчанию — генерируются при запуске,
+## в git не нужны.
+agent_system/agent.db
+agent_system/agent.db-*
+agent_system/workspace/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+## Рантайм-артефакты multi_agent_system_ontology: MAOS требует внешний
+## PostgreSQL и ничего не пишет на диск сам по себе, кроме случайных
+## временных данных embedded Postgres при локальных экспериментах и
+## режиме быстрого старта (make quickstart -> .maos_quickstart_pgdata/).
+multi_agent_system_ontology/**/pgdata/
+multi_agent_system_ontology/**/.pgserver/
+multi_agent_system_ontology/.maos_quickstart_pgdata/
+
+## Рантайм-артефакты erp_ai: ERP AI требует внешний PostgreSQL и ничего
+## не пишет на диск сам по себе, кроме временных данных embedded
+## Postgres при тестах (pgserver, случайные /tmp-папки, вне репозитория).
+erp_ai/**/pgdata/
+erp_ai/**/.pgserver/
+
+## Рантайм-артефакты data_forge: DataForge требует внешний PostgreSQL и
+## ничего не пишет на диск сам по себе, кроме временных данных embedded
+## Postgres при тестах (pgserver, случайные /tmp-папки, вне репозитория).
+data_forge/**/pgdata/
+data_forge/**/.pgserver/
+
+## Рантайм-артефакты agentic_workflow_os: состояние среды (прогоны,
+## доска контекста, точки контроля) в SQLite и рабочая папка агентов —
+## создаются при запуске, в git не нужны. Определения workflow и
+## профилей (awos/workflows, awos/profiles) — наоборот, часть поставки.
+agentic_workflow_os/awos.db
+agentic_workflow_os/awos.db-*
+agentic_workflow_os/workspace/
+
+## Прочий мусор ОС/редакторов
+.DS_Store
+*.swp
+
+## Рантайм-артефакты saps: выгрузки протоколов и временные файлы.
+## Схема живёт в PostgreSQL, на диск САПС пишет только отчёты.
+saps/workdir/
+saps/*.docx
+saps/*.xlsx

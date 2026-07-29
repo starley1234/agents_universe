@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DataForge</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1d212c; --line:#2a2f3d; --txt:#e6e8ee;
+    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#e0b341;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+       ui-monospace,SFMono-Regular,Consolas,monospace;
+       background:var(--bg);color:var(--txt);min-height:100vh}
+  header{padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+  header b{font-weight:700;font-size:15px}
+  nav{display:flex;gap:4px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);
+             padding:7px 13px;border-radius:8px;cursor:pointer;font:inherit;font-size:13px}
+  nav button.active{background:#25314a;color:var(--txt);border-color:var(--acc)}
+  nav button:hover:not(.active){color:var(--txt);background:#232733}
+  .spacer{flex:1}
+  .pill{font-size:12px;color:var(--dim);background:#232733;padding:4px 10px;border-radius:99px}
+  select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
+        border:1px solid var(--line);border-radius:8px;padding:7px 11px}
+  button{cursor:pointer;font-weight:500}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button.primary{background:var(--acc);color:#08111c;border-color:var(--acc);font-weight:600}
+  button.danger:hover{border-color:var(--err);color:var(--err)}
+  main{padding:20px;max-width:1180px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:18px;margin-bottom:18px}
+  .card h2{margin:0 0 4px;font-size:15px;font-weight:700}
+  .card .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase}
+  tr:hover td{background:#1f2330}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+        padding:14px 10px;text-align:center}
+  .stat b{display:block;font-size:24px;color:var(--acc);font-weight:700}
+  .stat span{color:var(--dim);font-size:11.5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10.5px;
+         font-weight:700;text-transform:uppercase}
+  .badge.pending{background:#2a2416;color:var(--warn)}
+  .badge.confirmed_match,.badge.auto_merged,.badge.ok{background:#152a20;color:var(--ok)}
+  .badge.rejected,.badge.error{background:#2a1618;color:var(--err)}
+  .hidden{display:none !important}
+  .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;color:var(--dim)}
+  code{background:#0a0c11;border:1px solid var(--line);border-radius:5px;padding:1px 6px;
+       font-size:12px;color:var(--acc)}
+  .empty-hint{color:var(--dim);font-size:13px;padding:20px;text-align:center}
+  .lineage-chain{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px}
+  .lineage-node{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+                padding:4px 9px}
+  .lineage-arrow{color:var(--dim)}
+</style>
+</head>
+<body>
+<header>
+  <b>DataForge</b>
+  <span class="pill">интеграция данных · качество · MDM · lineage</span>
+  <input id="token" type="password" placeholder="токен (если задан)" size="14">
+  <nav>
+    <button data-view="overview" class="active">Обзор</button>
+    <button data-view="sources">Источники</button>
+    <button data-view="datasets">Каталог данных</button>
+    <button data-view="quality">Качество</button>
+    <button data-view="processes">Процессы</button>
+    <button data-view="copilot">AI Copilot</button>
+    <button data-view="mdm">MDM / дубли</button>
+    <button data-view="gold">Золотые записи</button>
+    <button data-view="ontology">Ontology</button>
+    <button data-view="lineage">Lineage</button>
+    <button data-view="audit">Аудит</button>
+  </nav>
+  <div class="spacer"></div>
+  <span class="pill" id="status">проверка…</span>
+</header>
+<main>
+
+<section id="view-overview">
+  <div class="card">
+    <h2>Статистика платформы</h2>
+    <div class="grid" id="statsGrid"><div class="stat">загрузка…</div></div>
+  </div>
+</section>
+
+<section id="view-sources" class="hidden">
+  <div class="card">
+    <h2>Источники данных (Connect Hub)</h2>
+    <p class="sub">file / sql / onec_odata — единый интерфейс Connector, добавление источника декларативным конфигом</p>
+    <div class="row">
+      <input id="src-name" placeholder="имя источника">
+      <select id="src-kind">
+        <option value="file">file (CSV/XLSX/JSON/XML)</option>
+        <option value="sql">sql (PostgreSQL/SQLite)</option>
+        <option value="onec_odata">onec_odata (1С через OData)</option>
+      </select>
+      <input id="src-config" placeholder='config JSON, напр. {"path":"/data/customers.csv"}' size="42">
+      <button class="primary" id="src-create-btn">Зарегистрировать источник</button>
+    </div>
+    <table id="sourcesTable"><thead><tr><th>#</th><th>Имя</th><th>Тип</th><th>Конфиг</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="sourcesEmpty" class="empty-hint hidden">Источников пока нет</div>
+  </div>
+</section>
+
+<section id="view-datasets" class="hidden">
+  <div class="card">
+    <h2>Каталог данных (Bronze → Silver → Gold)</h2>
+    <p class="sub">Дата-сеты по всем источникам, с числом записей на каждом слое</p>
+    <table id="datasetsTable"><thead><tr><th>#</th><th>Источник</th><th>Датасет</th><th>Слой</th>
+      <th>Строк</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="datasetsEmpty" class="empty-hint hidden">Датасетов пока нет — зарегистрируйте источник и выполните выгрузку</div>
+  </div>
+</section>
+
+<section id="view-quality" class="hidden">
+  <div class="card">
+    <h2>Качество данных (профилирование, правила, карантин)</h2>
+    <p class="sub">ID датасета берётся из вкладки «Каталог данных»</p>
+    <div class="row">
+      <input id="q-dataset-id" placeholder="ID датасета" size="6">
+      <button id="q-profile-btn">Профилировать</button>
+      <button id="q-run-btn" class="primary">Прогнать проверки качества</button>
+    </div>
+    <h3 style="font-size:13px;color:var(--dim)">Профиль полей</h3>
+    <table id="profileTable"><thead><tr><th>Поле</th><th>Всего</th><th>Пустых</th>
+      <th>Уникальных</th><th>Min</th><th>Max</th></tr></thead><tbody></tbody></table>
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">Карантин</h3>
+    <table id="quarantineTable"><thead><tr><th>#</th><th>Bronze ID</th><th>Причины</th>
+      <th>Статус</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="quarantineEmpty" class="empty-hint hidden">Карантин пуст</div>
+  </div>
+</section>
+
+<section id="view-processes" class="hidden">
+  <div class="card">
+    <h2>Process Orchestrator: сквозной процесс с write-back (ТЗ K3)</h2>
+    <p class="sub">Карантин → задача исполнителю → корректировка (guardrail: повторная проверка правил) → запись обратно в источник</p>
+    <table id="processesTable"><thead><tr><th>#</th><th>Тип</th><th>Предмет</th>
+      <th>Статус</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="processesEmpty" class="empty-hint hidden">Процессов пока нет — запустите из вкладки «Качество» (карантин)</div>
+    <div id="processCard" class="explain-box hidden" style="white-space:pre-wrap"></div>
+  </div>
+</section>
+
+<section id="view-copilot" class="hidden">
+  <div class="card">
+    <h2>AI Copilot: диалог с ассистентом платформы (ТЗ §3.6)</h2>
+    <p class="sub">Ассистент работает ЧЕРЕЗ те же публичные REST-эндпоинты, что и человек (function calling), в рамках вашего токена — без скрытого доступа к данным; каждое взаимодействие пишется в аудит.</p>
+    <div class="row">
+      <select id="copilot-mode">
+        <option value="ops">ops — эксплуатация</option>
+        <option value="setup">setup — настройка платформы</option>
+      </select>
+      <input id="copilot-actor" placeholder="actor, напр. human:ivanov" value="human:dashboard">
+    </div>
+    <div class="row">
+      <textarea id="copilot-prompt" placeholder="Например: покажи статистику платформы" style="flex:1;min-height:60px"></textarea>
+      <button class="primary" id="copilot-send-btn">Спросить</button>
+    </div>
+    <div id="copilotAnswer" class="explain-box hidden" style="white-space:pre-wrap"></div>
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">История взаимодействий</h3>
+    <table id="copilotHistoryTable"><thead><tr><th>#</th><th>Actor</th><th>Режим</th>
+      <th>Запрос</th><th>Инструменты</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<section id="view-mdm" class="hidden">
+  <div class="card">
+    <h2>MDM: вероятностный матчинг и stewardship-очередь</h2>
+    <p class="sub">score ≥ порога авто-слияния — golden record собирается автоматически (guardrail); в диапазоне — решает человек</p>
+    <div class="row">
+      <input id="m-entity-type" placeholder="entity_type, напр. counterparty">
+      <input id="m-dataset-id" placeholder="ID датасета" size="6">
+      <input id="m-fields" placeholder="поля через запятую, напр. name,inn" size="20">
+      <button class="primary" id="m-run-btn">Найти кандидатов на дубли</button>
+    </div>
+    <table id="candidatesTable"><thead><tr><th>#</th><th>Тип</th><th>Score</th>
+      <th>Статус</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="candidatesEmpty" class="empty-hint hidden">Кандидатов на дубли нет</div>
+  </div>
+</section>
+
+<section id="view-gold" class="hidden">
+  <div class="card">
+    <h2>Золотые записи (Gold-слой)</h2>
+    <p class="sub">Единая точка правды: согласованные атрибуты сущности после слияния источников</p>
+    <table id="goldTable"><thead><tr><th>#</th><th>Тип</th><th>Атрибуты</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="goldEmpty" class="empty-hint hidden">Золотых записей пока нет</div>
+  </div>
+</section>
+
+<section id="view-ontology" class="hidden">
+  <div class="card">
+    <h2>Ontology: типы бизнес-объектов и actions</h2>
+    <p class="sub">Бизнес-язык поверх сырых таблиц (ТЗ §3.2): объекты, их атрибуты, связи и действия</p>
+    <div class="row">
+      <input id="ot-name" placeholder="имя типа, напр. Контрагент">
+      <input id="ot-gold-type" placeholder="gold_entity_type, напр. counterparty">
+      <input id="ot-schema" placeholder='attributes_schema JSON, напр. [{"name":"inn","type":"string","required":true}]' size="42">
+      <button class="primary" id="ot-create-btn">Определить тип объекта</button>
+    </div>
+    <table id="objectTypesTable"><thead><tr><th>#</th><th>Имя</th><th>Gold entity_type</th>
+      <th>Схема атрибутов</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="objectTypesEmpty" class="empty-hint hidden">Типов объектов пока нет</div>
+
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">Материализация из golden record</h3>
+    <div class="row">
+      <input id="mat-gold-id" placeholder="ID золотой записи" size="8">
+      <button id="mat-btn">Материализовать в Ontology</button>
+    </div>
+
+    <h3 style="font-size:13px;color:var(--dim);margin-top:16px">Экземпляры объектов</h3>
+    <table id="instancesTable"><thead><tr><th>#</th><th>Тип</th><th>Атрибуты</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="instancesEmpty" class="empty-hint hidden">Экземпляров пока нет</div>
+
+    <div id="instanceCard" class="explain-box hidden" style="white-space:pre-wrap"></div>
+  </div>
+</section>
+
+<section id="view-lineage" class="hidden">
+  <div class="card">
+    <h2>Прослеживаемость (lineage)</h2>
+    <p class="sub">По любому активу видно полную цепочку: источник → Bronze → Silver → Gold</p>
+    <div class="row">
+      <input id="l-asset" placeholder="asset, напр. gold:entity:1" size="30">
+      <button class="primary" id="l-trace-btn">Построить цепочку</button>
+    </div>
+    <div id="lineageChain" class="lineage-chain"></div>
+    <div id="lineageEmpty" class="empty-hint hidden">Рёбер lineage не найдено для этого actива</div>
+  </div>
+</section>
+
+<section id="view-audit" class="hidden">
+  <div class="card">
+    <h2>Журнал аудита (неизменяемый)</h2>
+    <p class="sub">Кто (система/человек) что сделал — полная история решений</p>
+    <table id="auditTable"><thead><tr><th>#</th><th>Actor</th><th>Действие</th><th>Объект</th><th>Когда</th></tr></thead>
+    <tbody></tbody></table>
+  </div>
+</section>
+
+</main>
+<script>
+const VIEWS = ["overview","sources","datasets","quality","processes","copilot","mdm","gold","ontology","lineage","audit"];
+function token(){ return document.getElementById('token').value.trim(); }
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function api(path, opts={}){
+  const headers = opts.headers || {};
+  const t = token();
+  if (t) headers['Authorization'] = 'Bearer ' + t;
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, {...opts, headers});
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+  return data;
+}
+function setActiveView(name){
+  for (const v of VIEWS) document.getElementById('view-'+v).classList.toggle('hidden', v!==name);
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active', b.dataset.view===name));
+  if (name==='overview') loadOverview();
+  if (name==='sources') loadSources();
+  if (name==='datasets') loadDatasets();
+  if (name==='mdm') loadCandidates();
+  if (name==='gold') loadGold();
+  if (name==='ontology') loadObjectTypes();
+  if (name==='processes') loadProcesses();
+  if (name==='copilot') loadCopilotHistory();
+  if (name==='audit') loadAudit();
+}
+document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click', ()=>setActiveView(b.dataset.view)));
+
+async function checkHealth(){
+  const el = document.getElementById('status');
+  try{ await api('/health'); el.textContent = 'сервис онлайн'; }
+  catch(e){ el.textContent = 'сервис недоступен'; }
+}
+
+async function loadOverview(){
+  try{
+    const s = await api('/v1/dashboard/stats');
+    const grid = document.getElementById('statsGrid');
+    grid.innerHTML = '';
+    const items = [
+      ['источников', s.sources], ['датасетов', s.datasets],
+      ['bronze-записей', s.bronze_records], ['silver-записей', s.silver_records],
+      ['в карантине', s.quarantine_open], ['золотых записей', s.gold_entities],
+      ['кандидатов на решение', s.pending_matches], ['записей аудита', s.audit_entries],
+    ];
+    for (const [label, val] of items){
+      const d = document.createElement('div');
+      d.className = 'stat';
+      d.innerHTML = `<b>${val}</b><span>${label}</span>`;
+      grid.appendChild(d);
+    }
+  }catch(e){ document.getElementById('statsGrid').innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`; }
+}
+
+async function loadSources(){
+  try{
+    const items = await api('/v1/sources');
+    const tbody = document.querySelector('#sourcesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('sourcesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const s of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${s.id}</td><td>${esc(s.name)}</td><td><code>${esc(s.kind)}</code></td>
+        <td class="mono">${esc(JSON.stringify(s.config))}</td>
+        <td><button data-discover="${s.id}">Discover</button>
+            <button data-ingest="${s.id}">Ingest full</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-discover]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{ const r = await api(`/v1/sources/${el.dataset.discover}/discover`, {method:'POST'}); alert('Схема: ' + JSON.stringify(r)); }
+      catch(e){ alert(e.message); }
+    }));
+    tbody.querySelectorAll('[data-ingest]').forEach(el=>el.addEventListener('click', async ()=>{
+      const dataset = prompt('Имя датасета для выгрузки (см. discover):');
+      if (!dataset) return;
+      try{ const r = await api(`/v1/sources/${el.dataset.ingest}/ingest/full`, {method:'POST', body: JSON.stringify({dataset})});
+        alert('Загружено записей: ' + r.records_ingested); loadDatasets(); }
+      catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+document.getElementById('src-create-btn').addEventListener('click', async ()=>{
+  const name = document.getElementById('src-name').value.trim();
+  const kind = document.getElementById('src-kind').value;
+  let config = {};
+  const raw = document.getElementById('src-config').value.trim();
+  if (raw) { try{ config = JSON.parse(raw); }catch(e){ alert('Конфиг должен быть валидным JSON'); return; } }
+  try{ await api('/v1/sources', {method:'POST', body: JSON.stringify({name, kind, config})}); loadSources(); }
+  catch(e){ alert(e.message); }
+});
+
+async function loadDatasets(){
+  try{
+    const items = await api('/v1/datasets');
+    const tbody = document.querySelector('#datasetsTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('datasetsEmpty').classList.toggle('hidden', items.length > 0);
+    for (const d of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${d.id}</td><td>${d.source_id}</td><td>${esc(d.name)}</td>
+        <td><code>${esc(d.layer)}</code></td><td>${d.row_count}</td>
+        <td><button data-quality="${d.id}">Открыть в «Качество»</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-quality]').forEach(el=>el.addEventListener('click', ()=>{
+      document.getElementById('q-dataset-id').value = el.dataset.quality;
+      document.getElementById('m-dataset-id').value = el.dataset.quality;
+      setActiveView('quality');
+    }));
+  }catch(e){}
+}
+
+document.getElementById('q-profile-btn').addEventListener('click', async ()=>{
+  const id = document.getElementById('q-dataset-id').value.trim();
+  if (!id) return;
+  try{
+    const profiles = await api(`/v1/datasets/${id}/profile`, {method:'POST'});
+    const tbody = document.querySelector('#profileTable tbody');
+    tbody.innerHTML = '';
+    for (const p of profiles){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${esc(p.field_name)}</td><td>${p.total_count}</td><td>${p.null_count}</td>
+        <td>${p.distinct_count}</td><td class="mono">${esc(p.min_value)}</td><td class="mono">${esc(p.max_value)}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){ alert(e.message); }
+});
+document.getElementById('q-run-btn').addEventListener('click', async ()=>{
+  const id = document.getElementById('q-dataset-id').value.trim();
+  if (!id) return;
+  try{
+    const r = await api(`/v1/datasets/${id}/quality-run`, {method:'POST'});
+    alert(`Проверено записей: ${r.records_checked}, в карантин: ${r.quarantined_count}, продвинуто: ${r.promoted_count}`);
+    loadQuarantine(id);
+  }catch(e){ alert(e.message); }
+});
+async function loadQuarantine(id){
+  try{
+    const items = await api(`/v1/datasets/${id}/quarantine`);
+    const tbody = document.querySelector('#quarantineTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('quarantineEmpty').classList.toggle('hidden', items.length > 0);
+    for (const q of items){
+      const tr = document.createElement('tr');
+      const actions = q.resolved ? ''
+        : `<button data-resolve="${q.id}">Отметить решённым</button>
+           <button data-start-process="${q.id}" class="primary">Запустить процесс коррекции</button>`;
+      tr.innerHTML = `<td>#${q.id}</td><td>${q.bronze_record_id}</td>
+        <td class="mono">${esc(JSON.stringify(q.reasons))}</td>
+        <td>${q.resolved ? '<span class="badge ok">решено</span>' : '<span class="badge pending">открыто</span>'}</td>
+        <td>${actions}</td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-resolve]').forEach(el=>el.addEventListener('click', async ()=>{
+      const resolution = prompt('Комментарий к решению:', '') || '';
+      try{ await api(`/v1/quarantine/${el.dataset.resolve}/resolve`, {method:'POST', body: JSON.stringify({resolution})}); loadQuarantine(id); }
+      catch(e){ alert(e.message); }
+    }));
+    tbody.querySelectorAll('[data-start-process]').forEach(el=>el.addEventListener('click', async ()=>{
+      const assignee = prompt('Назначить исполнителя (напр. human:ivanov):', 'human:ivanov') || '';
+      try{
+        const p = await api('/v1/processes/quarantine-correction', {method:'POST',
+          body: JSON.stringify({quarantine_id: parseInt(el.dataset.startProcess, 10), assignee})});
+        alert('Процесс #' + p.id + ' запущен');
+        setActiveView('processes');
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+function statusBadge(status){
+  return `<span class="badge ${status}">${esc(status)}</span>`;
+}
+
+document.getElementById('m-run-btn').addEventListener('click', async ()=>{
+  const entity_type = document.getElementById('m-entity-type').value.trim();
+  const dataset_id = parseInt(document.getElementById('m-dataset-id').value.trim(), 10);
+  const fields = document.getElementById('m-fields').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if (!entity_type || !dataset_id || !fields.length) { alert('Заполните entity_type, ID датасета и поля'); return; }
+  try{
+    await api('/v1/mdm/match', {method:'POST', body: JSON.stringify({entity_type, dataset_id, fields})});
+    loadCandidates();
+  }catch(e){ alert(e.message); }
+});
+async function loadCandidates(){
+  try{
+    const items = await api('/v1/mdm/candidates');
+    const tbody = document.querySelector('#candidatesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('candidatesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const c of items){
+      const tr = document.createElement('tr');
+      const actions = c.decision === 'pending'
+        ? `<button data-merge="${c.id}" class="primary">Подтвердить слияние</button>
+           <button data-reject="${c.id}" class="danger">Отклонить</button>`
+        : '';
+      tr.innerHTML = `<td>#${c.id}</td><td>${esc(c.entity_type)}</td><td>${c.score.toFixed(3)}</td>
+        <td>${statusBadge(c.decision)}</td><td>${actions}</td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-merge]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{ await api(`/v1/mdm/candidates/${el.dataset.merge}/merge`, {method:'POST', body: JSON.stringify({decided_by:'human:dashboard'})}); loadCandidates(); }
+      catch(e){ alert(e.message); }
+    }));
+    tbody.querySelectorAll('[data-reject]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{ await api(`/v1/mdm/candidates/${el.dataset.reject}/reject`, {method:'POST', body: JSON.stringify({decided_by:'human:dashboard'})}); loadCandidates(); }
+      catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+async function loadGold(){
+  try{
+    const items = await api('/v1/gold');
+    const tbody = document.querySelector('#goldTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('goldEmpty').classList.toggle('hidden', items.length > 0);
+    for (const g of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${g.id}</td><td>${esc(g.entity_type)}</td>
+        <td class="mono">${esc(JSON.stringify(g.attributes))}</td>
+        <td><button data-materialize="${g.id}">→ Ontology</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-materialize]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{
+        const r = await api('/v1/ontology/materialize', {method:'POST',
+          body: JSON.stringify({gold_entity_id: parseInt(el.dataset.materialize, 10)})});
+        alert('Материализовано в ObjectInstance #' + r.id);
+        setActiveView('ontology');
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+async function loadObjectTypes(){
+  try{
+    const items = await api('/v1/ontology/types');
+    const tbody = document.querySelector('#objectTypesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('objectTypesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const t of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${t.id}</td><td>${esc(t.name)}</td>
+        <td><code>${esc(t.gold_entity_type || '—')}</code></td>
+        <td class="mono">${esc(JSON.stringify(t.attributes_schema))}</td>
+        <td><button data-define-action="${t.id}">+ Action</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-define-action]').forEach(el=>el.addEventListener('click', async ()=>{
+      const name = prompt('Имя действия (напр. correct_attribute):', 'correct_attribute');
+      if (!name) return;
+      const handler = prompt('Handler (напр. ontology.actions.correct_attribute):',
+        'ontology.actions.' + name);
+      if (!handler) return;
+      try{
+        await api(`/v1/ontology/types/${el.dataset.defineAction}/actions`,
+          {method:'POST', body: JSON.stringify({name, handler})});
+        alert('Действие определено');
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+  loadObjectInstances();
+}
+document.getElementById('ot-create-btn').addEventListener('click', async ()=>{
+  const name = document.getElementById('ot-name').value.trim();
+  const gold_entity_type = document.getElementById('ot-gold-type').value.trim();
+  let attributes_schema = [];
+  const raw = document.getElementById('ot-schema').value.trim();
+  if (raw) { try{ attributes_schema = JSON.parse(raw); }catch(e){ alert('Схема должна быть валидным JSON'); return; } }
+  if (!name) { alert('Укажите имя типа'); return; }
+  try{
+    await api('/v1/ontology/types', {method:'POST',
+      body: JSON.stringify({name, gold_entity_type, attributes_schema})});
+    loadObjectTypes();
+  }catch(e){ alert(e.message); }
+});
+document.getElementById('mat-btn').addEventListener('click', async ()=>{
+  const gold_entity_id = parseInt(document.getElementById('mat-gold-id').value.trim(), 10);
+  if (!gold_entity_id) { alert('Укажите ID золотой записи'); return; }
+  try{
+    await api('/v1/ontology/materialize', {method:'POST', body: JSON.stringify({gold_entity_id})});
+    loadObjectInstances();
+  }catch(e){ alert(e.message); }
+});
+
+async function loadObjectInstances(){
+  try{
+    const items = await api('/v1/ontology/instances');
+    const tbody = document.querySelector('#instancesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('instancesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const inst of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${inst.id}</td><td>${inst.object_type_id}</td>
+        <td class="mono">${esc(JSON.stringify(inst.attributes))}</td>
+        <td><button data-open="${inst.id}">Открыть карточку</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-open]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{
+        const nb = await api(`/v1/ontology/instances/${el.dataset.open}`);
+        const card = document.getElementById('instanceCard');
+        card.classList.remove('hidden');
+        card.textContent = JSON.stringify(nb, null, 2);
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+document.getElementById('l-trace-btn').addEventListener('click', async ()=>{
+  const asset = document.getElementById('l-asset').value.trim();
+  if (!asset) return;
+  try{
+    const edges = await api('/v1/lineage/trace?asset=' + encodeURIComponent(asset));
+    const el = document.getElementById('lineageChain');
+    el.innerHTML = '';
+    document.getElementById('lineageEmpty').classList.toggle('hidden', edges.length > 0);
+    for (const e of edges){
+      const from = document.createElement('span'); from.className = 'lineage-node'; from.textContent = e.from_asset;
+      const arrow = document.createElement('span'); arrow.className = 'lineage-arrow'; arrow.textContent = `→ (${e.transform_ref}) →`;
+      el.appendChild(from); el.appendChild(arrow);
+    }
+    if (edges.length){
+      const last = document.createElement('span'); last.className = 'lineage-node'; last.textContent = edges[edges.length-1].to_asset;
+      el.appendChild(last);
+    }
+  }catch(e){ alert(e.message); }
+});
+
+async function loadAudit(){
+  try{
+    const items = await api('/v1/audit');
+    const tbody = document.querySelector('#auditTable tbody');
+    tbody.innerHTML = '';
+    for (const a of items){
+      const tr = document.createElement('tr');
+      const when = new Date(a.created*1000).toLocaleString('ru-RU');
+      tr.innerHTML = `<td>#${a.id}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td>
+        <td>${esc(a.entity_type)}${a.entity_id ? '#'+a.entity_id : ''}</td><td>${when}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){}
+}
+
+async function loadProcesses(){
+  try{
+    const items = await api('/v1/processes');
+    const tbody = document.querySelector('#processesTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('processesEmpty').classList.toggle('hidden', items.length > 0);
+    for (const p of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${p.id}</td><td>${esc(p.process_type)}</td>
+        <td>${esc(p.subject_type)}#${p.subject_id}</td>
+        <td><span class="badge ${p.status==='completed'||p.status==='corrected'?'ok':(p.status==='failed'||p.status==='cancelled'?'error':'pending')}">${esc(p.status)}</span></td>
+        <td><button data-open-process="${p.id}">Открыть</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-open-process]').forEach(el=>el.addEventListener('click', ()=>openProcess(el.dataset.openProcess)));
+  }catch(e){}
+}
+
+async function openProcess(id){
+  try{
+    const p = await api(`/v1/processes/${id}`);
+    const card = document.getElementById('processCard');
+    card.classList.remove('hidden');
+    let actions = '';
+    if (p.status === 'awaiting_task'){
+      actions = `<div class="row" style="margin-top:10px">
+        <textarea id="correction-payload-${id}" placeholder='исправленный JSON, напр. {"inn":"1234567890"}' style="flex:1;min-height:50px"></textarea>
+        <button data-submit-correction="${id}" class="primary">Подать исправление</button>
+      </div>`;
+    } else if (p.status === 'corrected'){
+      actions = `<div class="row" style="margin-top:10px">
+        <input id="wb-dataset-${id}" placeholder="dataset_name">
+        <input id="wb-key-${id}" placeholder="natural_key">
+        <button data-write-back="${id}" class="primary">Записать в источник</button>
+      </div>`;
+    }
+    if (p.status !== 'completed' && p.status !== 'cancelled'){
+      actions += `<div class="row" style="margin-top:6px"><button data-rollback-process="${id}" class="danger">Откатить процесс</button></div>`;
+    }
+    card.innerHTML = JSON.stringify(p, null, 2) + '<div id="process-actions-' + id + '"></div>';
+    document.getElementById('process-actions-' + id).outerHTML = actions;
+
+    const submitBtn = document.querySelector(`[data-submit-correction="${id}"]`);
+    if (submitBtn) submitBtn.addEventListener('click', async ()=>{
+      let payload;
+      try{ payload = JSON.parse(document.getElementById(`correction-payload-${id}`).value); }
+      catch(e){ alert('Исправление должно быть валидным JSON'); return; }
+      try{
+        const r = await api(`/v1/processes/${id}/correct`, {method:'POST',
+          body: JSON.stringify({corrected_payload: payload, actor: 'human:dashboard'})});
+        if (!r.accepted) alert('Отклонено, нарушения: ' + JSON.stringify(r.errors));
+        openProcess(id);
+        loadProcesses();
+      }catch(e){ alert(e.message); }
+    });
+    const wbBtn = document.querySelector(`[data-write-back="${id}"]`);
+    if (wbBtn) wbBtn.addEventListener('click', async ()=>{
+      const dataset_name = document.getElementById(`wb-dataset-${id}`).value.trim();
+      const natural_key = document.getElementById(`wb-key-${id}`).value.trim();
+      try{
+        const r = await api(`/v1/processes/${id}/write-back`, {method:'POST',
+          body: JSON.stringify({dataset_name, natural_key, actor: 'human:dashboard'})});
+        alert(r.ok ? 'Записано в источник' : 'Ошибка записи');
+        openProcess(id);
+        loadProcesses();
+      }catch(e){ alert(e.message); }
+    });
+    const rbBtn = document.querySelector(`[data-rollback-process="${id}"]`);
+    if (rbBtn) rbBtn.addEventListener('click', async ()=>{
+      const reason = prompt('Причина отката:', '') || '';
+      try{
+        await api(`/v1/processes/${id}/rollback`, {method:'POST',
+          body: JSON.stringify({actor: 'human:dashboard', reason})});
+        openProcess(id);
+        loadProcesses();
+      }catch(e){ alert(e.message); }
+    });
+  }catch(e){ alert(e.message); }
+}
+
+document.getElementById('copilot-send-btn').addEventListener('click', async ()=>{
+  const prompt_ = document.getElementById('copilot-prompt').value.trim();
+  const mode = document.getElementById('copilot-mode').value;
+  const actor = document.getElementById('copilot-actor').value.trim() || 'human:dashboard';
+  if (!prompt_) return;
+  const answerBox = document.getElementById('copilotAnswer');
+  answerBox.classList.remove('hidden');
+  answerBox.textContent = 'думает…';
+  try{
+    const r = await api('/v1/copilot/ask', {method:'POST',
+      body: JSON.stringify({prompt: prompt_, mode, actor})});
+    answerBox.textContent = r.text + (r.tools_called.length
+      ? '\n\n[инструменты: ' + r.tools_called.map(t=>t.name).join(', ') + ']' : '');
+    loadCopilotHistory();
+  }catch(e){ answerBox.textContent = 'Ошибка: ' + e.message; }
+});
+
+async function loadCopilotHistory(){
+  try{
+    const items = await api('/v1/copilot/history');
+    const tbody = document.querySelector('#copilotHistoryTable tbody');
+    tbody.innerHTML = '';
+    for (const h of items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${h.id}</td><td>${esc(h.actor)}</td><td><code>${esc(h.mode)}</code></td>
+        <td>${esc(h.prompt)}</td>
+        <td class="mono">${esc((h.tools_called||[]).map(t=>t.name).join(', '))}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){}
+}
+
+checkHealth();
+loadOverview();
+setInterval(checkHealth, 15000);
+</script>
+</body>
+</html>

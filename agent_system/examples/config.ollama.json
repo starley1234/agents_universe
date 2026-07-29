@@ -1,0 +1,15 @@
+{
+  "provider": "ollama",
+  "model": "qwen2.5-coder:14b",
+  "base_url": "http://localhost:11434",
+  "workspace": "./workspace",
+  "max_steps": 40,
+  "skills": [
+    "files",
+    "shell"
+  ],
+  "sandbox": {
+    "mode": "auto",
+    "timeout": 180
+  }
+}
