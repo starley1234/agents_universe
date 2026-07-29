@@ -62,6 +62,7 @@ from ..orchestrator.chain import ChainError, ChainRunner
 from ..orchestrator.service import Orchestrator
 from ..tts.provider import TTSError, build_tts_provider
 from ..workflows.runner import WorkflowRunner
+from ..workflows import templates as workflow_templates
 
 MAX_BODY = 1_000_000
 
@@ -346,6 +347,18 @@ class Handler(BaseHTTPRequestHandler):
                          "download_url": f"/v1/workflows/{wid}/artifacts/{aid}/download"})
 
     def _route_post(self, path: str, data: dict[str, Any]) -> None:
+        if path == "/v1/workflows/template":
+            template = str(data.get("template") or "").strip()
+            if template == "website_build":
+                payload = workflow_templates.website_build(str(data.get("topic") or "").strip(), str(data.get("implementation") or ""))
+            elif template == "room_inventory": payload = workflow_templates.room_inventory(str(data.get("title") or "Опись помещения"))
+            else:
+                self._send(400, {"error": "template: website_build или room_inventory"}); return
+            with self._store() as st:
+                wid=st.create_workflow(payload["kind"], payload["title"], payload["input"], payload["state"], payload["status"])
+                for n, step in enumerate(payload["steps"], 1): st.add_workflow_step(wid,n,step["kind"],step.get("input",{}))
+                self._send(201,{"id":wid,"workflow":st.get_workflow(wid),"steps":st.workflow_steps(wid)})
+            return
         if path == "/v1/workflows":
             kind = str(data.get("kind") or "").strip()
             if not kind:
