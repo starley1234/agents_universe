@@ -100,6 +100,10 @@ class Config:
     # изолированная так же строго, как agent_system/agent/tools/base.py:
     # Workspace (нельзя выйти за пределы через '..'/симлинки/абсолютный путь).
     workspace_root: str = "./workspace"
+    # Долговременные артефакты workflow (загрузки, DOCX, ZIP, изображения).
+    # В production заменяется S3/MinIO-адаптером; не путать с временным workspace.
+    artifact_root: str = "./artifacts"
+    artifact_upload_max_bytes: int = 20_000_000
     # Предел шагов инструментального цикла ОДНОГО хода диалога (не всей
     # сессии) — без него агент со сломанной моделью мог бы звать
     # инструменты бесконечно на каждое сообщение пользователя.
@@ -212,6 +216,7 @@ class Config:
             "tts_api_key": "TTS_API_KEY",
             "tts_audio_format": "TTS_AUDIO_FORMAT",
             "workspace_root": "MAOS_WORKSPACE_ROOT",
+            "artifact_root": "MAOS_ARTIFACT_ROOT",
             "web_search_base_url": "MAOS_WEB_SEARCH_BASE_URL",
             "smtp_host": "SMTP_HOST",
             "smtp_user": "SMTP_USER",
@@ -242,6 +247,8 @@ class Config:
                                      ("messaging_confirm_sends", "MAOS_CONFIRM_SENDS")):
             if os.getenv(env_name):
                 setattr(cfg, field_name, os.environ[env_name].strip().lower() in ("1", "true", "yes", "on"))
+        if os.getenv("MAOS_ARTIFACT_UPLOAD_MAX_BYTES"):
+            cfg.artifact_upload_max_bytes = int(os.environ["MAOS_ARTIFACT_UPLOAD_MAX_BYTES"])
         if os.getenv("MAOS_PORT"):
             cfg.port = int(os.environ["MAOS_PORT"])
         if os.getenv("MAOS_EMBEDDING_DIM"):

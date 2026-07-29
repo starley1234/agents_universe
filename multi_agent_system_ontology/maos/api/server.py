@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -109,6 +110,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_file(self, file_path: Path, mime: str, filename: str) -> None:
+        if not file_path.is_file():
+            self._send(404, {"error": "файл артефакта не найден"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename.replace(chr(34), "")}"')
+        self.send_header("Content-Length", str(file_path.stat().st_size))
+        self.end_headers()
+        with file_path.open("rb") as f:
+            shutil.copyfileobj(f, self.wfile)
+
+    def _artifact_path(self, relative: str) -> Path | None:
+        root = Path(self.cfg.artifact_root).expanduser().resolve()
+        candidate = (root / relative).resolve()
+        return candidate if candidate != root and root in candidate.parents else None
 
     def _send_audio(self, audio: bytes, mime: str) -> None:
         self.send_response(200)
@@ -208,6 +226,19 @@ class Handler(BaseHTTPRequestHandler):
             with self._store() as st:
                 self._send(200, {"workflows": st.list_workflows(qi("limit", 50), str(q.get("status", [""])[0]))})
             return
+        if path.startswith("/v1/workflows/") and "/artifacts/" in path and path.endswith("/download"):
+            parts = path.split("/")
+            if len(parts) == 7 and parts[3].isdigit() and parts[5].isdigit():
+                wid, aid = int(parts[3]), int(parts[5])
+                with self._store() as st:
+                    artifact = next((a for a in st.workflow_artifacts(wid) if a["id"] == aid), None)
+                if not artifact:
+                    self._send(404, {"error": "артефакт не найден"}); return
+                disk_path = self._artifact_path(artifact["path"])
+                if not disk_path:
+                    self._send(404, {"error": "некорректный путь артефакта"}); return
+                self._send_file(disk_path, artifact["mime_type"], artifact["name"])
+                return
         if path.startswith("/v1/workflows/"):
             raw_id = path[len("/v1/workflows/"):].split("/", 1)[0]
             if raw_id.isdigit():
@@ -251,6 +282,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
+        # Загрузки фото/вложений идут multipart, все остальные API — JSON.
+        if self.path.startswith("/v1/workflows/") and self.path.endswith("/upload"):
+            try:
+                self._upload_artifact()
+            except (StoreError, ValueError) as exc:
+                self._send(400, {"error": str(exc)})
+            except Exception as exc:
+                self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+            return
         data = self._read_json()
         if data is None:
             self._send(400, {"error": "ожидается JSON в теле запроса"})
@@ -265,6 +305,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": str(exc)})
         except Exception as exc:
             self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def _upload_artifact(self) -> None:
+        import cgi
+        match = re.fullmatch(r"/v1/workflows/(\d+)/upload", self.path.split("?", 1)[0])
+        if not match:
+            self._send(404, {"error": "нет маршрута загрузки"}); return
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0 or length > self.cfg.artifact_upload_max_bytes:
+            raise ValueError(f"размер файла должен быть 1..{self.cfg.artifact_upload_max_bytes} байт")
+        ctype = self.headers.get("Content-Type", "")
+        if not ctype.startswith("multipart/form-data"):
+            raise ValueError("ожидается multipart/form-data")
+        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
+                                environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype,
+                                         "CONTENT_LENGTH": str(length)})
+        field = form["file"] if "file" in form else None
+        if field is None or not getattr(field, "filename", ""):
+            raise ValueError("multipart-поле file обязательно")
+        filename = Path(field.filename).name
+        if not filename or filename in (".", ".."):
+            raise ValueError("некорректное имя файла")
+        wid = int(match.group(1)); root = Path(self.cfg.artifact_root).expanduser().resolve()
+        relative = Path("workflow") / str(wid) / "uploads" / filename
+        dest = (root / relative).resolve()
+        if root not in dest.parents:
+            raise ValueError("некорректный путь")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with self._store() as st:
+            if not st.get_workflow(wid):
+                self._send(404, {"error": f"workflow {wid} не найден"}); return
+            with dest.open("wb") as out:
+                shutil.copyfileobj(field.file, out, length=1024 * 1024)
+            aid = st.add_artifact(wid, "upload", filename, str(relative),
+                                  field.type or "application/octet-stream", dest.stat().st_size)
+        self._send(201, {"id": aid, "name": filename, "size_bytes": dest.stat().st_size,
+                         "download_url": f"/v1/workflows/{wid}/artifacts/{aid}/download"})
 
     def _route_post(self, path: str, data: dict[str, Any]) -> None:
         if path == "/v1/workflows":
