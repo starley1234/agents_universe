@@ -41,3 +41,9 @@ agentic_workflow_os/workspace/
 ## Прочий мусор ОС/редакторов
 .DS_Store
 *.swp
+
+## Рантайм-артефакты saps: выгрузки протоколов и временные файлы.
+## Схема живёт в PostgreSQL, на диск САПС пишет только отчёты.
+saps/workdir/
+saps/*.docx
+saps/*.xlsx
