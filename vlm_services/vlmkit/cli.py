@@ -222,14 +222,24 @@ def cmd_serve(args) -> int:
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     from .api import API_TOKEN, app
 
-    host = args.host or ("127.0.0.1" if not API_TOKEN else "0.0.0.0")
-    if not API_TOKEN and host not in ("127.0.0.1", "localhost"):
-        print(f"отказ: без VLM_API_TOKEN сервис нельзя публиковать на {host}",
+    # Приоритет: флаг > VLM_HOST > безопасное умолчание.
+    host = args.host or os.getenv("VLM_HOST") or ("0.0.0.0" if API_TOKEN else "127.0.0.1")
+    port = args.port if args.port is not None else int(os.getenv("VLM_PORT", "8081"))
+
+    if not API_TOKEN and host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"отказ: без VLM_API_TOKEN сервис нельзя публиковать на {host}.\n"
+              "  Задайте токен в .env или окружении:\n"
+              "    python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"\n"
+              "  Либо запустите на localhost: vlm serve --host 127.0.0.1",
               file=sys.stderr)
         return 2
-    print(f"→ интерфейс: http://{host}:{args.port}/", file=sys.stderr)
-    print(f"→ API-доки:  http://{host}:{args.port}/docs", file=sys.stderr)
-    uvicorn.run(app, host=host, port=args.port, log_level=args.log.lower())
+
+    shown = "localhost" if host in ("127.0.0.1", "::1") else host
+    print(f"→ интерфейс: http://{shown}:{port}/", file=sys.stderr)
+    print(f"→ API-доки:  http://{shown}:{port}/docs", file=sys.stderr)
+    if host == "0.0.0.0":
+        print("  слушает все интерфейсы — доступен по IP машины", file=sys.stderr)
+    uvicorn.run(app, host=host, port=port, log_level=args.log.lower())
     return 0
 
 
@@ -339,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("serve", help="веб-интерфейс и API")
     s.add_argument("--host")
-    s.add_argument("--port", type=int, default=8081)
+    s.add_argument("--port", type=int, default=None,
+                   help="по умолчанию VLM_PORT или 8081")
     s.add_argument("--log", default="info")
     s.set_defaults(fn=cmd_serve)
 

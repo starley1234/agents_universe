@@ -6,7 +6,14 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .env import load_env
+
 ROOT = Path(__file__).resolve().parent.parent
+
+# Читаем .env до объявления Settings: поля читают окружение через
+# default_factory, и к моменту первого settings() файл уже должен быть
+# применён. Переменные из окружения приоритетнее файла.
+load_env()
 
 
 def _env_int(name: str, default: int) -> int:
