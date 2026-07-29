@@ -9,6 +9,9 @@ from ..memory.store import Store
 from ..site_qa import check_site
 from ..llm.embeddings import build_embedder
 from ..orchestrator.service import Orchestrator
+from ..tools.base import Workspace
+from ..tools import office_docs
+from .room_inventory import inventory_markdown
 
 class WorkflowRunner:
     def __init__(self, cfg: Config, store: Store) -> None: self.cfg, self.store = cfg, store
@@ -30,6 +33,20 @@ class WorkflowRunner:
         self.store.set_workflow(workflow_id, status="review_required")
         return self.store.get_workflow(workflow_id) or workflow
     def _run_step(self, workflow: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
+        if step["kind"] == "docx_generation":
+            inventory = (workflow.get("state") or {}).get("inventory")
+            if not isinstance(inventory, dict):
+                raise ValueError("state.inventory с валидной описью обязателен")
+            ws = Workspace(Path(self.cfg.artifact_root) / "workflow" / str(workflow["id"]))
+            path = "inventory.docx"
+            tools = {t.name: t for t in office_docs.build(ws)}
+            tools["docx_create"].fn(path=path, markdown=inventory_markdown(inventory))
+            file_path = ws.resolve(path)
+            artifact_id = self.store.add_artifact(workflow["id"], "inventory_docx", file_path.name,
+                                                  str(Path("workflow") / str(workflow["id"]) / path),
+                                                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                                  file_path.stat().st_size, step_id=step["id"])
+            return {"artifact_id": artifact_id, "path": path, "size_bytes": file_path.stat().st_size}
         if step["kind"] == "qa":
             site=str((workflow.get("state") or {}).get("site_root", ""))
             if not site: return {"skipped": True, "reason": "state.site_root не задан"}
