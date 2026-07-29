@@ -234,6 +234,13 @@ def cmd_serve(args) -> int:
               file=sys.stderr)
         return 2
 
+    # Показываем источник адреса: при потерянном VLM_HOST (например,
+    # BOM в .env) пользователь иначе видит только «127.0.0.1» и не
+    # понимает, почему его настройка не сработала.
+    src = ("флаг --host" if args.host else
+           ".env / окружение" if os.getenv("VLM_HOST") else "умолчание")
+    print(f"адрес: {host}:{port} (источник: {src})", file=sys.stderr)
+
     shown = "localhost" if host in ("127.0.0.1", "::1") else host
     print(f"→ интерфейс: http://{shown}:{port}/", file=sys.stderr)
     print(f"→ API-доки:  http://{shown}:{port}/docs", file=sys.stderr)

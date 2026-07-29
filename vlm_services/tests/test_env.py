@@ -156,3 +156,54 @@ def test_port_from_env(monkeypatch):
     monkeypatch.setattr("uvicorn.run", lambda app, **kw: captured.update(kw))
     cli.cmd_serve(_serve_args())
     assert captured["port"] == 9123
+
+
+# --- файлы из Windows-редакторов -------------------------------------------
+def test_bom_does_not_eat_first_variable():
+    """Блокнот и PowerShell пишут UTF-8 с BOM.
+
+    Маркер приклеивается к первому ключу: «\ufeffVLM_HOST» не совпадает с
+    «VLM_HOST», переменная молча теряется, а остальные читаются — самый
+    запутывающий вид поломки.
+    """
+    text = "\ufeffVLM_HOST=192.168.1.33\r\nVLM_PORT=8081\r\n"
+    assert parse_env(text) == {"VLM_HOST": "192.168.1.33", "VLM_PORT": "8081"}
+
+
+def test_crlf_line_endings():
+    assert parse_env("A=1\r\nB=2\r\n") == {"A": "1", "B": "2"}
+
+
+def test_load_env_reads_bom_file(tmp_path, monkeypatch):
+    f = tmp_path / ".env"
+    f.write_bytes("\ufeffVLM_TEST_HOST=192.168.1.33\r\n".encode("utf-8"))
+    monkeypatch.delenv("VLM_TEST_HOST", raising=False)
+    load_env(f)
+    assert os.environ["VLM_TEST_HOST"] == "192.168.1.33"
+
+
+def test_load_env_survives_cp1251(tmp_path, monkeypatch):
+    """Windows-редактор мог сохранить файл в кодировке системы."""
+    f = tmp_path / ".env"
+    f.write_bytes("VLM_TEST_NOTE=привет\n".encode("cp1251"))
+    monkeypatch.delenv("VLM_TEST_NOTE", raising=False)
+    load_env(f)
+    assert os.environ["VLM_TEST_NOTE"] == "привет"
+
+
+def test_serve_reports_address_source(monkeypatch, capsys):
+    """Источник адреса в выводе: иначе потерянный VLM_HOST не заметить."""
+    monkeypatch.setenv("VLM_HOST", "10.1.2.3")
+    monkeypatch.setenv("VLM_API_TOKEN", "token-ascii")
+    import importlib
+
+    import vlmkit.api as api
+
+    importlib.reload(api)
+    import vlmkit.cli as cli
+
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: None)
+    cli.cmd_serve(_serve_args(port=9999))
+    err = capsys.readouterr().err
+    assert "10.1.2.3" in err and "источник" in err
+    monkeypatch.delenv("VLM_API_TOKEN", raising=False)

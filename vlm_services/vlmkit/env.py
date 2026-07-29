@@ -36,8 +36,13 @@ def parse_env(text: str) -> dict[str, str]:
     `abc#def` молча превратился бы в `abc`.
     """
     out: dict[str, str] = {}
+    # Блокнот и PowerShell (Out-File, >) пишут UTF-8 с BOM. Невидимый
+    # маркер приклеивается к первому ключу, и «VLM_HOST» перестаёт
+    # совпадать с «\ufeffVLM_HOST» — переменная молча теряется, а
+    # остальные строки читаются, что сбивает с толку сильнее всего.
+    text = text.lstrip("\ufeff")
     for raw in text.splitlines():
-        line = raw.strip()
+        line = raw.strip().lstrip("\ufeff")
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
@@ -62,9 +67,14 @@ def load_env(path: str | Path | None = None, override: bool = False) -> dict[str
     if target is None or not Path(target).is_file():
         return {}
     try:
-        data = parse_env(Path(target).read_text(encoding="utf-8"))
-    except OSError:
-        return {}
+        # utf-8-sig снимает BOM и на уровне чтения — на случай, если файл
+        # пришёл из Windows-редактора.
+        data = parse_env(Path(target).read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError):
+        try:
+            data = parse_env(Path(target).read_text(encoding="cp1251"))
+        except (OSError, UnicodeDecodeError):
+            return {}
     applied: dict[str, str] = {}
     for key, value in data.items():
         if override or key not in os.environ:
