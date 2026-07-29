@@ -7,6 +7,8 @@ from typing import Any
 from ..config import Config
 from ..memory.store import Store
 from ..site_qa import check_site
+from ..llm.embeddings import build_embedder
+from ..orchestrator.service import Orchestrator
 
 class WorkflowRunner:
     def __init__(self, cfg: Config, store: Store) -> None: self.cfg, self.store = cfg, store
@@ -34,6 +36,23 @@ class WorkflowRunner:
             report=check_site(site)
             if not report["ok"]: raise ValueError("site QA не пройден: " + "; ".join(report["errors"][:5]))
             return report
-        # Агентские steps намеренно остаются pending-to-done orchestration layer:
-        # runner не выдумывает результат без назначенного агента.
-        return {"pending_agent_execution": True, "kind": step["kind"]}
+        # Агентские шаги исполняются только при явном назначении: state.agent_map
+        # хранит {"research": "researcher", "implementation": "frontend"}.
+        # Это предотвращает произвольный выбор личности для внешних действий.
+        state = workflow.get("state") or {}
+        agent_slug = (state.get("agent_map") or {}).get(step["kind"])
+        if not agent_slug:
+            return {"requires_agent": True, "kind": step["kind"],
+                    "hint": "укажите state.agent_map.<kind> = slug агента"}
+        embedder = build_embedder(*self.cfg.resolve_embedding()[:2], dim=self.cfg.embedding_dim,
+                                  base_url=self.cfg.resolve_embedding()[2],
+                                  api_key=self.cfg.resolve_embedding()[3],
+                                  timeout=self.cfg.resolve_embedding()[4])
+        task = (step.get("input") or {}).get("task") or (
+            f"Выполни этап workflow '{step['kind']}'. Контекст задачи: "
+            f"{workflow.get('input') or {}}. Сохрани проверяемый результат в своей рабочей папке "
+            "и в ответе кратко перечисли созданные файлы и следующий результат.")
+        result = Orchestrator(self.cfg, self.store, embedder).chat(str(task), agent_slug=str(agent_slug))
+        return {"agent_slug": agent_slug, "conversation_id": result.conversation_id,
+                "provider_model": result.turn.provider_model, "answer": result.turn.text,
+                "tool_calls": result.turn.tool_calls, "stopped_by": result.turn.stopped_by}
