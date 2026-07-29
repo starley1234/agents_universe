@@ -92,6 +92,12 @@ def main() -> int:
     for item in load_builtin(st, embedder=emb):
         print(f"      {item['ruleset']}: {item['loaded']} пунктов")
 
+    # Отдельно показываем путь «загрузили PDF — система разобралась сама»:
+    # это основной сценарий для инженера, и он должен быть виден в демо, а
+    # не только в тестах. PDF-движок опционален, поэтому шаг пропускается
+    # с объяснением, если ни pymupdf, ни pypdf не установлены.
+    _demo_pdf(st, cfg, work)
+
     print("\n[5/6] Работа агентов")
     ed = EditorAgent(cfg, st).run()
     print(f"      Редактор:      {ed.summary()}")
@@ -143,6 +149,80 @@ def main() -> int:
     print("Ничего не было изменено без явного решения инженера.")
     st.close()
     return 0
+
+
+def _demo_pdf(st, cfg, work) -> None:
+    """Показать загрузку справочника из PDF одной командой."""
+    from pathlib import Path
+
+    from saps.ingest.pdf import available_engines
+
+    engines = available_engines()
+    if not engines:
+        print("\n      (шаг с PDF пропущен: не установлен ни pymupdf, ни "
+              "pypdf — pip install pymupdf)")
+        return
+    try:
+        import fitz                                     # noqa: F401
+    except ImportError:
+        # Сгенерировать демонстрационный PDF умеет только pymupdf; с одним
+        # pypdf читать можно, а создавать пример нечем.
+        print(f"\n      (шаг с PDF пропущен: для генерации примера нужен "
+              f"pymupdf; доступно чтение через {', '.join(engines)})")
+        return
+
+    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if not Path(font).exists():
+        print("\n      (шаг с PDF пропущен: нет шрифта с кириллицей для "
+              "генерации примера)")
+        return
+
+    print("\n      Загрузка справочника ИЗ PDF одной командой:")
+    pdf = _make_demo_pdf(Path(work) / "АП-25_выдержка.pdf", font)
+    from saps.ingest.autoload import autoload
+    result = autoload(st, cfg, pdf, actor="demo")
+    for step in result.steps:
+        print(f"        {'✓' if step.ok else '✗'} {step.name}: {step.detail}")
+    for warn in result.warnings:
+        print(f"        ⚠ {warn}")
+
+
+def _make_demo_pdf(path, font):
+    """Собрать PDF, похожий на настоящий справочник: колонтитул,
+    оглавление, номера страниц, перенос слова через строку."""
+    import fitz
+    pages = [
+        """СОДЕРЖАНИЕ
+
+25.1309 Оборудование, системы и установки .......... 512
+25.1322 Сигнализация ................................ 515""",
+        """25.1309 Оборудование, системы и установки
+
+(a) Оборудование и системы, необходимые для обеспечения безопасности, должны быть спроектированы так, чтобы выполнять предусмотренные функции в ожидаемых условиях эксплуатации.
+
+(b) Самолётные системы должны быть спроектированы так, чтобы любое отказное состояние, препятствующее безопасному полёту, оценивалось как практически неверо-
+ятное.""",
+        """25.1322 Сигнализация, предупреждающая и уведомляющая информация
+
+Предупреждающая сигнализация должна быть красного цвета и привлекать внимание экипажа немедленно.""",
+        """Раздел G — ЭКСПЛУАТАЦИОННЫЕ ОГРАНИЧЕНИЯ
+
+25.1501 Общие положения
+
+Каждое эксплуатационное ограничение должно быть установлено и внесено в руководство по лётной эксплуатации.""",
+    ]
+    doc = fitz.open()
+    for i, body in enumerate(pages):
+        pg = doc.new_page()
+        pg.insert_text((60, 40), "Авиационные правила Часть 25", fontsize=9,
+                       fontfile=font, fontname="DJ")
+        pg.insert_textbox(fitz.Rect(60, 70, 540, 720), body, fontsize=10,
+                          fontfile=font, fontname="DJ")
+        pg.insert_text((290, 780), f"- {511 + i} -", fontsize=9,
+                       fontfile=font, fontname="DJ")
+    doc.save(str(path))
+    doc.close()
+    return path
 
 
 if __name__ == "__main__":
