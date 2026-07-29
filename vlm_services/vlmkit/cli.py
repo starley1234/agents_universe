@@ -81,16 +81,35 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _store(args):
+    from .store import Store
+
+    cfg = _cfg(args)
+    return Store(getattr(args, "db", None) or cfg.db_path, cache_ttl_s=cfg.cache_ttl_s)
+
+
 def cmd_run(args) -> int:
-    svc = get_service(args.slug, _cfg(args))
+    from .runner import BudgetExceeded, Runner
+
+    cfg = _cfg(args)
     params = _params(args.param, args.params_json)
     images: Any = args.images or None
     if images is None:
-        demo = svc.demo()
-        images = demo.get("images")
-        params = {**demo.get("params", {}), **params}
         print("(без файлов — использую демо-данные)", file=sys.stderr)
-    result = svc.run(images, **params)
+
+    store = None if getattr(args, "no_store", False) else _store(args)
+    runner = Runner(store, cfg, max_retries=cfg.max_retries,
+                    daily_budget_usd=cfg.daily_budget_usd,
+                    use_cache=cfg.use_cache and not getattr(args, "no_cache", False))
+    try:
+        result = runner.run(args.slug, images, params,
+                            no_cache=getattr(args, "no_cache", False))
+    except BudgetExceeded as e:
+        print(f"бюджет: {e}", file=sys.stderr)
+        return 3
+    finally:
+        if store is not None:
+            store.close()
 
     if args.json:
         print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, default=str))
@@ -98,8 +117,10 @@ def cmd_run(args) -> int:
         print(result.report)
         for w in result.warnings:
             print(f"⚠ {w}", file=sys.stderr)
+        cost = (f", ${result.cost_usd:.4f}" if result.cost_usd else "")
+        cached = " (из кеша)" if result.cached else ""
         print(f"— {result.duration_s} с, модель {result.model}, "
-              f"изображений {len(result.images)}", file=sys.stderr)
+              f"изображений {len(result.images)}{cost}{cached}", file=sys.stderr)
     if args.out:
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
@@ -113,6 +134,7 @@ def cmd_run(args) -> int:
 
 def cmd_demo(args) -> int:
     args.images, args.param, args.params_json = [], None, None
+    args.no_cache = True  # демо всегда считаем заново, иначе не видно работы
     return cmd_run(args)
 
 
@@ -135,6 +157,62 @@ def cmd_demo_all(args) -> int:
             failed += 1
             print(f"[упал] {slug}: {type(exc).__name__}: {exc}", file=sys.stderr)
     return 1 if failed else 0
+
+
+def cmd_stats(args) -> int:
+    store = _store(args)
+    try:
+        s = store.stats()
+    finally:
+        store.close()
+    print(f"прогонов всего:    {s['total_runs']}")
+    print(f"успешных:          {s['success_rate'] if s['success_rate'] is not None else '—'}")
+    print(f"изображений:       {s['images_processed']}")
+    print(f"среднее время:     {s['avg_duration_s']} с")
+    print(f"потрачено:         ${s['total_cost_usd']}")
+    print(f"из кеша:           {s['served_from_cache']} ({s['cache_hit_rate']:.0%})")
+    print(f"сэкономлено кешем: ${s['cache']['cost_saved_usd']}")
+    if s["by_service"]:
+        print("\nпо сервисам:")
+        for row in s["by_service"]:
+            print(f"  {row['service']:22} {row['n']:>5} прогонов, "
+                  f"${round(row['cost'], 4):>8}, {row['avg_s']:.2f} с")
+    return 0
+
+
+def cmd_runs(args) -> int:
+    from datetime import datetime
+
+    store = _store(args)
+    try:
+        rows = store.runs(service=args.service, status=args.status, limit=args.limit)
+    finally:
+        store.close()
+    if not rows:
+        print("прогонов не найдено")
+        return 0
+    print(f"{'ID':18}{'СЕРВИС':22}{'СТАТУС':9}{'ФОТО':>5}{'ВРЕМЯ':>8}"
+          f"{'СТОИМОСТЬ':>11}{'КЕШ':>5}  КОГДА")
+    for r in rows:
+        when = datetime.fromtimestamp(r["created_at"]).strftime("%d.%m %H:%M:%S")
+        cost = f"${r['cost_usd']:.4f}" if r["cost_usd"] else "—"
+        print(f"{r['id']:18}{r['service']:22}{r['status']:9}{r['images_n']:>5}"
+              f"{r['duration_s'] or 0:>7.2f}с{cost:>11}{'да' if r['cached'] else '—':>5}"
+              f"  {when}")
+        if r["error"]:
+            print(f"{'':18}└ {r['error'][:100]}")
+    return 0
+
+
+def cmd_purge(args) -> int:
+    store = _store(args)
+    try:
+        runs = store.purge_runs(args.older_than_days)
+        cached = store.cache_purge(args.older_than_days * 86400)
+    finally:
+        store.close()
+    print(f"удалено прогонов: {runs}, записей кеша: {cached}")
+    return 0
 
 
 def cmd_serve(args) -> int:
@@ -204,6 +282,18 @@ def cmd_doctor(args) -> int:
     else:
         check("ключ API задан", True)
 
+    try:
+        store = _store(args)
+        store.stats()
+        store.close()
+        check("хранилище доступно", True, cfg.db_path)
+    except Exception as exc:  # noqa: BLE001
+        check("хранилище доступно", False, str(exc))
+
+    check("кеш включён", cfg.use_cache,
+          "без кеша повторные запросы оплачиваются заново", warn_only=True)
+    check("дневной лимит трат задан", bool(cfg.daily_budget_usd),
+          "VLM_DAILY_BUDGET_USD=0 — расход ничем не ограничен", warn_only=True)
     check("API-токен задан", bool(os.getenv("VLM_API_TOKEN", "")),
           "без него serve поднимется только на localhost", warn_only=True)
 
@@ -220,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser("vlm", description="VLM-сервисы: 12 продуктов")
     ap.add_argument("--provider", help="fake | openai | anthropic | ollama")
     ap.add_argument("--model")
+    ap.add_argument("--db", help="файл журнала и кеша")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list", help="каталог сервисов").set_defaults(fn=cmd_list)
@@ -231,12 +322,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--params-json", help="файл или строка JSON с параметрами")
     r.add_argument("--out", help="каталог для отчёта")
     r.add_argument("--json", action="store_true")
+    r.add_argument("--no-cache", action="store_true", help="не брать ответ из кеша")
+    r.add_argument("--no-store", action="store_true", help="не писать в журнал")
     r.set_defaults(fn=cmd_run)
 
     d = sub.add_parser("demo", help="запустить на демо-данных")
     d.add_argument("slug")
     d.add_argument("--out")
     d.add_argument("--json", action="store_true")
+    d.add_argument("--no-store", action="store_true")
     d.set_defaults(fn=cmd_demo)
 
     da = sub.add_parser("demo-all", help="прогнать все сервисы на демо-данных")
@@ -248,6 +342,19 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--port", type=int, default=8081)
     s.add_argument("--log", default="info")
     s.set_defaults(fn=cmd_serve)
+
+    st = sub.add_parser("stats", help="сводка: прогоны, траты, кеш")
+    st.set_defaults(fn=cmd_stats)
+
+    rn = sub.add_parser("runs", help="журнал прогонов")
+    rn.add_argument("--service")
+    rn.add_argument("--status", choices=["ok", "error"])
+    rn.add_argument("--limit", type=int, default=30)
+    rn.set_defaults(fn=cmd_runs)
+
+    pg = sub.add_parser("purge", help="удалить старые прогоны и кеш")
+    pg.add_argument("--older-than-days", type=float, default=30.0)
+    pg.set_defaults(fn=cmd_purge)
 
     doc = sub.add_parser("doctor", help="самопроверка окружения")
     doc.set_defaults(fn=cmd_doctor)

@@ -85,11 +85,19 @@ class Result:
     images: list[dict[str, Any]] = field(default_factory=list)
     duration_s: float = 0.0
     model: str = ""
+    # Заполняются продовой обвязкой (runner). В самом сервисе всегда нули:
+    # он не знает ни про цены, ни про то, кто считает токены.
+    cost_usd: float = 0.0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cached: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {"service": self.service, "data": self.data, "report": self.report,
                 "warnings": self.warnings, "images": self.images,
-                "duration_s": self.duration_s, "model": self.model}
+                "duration_s": self.duration_s, "model": self.model,
+                "cost_usd": self.cost_usd, "tokens_in": self.tokens_in,
+                "tokens_out": self.tokens_out, "cached": self.cached}
 
 
 class Service:
@@ -112,6 +120,7 @@ class Service:
     def __init__(self, cfg: Settings | None = None, vlm: BaseChatModel | None = None):
         self.cfg = cfg or default_settings()
         self._vlm = vlm
+        self._tracker: Any = None
 
     # --- инфраструктура ---------------------------------------------------
     @property
@@ -136,7 +145,8 @@ class Service:
             sys += ("\n\nОтветь ТОЛЬКО валидным JSON по схеме ниже, без пояснений.\n"
                     + SCHEMA_LINE + json.dumps(schema, ensure_ascii=False))
         msg = build_message(prompt, images, scenes_for_fake=is_offline(self.cfg))
-        raw = self.vlm.invoke([SystemMessage(content=sys), msg])
+        cfg = {"callbacks": [self._tracker]} if self._tracker else None
+        raw = self.vlm.invoke([SystemMessage(content=sys), msg], config=cfg)
         parsed = parse_json(str(raw.content))
         return parsed if parsed is not None else (schema if schema is not None else {})
 
@@ -165,10 +175,23 @@ class Service:
 
     def run(self, images: Any = None, **params: Any) -> Result:
         """Точка входа: подготовить кадры, проанализировать, собрать отчёт."""
-        t0 = time.time()
         self.check_params(params)
-        refs = self.prepare(images)
-        out = self.analyze(refs, **params)
+        return self.run_prepared(self.prepare(images), **params)
+
+    def run_prepared(self, refs: list[ImageRef], tracker: Any = None,
+                     **params: Any) -> Result:
+        """Выполнить на уже подготовленных кадрах.
+
+        Отдельный вход нужен продовой обвязке: она готовит кадры один раз,
+        считает по ним ключ кеша и только потом решает, звать ли модель.
+        Повторная нормализация на каждом ретрае была бы лишней работой.
+        """
+        t0 = time.time()
+        self._tracker = tracker
+        try:
+            out = self.analyze(refs, **params)
+        finally:
+            self._tracker = None
         data = out if isinstance(out, dict) else {"result": out}
         warnings = list(data.pop("_warnings", []))
         return Result(

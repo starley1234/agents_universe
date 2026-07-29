@@ -12,10 +12,12 @@ RUN pip install --no-cache-dir ".[all]"
 COPY vlmkit/ ./vlmkit/
 
 # Не root: сервису незачем иметь права на систему.
-RUN useradd --create-home --uid 10001 app && chown -R app:app /app
+RUN useradd --create-home --uid 10001 app \
+    && mkdir -p /data && chown -R app:app /app /data
 USER app
 
-ENV VLM_HOST=0.0.0.0 VLM_PORT=8081
+ENV VLM_HOST=0.0.0.0 VLM_PORT=8081 VLM_DB=/data/vlm.db
+VOLUME ["/data"]
 EXPOSE 8081
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

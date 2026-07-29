@@ -18,7 +18,14 @@ services:
       VLM_API_TOKEN: "${VLM_API_TOKEN:-}"
       VLM_MAX_SIDE_PX: "${VLM_MAX_SIDE_PX:-1024}"
       VLM_MAX_UPLOAD_MB: "${VLM_MAX_UPLOAD_MB:-20}"
+      VLM_DB: "/data/vlm.db"
+      VLM_CACHE: "${VLM_CACHE:-1}"
+      VLM_CACHE_TTL_S: "${VLM_CACHE_TTL_S:-604800}"
+      VLM_MAX_RETRIES: "${VLM_MAX_RETRIES:-2}"
+      VLM_DAILY_BUDGET_USD: "${VLM_DAILY_BUDGET_USD:-0}"
       VLM_LOG: "${VLM_LOG:-INFO}"
+    volumes:
+      - vlm-data:/data
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health',timeout=4).status==200 else 1)"]
@@ -30,3 +37,6 @@ services:
       resources:
         limits:
           memory: 1G
+
+volumes:
+  vlm-data:

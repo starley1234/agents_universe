@@ -42,6 +42,20 @@ class Settings:
     max_images: int = field(default_factory=lambda: _env_int("VLM_MAX_IMAGES", 8))
     jpeg_quality: int = field(default_factory=lambda: _env_int("VLM_JPEG_QUALITY", 85))
 
+    # --- эксплуатация -----------------------------------------------------
+    db_path: str = field(default_factory=lambda: os.getenv("VLM_DB", "data/vlm.db"))
+    cache_ttl_s: float = field(default_factory=lambda: _env_float("VLM_CACHE_TTL_S", 604800))
+    use_cache: bool = field(
+        default_factory=lambda: os.getenv("VLM_CACHE", "1").lower()
+        not in ("0", "false", "no"))
+    max_retries: int = field(default_factory=lambda: _env_int("VLM_MAX_RETRIES", 2))
+    # 0 — без ограничения. Ненулевое значение спасает от разорения при
+    # зацикленном клиенте или утёкшем токене.
+    daily_budget_usd: float = field(
+        default_factory=lambda: _env_float("VLM_DAILY_BUDGET_USD", 0.0))
+    request_timeout_s: float = field(
+        default_factory=lambda: _env_float("VLM_REQUEST_TIMEOUT_S", 120.0))
+
     def resolved_model(self) -> str:
         if self.model:
             return self.model
