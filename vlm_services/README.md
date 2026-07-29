@@ -45,7 +45,7 @@ vlm stats                                   # траты, кеш, прогоны
 vlm runs --status error                     # что падало
 vlm purge --older-than-days 30              # чистка журнала и кеша
 vlm doctor                                  # самопроверка
-python scripts/live_check.py                # диагностика на живой модели
+make live                                   # диагностика на живой модели
 ```
 
 ---

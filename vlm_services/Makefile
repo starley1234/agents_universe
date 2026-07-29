@@ -2,7 +2,7 @@ VENV ?= .venv
 PY   ?= $(VENV)/bin/python
 BIN  ?= $(VENV)/bin
 
-.PHONY: help venv install test serve demo doctor docker docker-run stats clean
+.PHONY: help venv install test serve demo doctor live docker docker-run stats clean
 
 help:
 	@echo "install   поставить зависимости в .venv"
@@ -10,6 +10,7 @@ help:
 	@echo "serve     интерфейс на http://127.0.0.1:8081"
 	@echo "demo      прогнать все 12 сервисов на демо-данных"
 	@echo "doctor    самопроверка окружения"
+	@echo "live      диагностика на живой модели (нужен VLM_API_KEY)"
 	@echo "docker    собрать образ"
 	@echo "stats     траты, кеш, прогоны"
 
@@ -32,6 +33,11 @@ demo:
 
 doctor:
 	$(BIN)/vlm doctor
+
+# Обёртка нужна, чтобы не гадать с интерпретатором: берём тот, где стоят
+# зависимости. ARGS передаёт флаги: make live ARGS="--all --save out/"
+live:
+	$(PY) scripts/live_check.py $(ARGS)
 
 docker:
 	docker build -f docker/Dockerfile -t vlm-services:latest .

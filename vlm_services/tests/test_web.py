@@ -75,3 +75,28 @@ def test_markdown_escapes_injection():
 def test_markdown_handles_numbered_lists_and_empty():
     out = run_js("console.log(md('1. первый\\n2. второй') + '|' + md(''));")
     assert "<li>первый</li>" in out and "<li>второй</li>" in out
+
+
+# --- скрипт диагностики ----------------------------------------------------
+def test_live_check_explains_wrong_interpreter():
+    """Запуск системным Python — частая ошибка; нужна подсказка, а не трейсбек."""
+    import subprocess
+    import sys as _sys
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "live_check.py"
+    # /usr/bin/python3 — интерпретатор без наших зависимостей
+    p = subprocess.run(["/usr/bin/python3", str(script), "--save", "out/"],
+                       capture_output=True, text=True, timeout=60)
+    if "langchain_core" not in p.stdout and p.returncode == 0:
+        pytest.skip("в системном python3 зависимости установлены")
+    assert p.returncode == 2, "должен быть внятный выход, а не падение"
+    assert "Traceback" not in p.stdout
+    assert ".venv" in p.stdout, "нужно показать правильный интерпретатор"
+    assert "--save out/" in p.stdout, "аргументы пользователя надо сохранить"
+
+
+def test_live_check_is_valid_python():
+    import py_compile
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "live_check.py"
+    py_compile.compile(str(script), doraise=True)

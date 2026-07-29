@@ -129,9 +129,15 @@ export VLM_MODEL=unsloth/gemma-4-12b-it
 нарастающей: соединение, зрение модели, соблюдение схемы и сами сервисы.
 
 ```bash
-python scripts/live_check.py              # быстро, 4 сервиса
-python scripts/live_check.py --all        # все двенадцать
-python scripts/live_check.py --save out/  # + сырые ответы модели
+make live                              # быстро, 4 сервиса
+make live ARGS="--all --save out/"     # все двенадцать + сырые ответы
+```
+
+`make live` сам берёт интерпретатор из `.venv`. Если запускаете скрипт
+напрямую, укажите его явно — системный `python` зависимостей не видит:
+
+```bash
+.venv/bin/python scripts/live_check.py --save out/
 ```
 
 Скрипт рисует картинку с заведомо известным содержимым (красный
@@ -348,6 +354,10 @@ vlm purge --older-than-days 30
 
 **Ollama: таймаут.** На CPU одно изображение обрабатывается минутами.
 Поднимите `VLM_REQUEST_TIMEOUT_S=300` и уменьшите `VLM_MAX_SIDE_PX=768`.
+
+**`ModuleNotFoundError: No module named 'langchain_core'`.** Скрипт
+запущен интерпретатором без зависимостей. Используйте `make live` или
+`.venv/bin/python scripts/live_check.py`. Скрипт сам подскажет команду.
 
 ---
 

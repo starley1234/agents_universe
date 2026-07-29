@@ -27,13 +27,42 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-from vlmkit.config import settings  # noqa: E402
-from vlmkit.core import get_service, load_registry, parse_json  # noqa: E402
-from vlmkit.images import HAVE_PILLOW, ImageRef, load  # noqa: E402
-from vlmkit.runner import price_of  # noqa: E402
-from vlmkit.vlm import build_message, get_vlm, supports_json_mode  # noqa: E402
+
+def _bail_wrong_python(exc: ModuleNotFoundError) -> None:
+    """Объяснить, что делать, вместо трейсбека.
+
+    Самая частая ошибка запуска: `python scripts/live_check.py` берёт
+    системный интерпретатор, где зависимостей нет. Трейсбек про
+    langchain_core тут ни при чём и только сбивает с толку.
+    """
+    venv = ROOT / ".venv" / ("Scripts" if os.name == "nt" else "bin") / "python"
+    print(f"Не найден модуль «{exc.name}»: скрипт запущен интерпретатором "
+          f"без зависимостей.\n")
+    print(f"  сейчас: {sys.executable}")
+    if venv.exists():
+        print(f"\nЗапустите так:\n  {venv} scripts/live_check.py "
+              + " ".join(sys.argv[1:]))
+    else:
+        print(f"\nОкружение не создано. Из каталога {ROOT}:\n"
+              "  make install\n"
+              "  .venv/bin/python scripts/live_check.py "
+              + " ".join(sys.argv[1:]))
+    print("\nЛибо поставьте зависимости в текущий интерпретатор:\n"
+          f"  {sys.executable} -m pip install -e '.[all]'")
+    raise SystemExit(2)
+
+
+try:
+    from vlmkit.config import settings  # noqa: E402
+    from vlmkit.core import get_service, load_registry, parse_json  # noqa: E402
+    from vlmkit.images import HAVE_PILLOW, ImageRef, load  # noqa: E402
+    from vlmkit.runner import price_of  # noqa: E402
+    from vlmkit.vlm import build_message, get_vlm, supports_json_mode  # noqa: E402
+except ModuleNotFoundError as exc:  # noqa: BLE001
+    _bail_wrong_python(exc)
 
 OK, FAIL, WARN = "\033[32m✓\033[0m", "\033[31m✗\033[0m", "\033[33m!\033[0m"
 
