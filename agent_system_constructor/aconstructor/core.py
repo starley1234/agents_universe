@@ -13,7 +13,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Callable, Iterable, TypedDict
+from typing import Annotated, Any, Callable, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -140,26 +140,6 @@ def step(name: str, **payload: Any) -> dict[str, Any]:
     return {"node": name, "ts": round(time.time(), 3), **payload}
 
 
-def agent_node(agent: Agent, render: Callable[[dict], str], apply: Callable[[dict, Any], dict]):
-    """Обернуть агента в узел графа.
-
-    `render` строит запрос из состояния, `apply` кладёт разобранный ответ
-    обратно в состояние. Ошибки не роняют граф — они попадают в `errors`.
-    """
-
-    def node(state: dict) -> dict:
-        try:
-            data = agent.run_json(render(state))
-            patch = apply(state, data)
-        except Exception as exc:  # noqa: BLE001 — узел не должен ронять граф
-            return {"errors": [f"{agent.name}: {exc}"], "trace": [step(agent.name, ok=False)]}
-        patch.setdefault("trace", []).append(step(agent.name, ok=True))
-        return patch
-
-    node.__name__ = agent.name
-    return node
-
-
 # --------------------------------------------------------------------------
 # реестр
 # --------------------------------------------------------------------------
@@ -214,7 +194,3 @@ def run_pipeline(
 def mermaid(slug: str, cfg: Settings | None = None) -> str:
     p = get_pipeline(slug)
     return p.build(cfg=cfg or default_settings()).get_graph().draw_mermaid()
-
-
-def as_rows(items: Iterable[dict], keys: tuple[str, ...]) -> list[list[str]]:
-    return [[str(it.get(k, "")) for k in keys] for it in items]
