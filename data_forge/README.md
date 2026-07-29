@@ -183,6 +183,36 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
     обработан (deadlock, воспроизведён и пойман тестом). Исправлено
     через `fastapi.concurrency.run_in_threadpool` — блокирующий вызов
     уходит в отдельный поток, event loop остаётся свободным.
+- **Прод-адаптация** (`Dockerfile`, `docker-compose.yml`,
+  `.dockerignore`) — multi-stage сборка образа (builder ставит
+  зависимости, финальный образ без build-инструментов), non-root
+  пользователь, `HEALTHCHECK` в `/health`, `docker-compose.yml` с
+  PostgreSQL 16 (данные в отдельном volume, обязательные секреты через
+  `.env`, healthcheck-зависимость `app` от готовности `db`). При
+  адаптации найдены и исправлены 2 реальных production-дефекта:
+  1. Прямой ASGI-запуск (`uvicorn dataforge.api.server:app` — типичный
+     способ в Docker/gunicorn) НЕ вызывал `configure()` из
+     `dataforge/server.py`, и сервис отвечал HTTP 500 "не
+     сконфигурирован" на КАЖДЫЙ запрос вместо явной ошибки при старте.
+     Исправлено через `lifespan`: fail-fast чтение конфига и проверка
+     реального подключения к PostgreSQL ДО первого запроса (если
+     `configure()` уже был вызван явно — не перезаписывается,
+     идемпотентно).
+  2. При нескольких uvicorn-воркерах (`FORGE_WORKERS>1`, добавлено для
+     прод-нагрузки) КАЖДЫЙ воркер параллельно создаёт схему БД при
+     старте — `CREATE TABLE IF NOT EXISTS` не атомарен относительно
+     неявно создаваемых объектов (SERIAL-последовательности, индексы
+     PRIMARY KEY), конкурентный DDL двух процессов ловил
+     `UniqueViolation` по системному каталогу PostgreSQL (воспроизведено
+     вручную с `FORGE_WORKERS=2`). Исправлено через
+     `pg_advisory_lock`/`pg_advisory_unlock` вокруг `_ensure_schema()`.
+
+  **Честная оговорка**: сам `docker build`/`docker compose up` НЕ
+  выполнялись в этой сессии — окружение разработки не имеет
+  установленного Docker. Всё, что можно было проверить без него,
+  проверено реальными процессами (см. `tests/test_prod_lifespan.py` —
+  реальный `subprocess` с командой `uvicorn`, и ручные прогоны на
+  изолированной копии кода в "чистом" prod-venv без dev-зависимостей).
 
 ### НЕ реализовано (осознанно, не притворяемся, что готово)
 
@@ -218,8 +248,11 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
   демонстрации (сотни-тысячи записей) этого достаточно; для
   промышленных объёмов (миллионы строк) потребовалась бы миграция на
   настоящий Lakehouse.
-- **Kubernetes/Terraform/Prometheus/Langfuse** — не нужны для объёма,
-  который реально реализован; добавлены бы карго-культом.
+- **Kubernetes/Terraform/Prometheus/Langfuse** — по решению пользователя
+  прод-адаптация ограничена Docker Compose (без K8s); манифесты
+  Kubernetes/Helm-чарты, Terraform-модули для инфраструктуры,
+  Prometheus/Grafana-мониторинг, Langfuse-трейсинг LLM-вызовов
+  Copilot — не реализованы.
 - **`pull_counterparties`-подобная асимметрия мастер-систем**: как и в
   `erp_ai/`, если понадобится развести правила мастер-данных по
   конкретным справочникам 1С отдельно от общего MDM-модуля — это
@@ -240,7 +273,7 @@ Engine + MDM/матчинг, со сквозной прослеживаемос�
 - Для тестов: `pip install -r requirements-dev.txt` (`pgserver` —
   embedded PostgreSQL)
 
-## Быстрый старт
+## Быстрый старт (локальная разработка, без Docker)
 
 ```bash
 cd data_forge
@@ -259,8 +292,100 @@ make serve      # http://127.0.0.1:8200/dashboard
 
 ```bash
 pip install -r requirements-dev.txt
-make test       # 503 проверки, ~50 секунд
+make test       # 513 проверок, ~55 секунд
 ```
+
+## Быстрый старт (продакшен, Docker Compose)
+
+Поднимает DataForge + PostgreSQL 16 одной командой: `docker compose up`
+собирает образ приложения (multi-stage `Dockerfile`, non-root
+пользователь, healthcheck) и запускает его рядом с контейнером БД,
+данные которой сохраняются в именованном volume между перезапусками.
+
+```bash
+cd data_forge
+
+# 1. Обязательные секреты — ТОЛЬКО через .env, не через docker-compose.yml
+#    (см. requirements docker-compose.yml — POSTGRES_PASSWORD и
+#    FORGE_API_TOKEN объявлены обязательными: `docker compose up` без
+#    них завершится с понятной ошибкой ДО старта контейнеров).
+cat > .env <<'EOF'
+POSTGRES_DB=dataforge
+POSTGRES_USER=forge
+POSTGRES_PASSWORD=замените-на-настоящий-длинный-пароль
+FORGE_API_TOKEN=замените-на-настоящий-случайный-токен
+EOF
+# Сгенерировать случайный токен: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# 2. Поднять платформу (сборка образа + запуск app и db, ожидание healthcheck БД)
+docker compose up -d --build
+
+# 3. Проверить, что оба контейнера здоровы
+docker compose ps
+
+# 4. Открыть дашборд (порт наружу — FORGE_PORT из .env, по умолчанию 8200)
+#    Внутри контейнера FORGE_HOST=0.0.0.0 (см. docker-compose.yml), но
+#    dataforge/server.py требует токен для НЕ-localhost — поэтому вызовы
+#    ко ВСЕМ /v1/* эндпоинтам обязаны нести заголовок Authorization
+open http://localhost:8200/dashboard   # веб-интерфейс сам спросит токен
+curl -H "Authorization: Bearer $FORGE_API_TOKEN" http://localhost:8200/v1/dashboard/stats
+
+# 5. Логи / остановка / полная очистка (включая данные PostgreSQL)
+docker compose logs -f app
+docker compose down          # останавливает контейнеры, volume СОХРАНЯЕТСЯ
+docker compose down -v       # + удаляет volume с данными БД (осторожно!)
+```
+
+**Что делает `docker-compose.yml` (см. файл за полными комментариями):**
+
+- `db` — `postgres:16-alpine`, порт БД НЕ публикуется на хост по
+  умолчанию (доступ только из контейнера `app` через внутреннюю сеть
+  `dataforge-net`); `healthcheck` через `pg_isready`; `app` стартует
+  только после `service_healthy` у `db` (`depends_on.condition`).
+- `app` — собирается из `Dockerfile` этого проекта; `FORGE_WORKERS`
+  (по умолчанию 2) — несколько uvicorn-воркеров для отказоустойчивости
+  под нагрузкой; `DB_DSN` собирается из тех же `POSTGRES_*` переменных,
+  что заданы для `db`, — единственный источник правды для пароля, не
+  дублируется вручную; `healthcheck` бьёт в `/health` (единственный
+  маршрут без токена).
+- Оба обязательных секрета (`POSTGRES_PASSWORD`, `FORGE_API_TOKEN`)
+  объявлены через `${VAR:?сообщение об ошибке}` — Docker Compose
+  откажется поднимать стек без них, а не подставит пустую строку молча.
+
+**Прод-параметры, которые стоит пересмотреть перед реальным
+развёртыванием** (честно, не скрываем):
+
+- **TLS/HTTPS** — `Dockerfile`/`docker-compose.yml` поднимают только
+  обычный HTTP; в проде нужен обратный прокси (nginx/Traefik/облачный
+  Load Balancer) с TLS-терминацией перед `app` — не реализовано и не
+  входит в этот файл.
+- **Резервное копирование PostgreSQL** — volume `dataforge-pgdata`
+  сохраняет данные между перезапусками контейнера, но НЕ является
+  бэкапом (диск хоста может отказать); настройте `pg_dump`/WAL-архивирование
+  отдельно под вашу инфраструктуру.
+- **Ограничения ресурсов** (`deploy.resources.limits` в compose или
+  аналог в вашем оркестраторе) — не заданы, подберите под реальную
+  нагрузку и доступные ресурсы хоста.
+- **`FORGE_WORKERS`** подобран произвольно (2) — увеличьте под реальное
+  число CPU и ожидаемую нагрузку; каждый воркер держит своё пул
+  соединений к PostgreSQL, при большом числе воркеров может
+  потребоваться `PgBouncer` перед `db` (не включён в эту сборку).
+- Все секреты (`FORGE_API_TOKEN`, `ONEC_API_KEY`, `FORGE_LLM_API_KEY`,
+  `POSTGRES_PASSWORD`) — только через `.env`/секрет-хранилище
+  оркестратора (Docker secrets/Kubernetes Secret/Vault), НИКОГДА не
+  коммитятся в git (`.env` в `.gitignore`) и не передаются как
+  build-аргументы Docker (попали бы в `docker history`).
+- **Честная оговорка о проверке**: `Dockerfile`/`docker-compose.yml` НЕ
+  собирались и НЕ запускались через реальный Docker в этой сессии —
+  среда разработки не имеет установленного Docker. Все части, которые
+  можно было проверить без него, проверены реальными процессами:
+  прод-команда запуска (`python3 -m dataforge.server` с несколькими
+  воркерами), fail-fast поведение при отсутствии/недоступности
+  PostgreSQL, устранённая гонка при параллельном создании схемы
+  несколькими воркерами (`pg_advisory_lock`, воспроизведена и
+  исправлена вручную) — всё это прогнано на изолированной копии кода в
+  "чистом" venv без dev-зависимостей, наиболее близко к тому, что
+  происходит внутри контейнера, без самого Docker.
 
 ## Сценарий — пошагово (K1 + K2 + K4: качество данных → golden record → lineage)
 
@@ -417,9 +542,13 @@ GET  /v1/dashboard/stats
 ## Архитектура кода
 
 ```
+Dockerfile              — multi-stage сборка прод-образа (builder + runtime)
+docker-compose.yml       — app + PostgreSQL 16, healthcheck, volume для данных
+.dockerignore            — исключает .venv/тесты/секреты из build-контекста
 dataforge/
   config.py            — Config: DB_DSN обязателен, MDM-пороги, секреты
-  server.py             — python3 -m dataforge.server: uvicorn.run
+  server.py             — python3 -m dataforge.server: uvicorn.run,
+                          поддержка FORGE_WORKERS (несколько воркеров)
   db/
     store.py             — PostgreSQL Store: 24 таблицы (Bronze/Silver/
                             Gold, качество, MDM, lineage, Ontology,
@@ -460,7 +589,7 @@ dataforge/
     dashboard.html           — веб-интерфейс на vanilla JS
 tests/
   test_config.py                 (18 проверок)
-  test_store.py                  (146 проверок)
+  test_store.py                  (147 проверок)
   test_quality_engine.py         (25 проверок)
   test_mdm_matching.py           (34 проверки)
   test_ontology_model.py         (35 проверок)
@@ -473,7 +602,8 @@ tests/
   test_connector_factory.py      (12 проверок)
   test_pipeline.py               (20 проверок)
   test_api.py                    (78 проверок)
+  test_prod_lifespan.py          (9 проверок)
 ```
 
-**Итого 503 проверки**, все зелёные, `pyflakes` чист по `dataforge/` и
+**Итого 513 проверок**, все зелёные, `pyflakes` чист по `dataforge/` и
 `tests/`.

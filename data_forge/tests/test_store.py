@@ -84,6 +84,25 @@ def main() -> int:
     st = Store(_fresh_dsn())
     check("схема создана без ошибок", True)
 
+    section("Store: параллельное создание схемы несколькими процессами "
+           "не конфликтует (advisory lock)")
+    concurrent_dsn = _fresh_dsn()
+    import concurrent.futures
+
+    def _open_store(dsn: str) -> bool:
+        # Каждый вызов — НОВОЕ подключение psycopg (как отдельный
+        # uvicorn-воркер), что и воспроизводит реальную гонку за DDL.
+        s = Store(dsn)
+        s.close()
+        return True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_open_store, concurrent_dsn) for _ in range(8)]
+        results = [f.result() for f in futures]
+    check("8 параллельных Store(dsn) на пустую БД не конфликтуют "
+         "(не бросают UniqueViolation по системному каталогу)",
+         all(results))
+
     section("Source: CRUD, upsert по имени")
     sid = st.upsert_source("crm_export", "file", {"path": "crm.csv"})
     check("id > 0", sid > 0)

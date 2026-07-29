@@ -66,6 +66,7 @@ README.md "Честная граница объёма"):
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -86,8 +87,6 @@ from ..pipeline import ingest as pipeline
 from ..pipeline import orchestrator as process_orch
 from ..quality import engine as quality
 
-app = FastAPI(title="DataForge", version="0.1.0")
-
 _STATE: dict[str, Any] = {"cfg": None, "token": None}
 
 
@@ -98,6 +97,36 @@ def configure(cfg: Config, token: str | None = None) -> None:
 
 def get_effective_token() -> str | None:
     return _STATE.get("token")
+
+
+@asynccontextmanager
+async def _lifespan(app: "FastAPI"):
+    """Прод-путь запуска (`uvicorn dataforge.api.server:app`, gunicorn с
+    uvicorn-воркерами, любой ASGI-сервер) НЕ вызывает `dataforge.server.
+    serve()` — там-то `configure()` вызывается явно, а здесь приложение
+    импортируется напрямую по пути `модуль:app`. Без autoconfigure сервис
+    отвечал бы HTTP 500 "Сервер не сконфигурирован" на КАЖДЫЙ запрос —
+    поздний и невнятный отказ вместо явной ошибки при старте процесса.
+
+    Здесь — fail-fast: конфиг читается из окружения СРАЗУ при старте
+    ASGI-приложения (до первого запроса), а не лениво по требованию;
+    отсутствие DB_DSN или неверный SQL DSN проваливает старт процесса
+    (оркестратор контейнеров/systemd увидит невылеченный процесс и не
+    отправит на него трафик), а не тихо отвечает ошибками клиентам.
+    Явный `configure()`, если он уже был вызван (тесты, `dataforge.
+    server.serve()`), НЕ перезаписывается — идемпотентно."""
+    if _STATE["cfg"] is None:
+        cfg = Config.load()
+        cfg.require_dsn()
+        # Проверка реального подключения к PostgreSQL при старте — а не
+        # первого запроса, который окажется случайным пользователем.
+        store = Store(cfg.db_dsn)
+        store.close()
+        configure(cfg)
+    yield
+
+
+app = FastAPI(title="DataForge", version="0.1.0", lifespan=_lifespan)
 
 
 def get_cfg() -> Config:

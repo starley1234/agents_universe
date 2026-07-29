@@ -95,7 +95,7 @@ class Store:
             self.conn = psycopg.connect(dsn, autocommit=True)
         except Exception as exc:
             raise StoreError(f"Не удалось подключиться к PostgreSQL: {exc}") from exc
-        self._ensure_schema()
+        self._ensure_schema_locked()
 
     def close(self) -> None:
         self.conn.close()
@@ -111,6 +111,34 @@ class Store:
         return time.time()
 
     # ------------------------------------------------------------ schema
+    #: Произвольное фиксированное число для pg_advisory_lock — гарантирует
+    #: сериализацию миграций схемы между процессами. КОНКРЕТНОЕ значение
+    #: не важно, важно чтобы оно было одинаковым для всех Store в кластере
+    #: и не пересекалось с advisory-локами других приложений на той же БД.
+    _SCHEMA_LOCK_KEY = 0x44464F52_47450001  # "DFORGE" + версия схемы 0001
+
+    def _ensure_schema_locked(self) -> None:
+        """Оборачивает `_ensure_schema()` в PostgreSQL advisory lock.
+
+        НАЙДЕНО И ИСПРАВЛЕНО при адаптации для прода: при запуске с
+        несколькими uvicorn-воркерами (`FORGE_WORKERS>1`, типичный прод-
+        сценарий для нагрузки) КАЖДЫЙ воркер параллельно вызывает
+        `Store.__init__` -> `_ensure_schema()` в своём процессе при
+        старте. `CREATE TABLE IF NOT EXISTS` идемпотентен для самой
+        таблицы, но НЕ атомарен относительно неявно создаваемых объектов
+        (SERIAL -> последовательность, PRIMARY KEY -> индекс) — конкурентный
+        DDL двух транзакций может столкнуться на системном каталоге
+        (`pg_class_relname_nsp_index` UniqueViolation, воспроизведено
+        вручную с FORGE_WORKERS=2). `pg_advisory_lock` сериализует
+        миграцию между процессами: первый воркер держит лок и создаёт
+        схему, остальные ждут и видят её уже готовой."""
+        cur = self.conn.cursor()
+        cur.execute("SELECT pg_advisory_lock(%s)", (self._SCHEMA_LOCK_KEY,))
+        try:
+            self._ensure_schema()
+        finally:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (self._SCHEMA_LOCK_KEY,))
+
     def _ensure_schema(self) -> None:
         cur = self.conn.cursor()
         cur.execute("""

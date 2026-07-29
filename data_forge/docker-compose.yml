@@ -1,0 +1,88 @@
+networks:
+  dataforge-net:
+    driver: bridge
+
+volumes:
+  # Данные PostgreSQL живут ОТДЕЛЬНЫМ volume от контейнера БД — при
+  # docker compose down (без -v) данные не теряются, только при явном
+  # запросе на удаление.
+  dataforge-pgdata:
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      # Секреты — ТОЛЬКО через .env (docker compose подставляет из
+      # переменных окружения хоста/файла .env рядом с этим файлом),
+      # никогда не хардкодятся здесь.
+      POSTGRES_DB: ${POSTGRES_DB:-dataforge}
+      POSTGRES_USER: ${POSTGRES_USER:-forge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD обязателен — задайте его в .env}
+    volumes:
+      - dataforge-pgdata:/var/lib/postgresql/data
+    networks:
+      - dataforge-net
+    # Порт БД НЕ публикуется наружу по умолчанию (нет секции `ports:`) —
+    # доступ только из контейнера app через внутреннюю docker-сеть.
+    # Раскомментируйте при необходимости прямого доступа с хоста
+    # (например для psql-отладки):
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forge} -d ${POSTGRES_DB:-dataforge}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # DB_DSN собирается из тех же переменных, что заданы для service db —
+      # единственный источник правды для пароля БД, не дублируется вручную.
+      DB_DSN: postgresql://${POSTGRES_USER:-forge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dataforge}
+
+      # ВАЖНО: 0.0.0.0 внутри контейнера — это НЕ "открыто в интернет",
+      # а "слушать на всех интерфейсах контейнера", наружу проброшен
+      # только порт из секции `ports:` ниже. Тем не менее dataforge/
+      # server.py требует FORGE_API_TOKEN при хосте не 127.0.0.1/localhost
+      # (fail-fast защита от случайно незащищённого продакшен-сервиса) —
+      # поэтому токен обязателен и здесь, тоже только из .env.
+      FORGE_HOST: 0.0.0.0
+      FORGE_PORT: 8200
+      FORGE_API_TOKEN: ${FORGE_API_TOKEN:?FORGE_API_TOKEN обязателен, т.к. FORGE_HOST=0.0.0.0 (см. dataforge/server.py — сервис отказывается стартовать без токена, если слушает не только localhost)}
+      # Число uvicorn-воркеров — по умолчанию 2 для базовой отказоустойчивости
+      # (один зависший воркер не останавливает весь сервис); подберите под
+      # реальную нагрузку и число CPU хоста.
+      FORGE_WORKERS: ${FORGE_WORKERS:-2}
+
+      MATCH_AUTO_THRESHOLD: ${MATCH_AUTO_THRESHOLD:-0.92}
+      MATCH_REVIEW_THRESHOLD: ${MATCH_REVIEW_THRESHOLD:-0.65}
+      QUALITY_DEFAULT_SEVERITY: ${QUALITY_DEFAULT_SEVERITY:-error}
+
+      ONEC_BASE_URL: ${ONEC_BASE_URL:-}
+      ONEC_API_KEY: ${ONEC_API_KEY:-}
+      ONEC_TIMEOUT: ${ONEC_TIMEOUT:-30}
+
+      FORGE_LLM_BASE_URL: ${FORGE_LLM_BASE_URL:-}
+      FORGE_LLM_API_KEY: ${FORGE_LLM_API_KEY:-}
+      FORGE_LLM_MODEL: ${FORGE_LLM_MODEL:-}
+      FORGE_LLM_TIMEOUT: ${FORGE_LLM_TIMEOUT:-60}
+    ports:
+      - "${FORGE_PORT:-8200}:8200"
+    networks:
+      - dataforge-net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
