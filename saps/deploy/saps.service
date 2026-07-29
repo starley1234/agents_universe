@@ -1,0 +1,67 @@
+# systemd-юнит САПС для установки на хост.
+#
+#   sudo cp deploy/saps.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now saps
+#
+# Пути соответствуют инструкции в QUICKSTART.md (вариант 2).
+
+[Unit]
+Description=САПС — система агентской поддержки сертификации
+Documentation=file:/opt/saps/saps/README.md
+# Ждём сеть и локальную базу. Если PostgreSQL на другом хосте,
+# postgresql.service из After можно убрать.
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=saps
+Group=saps
+WorkingDirectory=/opt/saps/saps
+
+# Секреты (DSN с паролем, токен) — в файле с правами 600, а не в юните:
+# `systemctl show` доступен любому пользователю и распечатал бы их.
+EnvironmentFile=/etc/saps.env
+
+ExecStart=/opt/saps/saps/.venv/bin/python -m saps serve
+
+# Перезапуск при падении, но не бесконечной чередой: если приложение
+# падает из-за несовместимой схемы, бесконечный рестарт лишь скроет
+# проблему и зальёт журнал.
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+# Корректная остановка: serve() ловит SIGTERM и даёт текущим запросам
+# доиграть. 30 с достаточно даже для загрузки крупного PDF.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# --- изоляция ---
+# САПС читает чужие документы и ходит в промышленный PDM; ограничиваем
+# ей всё, что для работы не нужно.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Единственный каталог, куда разрешена запись: выгрузки протоколов.
+ReadWritePaths=/var/lib/saps
+
+# --- логи ---
+# Вывод в journald: `journalctl -u saps -f`. Приложение пишет в stdout
+# и не ведёт собственных файлов — ротацией занимается система.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=saps
+
+[Install]
+WantedBy=multi-user.target

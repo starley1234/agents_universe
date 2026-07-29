@@ -55,6 +55,20 @@ erp_ai/**/.pgserver/
 data_forge/**/pgdata/
 data_forge/**/.pgserver/
 
+## Рантайм-артефакты agentic_workflow_os: состояние среды (прогоны,
+## доска контекста, точки контроля) в SQLite и рабочая папка агентов —
+## создаются при запуске, в git не нужны. Определения workflow и
+## профилей (awos/workflows, awos/profiles) — наоборот, часть поставки.
+agentic_workflow_os/awos.db
+agentic_workflow_os/awos.db-*
+agentic_workflow_os/workspace/
+
 ## Прочий мусор ОС/редакторов
 .DS_Store
 *.swp
+
+## Рантайм-артефакты saps: выгрузки протоколов и временные файлы.
+## Схема живёт в PostgreSQL, на диск САПС пишет только отчёты.
+saps/workdir/
+saps/*.docx
+saps/*.xlsx

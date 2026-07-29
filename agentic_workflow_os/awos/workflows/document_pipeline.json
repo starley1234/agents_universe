@@ -1,0 +1,38 @@
+{
+  "name": "document_pipeline",
+  "title": "Черновик → правка → выпуск",
+  "description": "Трёхшаговый производственный цикл с обязательным утверждением человеком перед выпуском. Показывает передачу данных через доску контекста и разделение ролей на всех этапах.",
+  "inputs": {
+    "subject": "предмет документа",
+    "format": "требуемый формат и объём"
+  },
+  "steps": [
+    {
+      "name": "draft",
+      "title": "Черновик",
+      "profile": "writer",
+      "task": "Подготовь черновик документа по предмету: {input.subject}\n\nЦель: {goal}\nТребуемый формат: {input.format}\n\nЧерновик должен быть полным по структуре: лучше короткий раздел, чем пропущенный.",
+      "writes": "draft",
+      "review": {"critic": "critic", "min_score": 0.6, "max_revisions": 1}
+    },
+    {
+      "name": "refine",
+      "title": "Правка и уплотнение",
+      "profile": "writer",
+      "task": "Доведи черновик до выпуска.\n\nЧерновик:\n{ctx.draft}\n\nЧто сделать: убрать воду и повторы, выправить структуру, привести к формату «{input.format}». Содержательные утверждения не менять — только форму.",
+      "reads": ["draft"],
+      "writes": "final_document",
+      "review": {"critic": "critic", "supervisor": "supervisor", "min_score": 0.8, "max_revisions": 2}
+    },
+    {
+      "name": "release",
+      "title": "Выпуск",
+      "profile": "writer",
+      "task": "Сохрани итоговый документ в рабочую папку файлом release.md, затем верни краткую сводку: имя файла, объём, что внутри.\n\nДокумент:\n{ctx.final_document}",
+      "reads": ["final_document"],
+      "writes": "release_note",
+      "tools": ["write_file"],
+      "human": "always"
+    }
+  ]
+}
