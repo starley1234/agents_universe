@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ERP AI — АСУП ИИ</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1d212c; --line:#2a2f3d; --txt:#e6e8ee;
+    --dim:#8b91a3; --acc:#4a9eff; --ok:#3ecf8e; --err:#ff6b6b; --warn:#e0b341;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+       ui-monospace,SFMono-Regular,Consolas,monospace;
+       background:var(--bg);color:var(--txt);min-height:100vh}
+  header{padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line);
+         display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:20}
+  header b{font-weight:700;font-size:15px}
+  nav{display:flex;gap:4px;flex-wrap:wrap}
+  nav button{background:transparent;border:1px solid transparent;color:var(--dim);
+             padding:7px 13px;border-radius:8px;cursor:pointer;font:inherit;font-size:13px}
+  nav button.active{background:#25314a;color:var(--txt);border-color:var(--acc)}
+  nav button:hover:not(.active){color:var(--txt);background:#232733}
+  .spacer{flex:1}
+  .pill{font-size:12px;color:var(--dim);background:#232733;padding:4px 10px;border-radius:99px}
+  select,input,button,textarea{font:inherit;background:#232733;color:var(--txt);
+        border:1px solid var(--line);border-radius:8px;padding:7px 11px}
+  button{cursor:pointer;font-weight:500}
+  button:hover:not(:disabled){border-color:var(--acc);color:var(--acc)}
+  button.primary{background:var(--acc);color:#08111c;border-color:var(--acc);font-weight:600}
+  button.danger:hover{border-color:var(--err);color:var(--err)}
+  main{padding:20px;max-width:1180px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:18px;margin-bottom:18px}
+  .card h2{margin:0 0 4px;font-size:15px;font-weight:700}
+  .card .sub{color:var(--dim);font-size:12.5px;margin:0 0 14px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase}
+  tr:hover td{background:#1f2330}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+        padding:14px 10px;text-align:center}
+  .stat b{display:block;font-size:24px;color:var(--acc);font-weight:700}
+  .stat span{color:var(--dim);font-size:11.5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10.5px;
+         font-weight:700;text-transform:uppercase}
+  .badge.pending{background:#2a2416;color:var(--warn)}
+  .badge.approved,.badge.auto_executed,.badge.ok{background:#152a20;color:var(--ok)}
+  .badge.rejected,.badge.rolled_back,.badge.error{background:#2a1618;color:var(--err)}
+  .hidden{display:none !important}
+  .explain-box{background:#12151d;border:1px solid var(--line);border-radius:8px;
+               padding:10px 14px;margin:6px 0;font-size:12.5px;color:var(--dim)}
+  code{background:#0a0c11;border:1px solid var(--line);border-radius:5px;padding:1px 6px;
+       font-size:12px;color:var(--acc)}
+  .empty-hint{color:var(--dim);font-size:13px;padding:20px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <b>ERP AI</b>
+  <span class="pill">АСУП ИИ — снабжение</span>
+  <input id="token" type="password" placeholder="токен (если задан)" size="14">
+  <nav>
+    <button data-view="overview" class="active">Обзор</button>
+    <button data-view="deficits">Дефицит и снабжение</button>
+    <button data-view="proposals">Предложения агента</button>
+    <button data-view="orders">Заказы поставщикам</button>
+    <button data-view="audit">Аудит</button>
+  </nav>
+  <div class="spacer"></div>
+  <span class="pill" id="status">проверка…</span>
+</header>
+<main>
+
+<section id="view-overview">
+  <div class="card">
+    <h2>Статистика</h2>
+    <div class="grid" id="statsGrid"><div class="stat">загрузка…</div></div>
+  </div>
+</section>
+
+<section id="view-deficits" class="hidden">
+  <div class="card">
+    <h2>Номенклатура с дефицитом</h2>
+    <p class="sub">Доступный остаток ниже страхового запаса — основной источник задач агента-снабженца</p>
+    <div class="row">
+      <select id="scan-autonomy">
+        <option value="suggest">suggest — только предложить</option>
+        <option value="draft" selected>draft — черновик, утверждает человек</option>
+        <option value="auto_with_review">auto_with_review — выполнить, пометить на контроль</option>
+        <option value="full_auto">full_auto — выполнить полностью автоматически</option>
+      </select>
+      <button class="primary" id="scan-btn">Запустить скан дефицита (агент-снабженец)</button>
+      <span id="scan-msg"></span>
+    </div>
+    <table id="deficitTable"><thead><tr><th>SKU</th><th>Название</th><th>Доступно</th><th>Страховой запас</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="deficitEmpty" class="empty-hint hidden">Дефицита нет — все остатки выше страхового запаса</div>
+  </div>
+</section>
+
+<section id="view-proposals" class="hidden">
+  <div class="card">
+    <h2>Предложения агента (confirmation gate)</h2>
+    <p class="sub">Explainability: каждое предложение содержит обоснование и источники данных</p>
+    <table id="proposalsTable"><thead><tr><th>#</th><th>Вид</th><th>Режим</th><th>Статус</th><th>Обоснование</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="proposalsEmpty" class="empty-hint hidden">Предложений пока нет</div>
+  </div>
+</section>
+
+<section id="view-orders" class="hidden">
+  <div class="card">
+    <h2>Заказы поставщикам</h2>
+    <table id="ordersTable"><thead><tr><th>#</th><th>Поставщик</th><th>Статус</th><th>Сумма</th><th>Создал</th><th>1С</th><th></th></tr></thead>
+    <tbody></tbody></table>
+    <div id="ordersEmpty" class="empty-hint hidden">Заказов пока нет</div>
+  </div>
+</section>
+
+<section id="view-audit" class="hidden">
+  <div class="card">
+    <h2>Журнал аудита (неизменяемый)</h2>
+    <p class="sub">Кто (агент/человек) что сделал — полная история решений</p>
+    <table id="auditTable"><thead><tr><th>#</th><th>Actor</th><th>Действие</th><th>Объект</th><th>Когда</th></tr></thead>
+    <tbody></tbody></table>
+  </div>
+</section>
+
+</main>
+<script>
+const VIEWS = ["overview","deficits","proposals","orders","audit"];
+function token(){ return document.getElementById('token').value.trim(); }
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function api(path, opts={}){
+  const headers = opts.headers || {};
+  const t = token();
+  if (t) headers['Authorization'] = 'Bearer ' + t;
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, {...opts, headers});
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+  return data;
+}
+function setActiveView(name){
+  for (const v of VIEWS) document.getElementById('view-'+v).classList.toggle('hidden', v!==name);
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active', b.dataset.view===name));
+  if (name==='overview') loadOverview();
+  if (name==='deficits') loadDeficits();
+  if (name==='proposals') loadProposals();
+  if (name==='orders') loadOrders();
+  if (name==='audit') loadAudit();
+}
+document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click', ()=>setActiveView(b.dataset.view)));
+
+async function checkHealth(){
+  const el = document.getElementById('status');
+  try{ await api('/health'); el.textContent = 'сервис онлайн'; }
+  catch(e){ el.textContent = 'сервис недоступен'; }
+}
+
+async function loadOverview(){
+  try{
+    const s = await api('/v1/dashboard/stats');
+    const grid = document.getElementById('statsGrid');
+    grid.innerHTML = '';
+    const items = [
+      ['номенклатуры', s.nomenclature], ['контрагентов', s.counterparties],
+      ['открытых заявок', s.open_purchase_requests], ['заказов поставщикам', s.purchase_orders],
+      ['предложений на утверждение', s.pending_proposals], ['записей аудита', s.audit_entries],
+      ['позиций с дефицитом', s.low_stock_items],
+    ];
+    for (const [label, val] of items){
+      const d = document.createElement('div');
+      d.className = 'stat';
+      d.innerHTML = `<b>${val}</b><span>${label}</span>`;
+      grid.appendChild(d);
+    }
+  }catch(e){ document.getElementById('statsGrid').innerHTML = `<div class="empty-hint">${esc(e.message)}</div>`; }
+}
+
+async function loadDeficits(){
+  try{
+    const data = await api('/v1/nomenclature/low-stock');
+    const tbody = document.querySelector('#deficitTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('deficitEmpty').classList.toggle('hidden', data.items.length > 0);
+    for (const n of data.items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><code>${esc(n.sku)}</code></td><td>${esc(n.name)}</td>
+        <td>${n.available} ${esc(n.unit)}</td><td>${n.min_stock} ${esc(n.unit)}</td>
+        <td><button data-propose="${n.id}">Предложить закупку</button></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-propose]').forEach(el=>{
+      el.addEventListener('click', async ()=>{
+        const mode = document.getElementById('scan-autonomy').value;
+        try{
+          await api(`/v1/agents/procurement/propose/${el.dataset.propose}`,
+            {method:'POST', body: JSON.stringify({autonomy_mode: mode})});
+          setActiveView('proposals');
+        }catch(e){ alert(e.message); }
+      });
+    });
+  }catch(e){}
+}
+document.getElementById('scan-btn').addEventListener('click', async ()=>{
+  const msg = document.getElementById('scan-msg');
+  const mode = document.getElementById('scan-autonomy').value;
+  msg.textContent = 'выполняется…';
+  try{
+    const data = await api('/v1/agents/procurement/scan', {method:'POST', body: JSON.stringify({autonomy_mode: mode})});
+    msg.textContent = `создано предложений: ${data.decisions.length}`;
+    loadDeficits();
+  }catch(e){ msg.textContent = e.message; }
+});
+
+function statusBadge(status){
+  return `<span class="badge ${status}">${esc(status)}</span>`;
+}
+
+async function loadProposals(){
+  try{
+    const data = await api('/v1/proposals');
+    const tbody = document.querySelector('#proposalsTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('proposalsEmpty').classList.toggle('hidden', data.items.length > 0);
+    for (const p of data.items){
+      const tr = document.createElement('tr');
+      const actions = p.status === 'pending'
+        ? `<button data-approve="${p.id}" class="primary">Утвердить</button>
+           <button data-reject="${p.id}" class="danger">Отклонить</button>`
+        : (p.status === 'auto_executed'
+          ? `<button data-rollback="${p.id}" class="danger">Откатить</button>` : '');
+      tr.innerHTML = `<td>#${p.id}</td><td>${esc(p.kind)}</td><td><code>${esc(p.autonomy_mode)}</code></td>
+        <td>${statusBadge(p.status)}</td>
+        <td><div class="explain-box">${esc(p.explanation)}</div></td>
+        <td>${actions}</td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-approve]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{ await api(`/v1/proposals/${el.dataset.approve}/approve`, {method:'POST', body: JSON.stringify({actor:'human:dashboard'})}); loadProposals(); }
+      catch(e){ alert(e.message); }
+    }));
+    tbody.querySelectorAll('[data-reject]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{ await api(`/v1/proposals/${el.dataset.reject}/reject`, {method:'POST', body: JSON.stringify({actor:'human:dashboard'})}); loadProposals(); }
+      catch(e){ alert(e.message); }
+    }));
+    tbody.querySelectorAll('[data-rollback]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{ await api(`/v1/proposals/${el.dataset.rollback}/rollback`, {method:'POST', body: JSON.stringify({actor:'human:dashboard', reason:'откат из дашборда'})}); loadProposals(); }
+      catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+async function loadOrders(){
+  try{
+    const data = await api('/v1/purchase-orders');
+    const tbody = document.querySelector('#ordersTable tbody');
+    tbody.innerHTML = '';
+    document.getElementById('ordersEmpty').classList.toggle('hidden', data.items.length > 0);
+    for (const o of data.items){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>#${o.id}</td><td>${o.counterparty_id}</td><td>${statusBadge(o.status)}</td>
+        <td>${o.total_amount.toLocaleString()} ₽</td><td>${esc(o.created_by)}</td>
+        <td>${o.onec_uuid ? '<span class="badge ok">синхронизирован</span>' : '<button data-sync="'+o.id+'">Отправить в 1С</button>'}</td>
+        <td></td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('[data-sync]').forEach(el=>el.addEventListener('click', async ()=>{
+      try{
+        const r = await api(`/v1/purchase-orders/${el.dataset.sync}/sync-1c`, {method:'POST'});
+        alert(r.ok ? 'Отправлено в 1С: ' + r.external_id : 'Ошибка: ' + r.error);
+        loadOrders();
+      }catch(e){ alert(e.message); }
+    }));
+  }catch(e){}
+}
+
+async function loadAudit(){
+  try{
+    const data = await api('/v1/audit');
+    const tbody = document.querySelector('#auditTable tbody');
+    tbody.innerHTML = '';
+    for (const a of data.items){
+      const tr = document.createElement('tr');
+      const when = new Date(a.created*1000).toLocaleString('ru-RU');
+      tr.innerHTML = `<td>#${a.id}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td>
+        <td>${esc(a.entity_type)}${a.entity_id ? '#'+a.entity_id : ''}</td><td>${when}</td>`;
+      tbody.appendChild(tr);
+    }
+  }catch(e){}
+}
+
+checkHealth();
+loadOverview();
+setInterval(checkHealth, 15000);
+</script>
+</body>
+</html>

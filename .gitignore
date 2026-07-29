@@ -32,6 +32,12 @@ multi_agent_system_ontology/**/pgdata/
 multi_agent_system_ontology/**/.pgserver/
 multi_agent_system_ontology/.maos_quickstart_pgdata/
 
+## Рантайм-артефакты erp_ai: ERP AI требует внешний PostgreSQL и ничего
+## не пишет на диск сам по себе, кроме временных данных embedded
+## Postgres при тестах (pgserver, случайные /tmp-папки, вне репозитория).
+erp_ai/**/pgdata/
+erp_ai/**/.pgserver/
+
 ## Прочий мусор ОС/редакторов
 .DS_Store
 *.swp
