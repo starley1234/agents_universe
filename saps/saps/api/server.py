@@ -38,8 +38,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import signal
+import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -58,6 +62,52 @@ from ..plugins import base as plugins
 from ..rules.loader import RulesError, list_builtin, load_builtin
 
 MAX_BODY = 5_000_000
+
+#: Момент старта процесса — для /health и метрик.
+_STARTED = time.monotonic()
+
+
+def _uptime() -> float:
+    return time.monotonic() - _STARTED
+
+
+def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
+    """Настроить логи процесса.
+
+    В проде логи собирает не человек, а journald/Docker/ELK, поэтому:
+    вывод в stdout (12-factor), время в каждой строке, уровень
+    настраивается переменной окружения. JSON-режим — для сборщиков,
+    которые парсят структуру; по умолчанию человекочитаемый текст,
+    потому что первым делом в него смотрит администратор.
+    """
+    import logging
+
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stdout)
+    if json_format:
+        class _JsonFormatter(logging.Formatter):
+            def format(self, record: logging.LogRecord) -> str:
+                payload = {
+                    "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                }
+                if record.exc_info:
+                    payload["exception"] = self.formatException(record.exc_info)
+                return json.dumps(payload, ensure_ascii=False)
+        handler.setFormatter(_JsonFormatter())
+    else:
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"))
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+
+log = None                      # инициализируется в serve()
 
 _REQ_RE = re.compile(r"^/v1/requirements/(\d+)$")
 _SUG_RE = re.compile(r"^/v1/suggestions/(\d+)$")
@@ -87,6 +137,12 @@ class Handler(BaseHTTPRequestHandler):
                 cls._store = Store(cls.cfg.require_dsn(),
                                    schema=cls.cfg.db_schema,
                                    dim=cls.cfg.embedding_dim)
+            else:
+                # БД могли перезапустить (обновление, отказ реплики).
+                # psycopg сам не восстанавливается: без этой проверки
+                # после планового обслуживания базы пришлось бы
+                # рестартовать САПС.
+                cls._store.ensure_alive()
             return cls._store
 
     @classmethod
@@ -108,7 +164,14 @@ class Handler(BaseHTTPRequestHandler):
         return build_llm(cls.cfg.llm_provider, cls.cfg.llm_model, **kwargs)
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        print(f"[saps] {self.address_string()} {fmt % args}")
+        # Пробы мониторинга дёргаются каждые несколько секунд и в INFO
+        # засоряют журнал так, что реальные события в нём теряются.
+        message = fmt % args
+        level = logging.DEBUG if any(
+            p in message for p in ("/health", "/ready", "/metrics")
+        ) else logging.INFO
+        logging.getLogger("saps.http").log(
+            level, "%s %s", self.address_string(), message)
 
     def _send(self, code: int, payload: Any) -> None:
         body = json.dumps(payload, ensure_ascii=False, indent=2,
@@ -126,6 +189,77 @@ class Handler(BaseHTTPRequestHandler):
         body = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_ready(self) -> None:
+        """Проба готовности: база + версия схемы + pgvector."""
+        try:
+            health = self.store().health()
+        except Exception as exc:                                 # noqa: BLE001
+            self._send(503, {"status": "not_ready",
+                             "error": f"{type(exc).__name__}: {exc}"})
+            return
+        problems: list[str] = []
+        if health.get("database") != "ok":
+            problems.append("база недоступна")
+        if not health.get("pgvector"):
+            problems.append("расширение pgvector не установлено")
+        got, want = health.get("schema_version"), health.get(
+            "expected_schema_version")
+        if got != want:
+            problems.append(
+                f"версия схемы {got}, код требует {want} — выполните "
+                "saps migrate")
+        payload = {"status": "ready" if not problems else "not_ready",
+                   "version": _version(), **health}
+        if problems:
+            payload["problems"] = problems
+        self._send(200 if not problems else 503, payload)
+
+    def _send_metrics(self) -> None:
+        """Метрики в формате Prometheus.
+
+        Текстовый формат вместо клиентской библиотеки: одна зависимость
+        меньше, а `prometheus_client` здесь не даёт ничего сверх десятка
+        строк форматирования.
+        """
+        try:
+            stats = self.store().stats()
+        except Exception as exc:                                 # noqa: BLE001
+            body = (f"# СБОЙ сбора метрик: {type(exc).__name__}\n"
+                    "saps_up 0\n").encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        lines = [
+            "# HELP saps_up Сервис доступен и база отвечает",
+            "# TYPE saps_up gauge", "saps_up 1",
+            "# HELP saps_uptime_seconds Время работы процесса",
+            "# TYPE saps_uptime_seconds gauge",
+            f"saps_uptime_seconds {_uptime():.1f}",
+        ]
+        metrics = {
+            "requirements": "Всего требований",
+            "requirements_approved": "Утверждённых требований",
+            "clauses": "Пунктов авиационных правил в справочнике",
+            "suggestions_pending": "Предложений агентов, ждущих инженера",
+            "low_quality": "Требований ниже порога качества",
+            "compliance_items": "Назначенных методов подтверждения",
+            "evidence": "Приложенных доказательных документов",
+            "documents": "Импортированных документов",
+        }
+        for key, help_text in metrics.items():
+            name = f"saps_{key}"
+            lines += [f"# HELP {name} {help_text}", f"# TYPE {name} gauge",
+                      f"{name} {int(stats.get(key, 0))}"]
+        body = ("\n".join(lines) + "\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -162,8 +296,21 @@ class Handler(BaseHTTPRequestHandler):
         qs = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
 
         if path == "/health":
+            # ЖИВ ЛИ ПРОЦЕСС. Намеренно НЕ трогает базу: liveness-проба
+            # должна отвечать даже когда БД лежит, иначе оркестратор
+            # начнёт перезапускать исправное приложение из-за чужого сбоя.
             self._send(200, {"status": "ok", "service": "saps",
-                             "version": _version()})
+                             "version": _version(),
+                             "uptime_seconds": round(_uptime(), 1)})
+            return
+        if path == "/ready":
+            # ГОТОВ ЛИ ОБСЛУЖИВАТЬ. Здесь база проверяется: инстанс без
+            # рабочей БД или с несовместимой схемой обязан быть выведен
+            # из ротации, а не отдавать ошибки пользователям.
+            self._send_ready()
+            return
+        if path == "/metrics":
+            self._send_metrics()
             return
         if path in ("/", "/dashboard"):
             self._send_html(Path(__file__).resolve().parent / "web" / "console.html")
@@ -544,28 +691,77 @@ def _version() -> str:
     return __version__
 
 
-def serve(cfg: Config | None = None) -> int:
+def serve(cfg: Config | None = None, *, check_schema: bool = True) -> int:
     cfg = cfg or Config.load()
     cfg.require_dsn()
+    setup_logging(cfg.log_level, cfg.log_json)
+    log = logging.getLogger("saps")
+
     Handler.cfg = cfg
     Handler.token = cfg.api_token
     Handler._store = None
+
+    # Проверка схемы ДО открытия порта. Инстанс, который не может
+    # работать с этой базой, не должен принимать запросы и попадать в
+    # балансировщик — лучше упасть на старте с внятной причиной.
+    if check_schema:
+        from ..db.migrate import MigrationError, check_compatible
+        try:
+            store = Handler.store()
+            check_compatible(store.conn, cfg.db_schema)
+        except MigrationError as exc:
+            log.error("Схема базы несовместима: %s", exc)
+            return 3
+        except StoreError as exc:
+            log.error("База недоступна: %s", exc)
+            return 4
+
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
+    # Не даём висящему keep-alive соединению задержать остановку дольше,
+    # чем контейнерный оркестратор готов ждать до SIGKILL.
+    httpd.daemon_threads = True
     url = f"http://{cfg.host}:{cfg.port}"
-    print(cfg.describe())
-    print(f"\nСАПС слушает {url}")
-    print(f"  рабочее место: {url}/dashboard")
-    print(f"  проверка:      {url}/health")
+
+    log.info("САПС %s запускается", _version())
+    for line in cfg.describe().splitlines():
+        log.info("%s", line)
+    log.info("Слушаю %s (рабочее место %s/dashboard)", url, url)
     if not cfg.api_token:
-        print("  токен не задан — доступ только с localhost")
+        log.warning("Токен не задан — доступ только с localhost")
+
+    stopping = threading.Event()
+
+    def _stop(signum: int, _frame: Any) -> None:
+        """Корректная остановка по сигналу.
+
+        Docker и systemd останавливают процесс через SIGTERM и ждут
+        считанные секунды до SIGKILL. Без обработчика Python завершается
+        немедленно, обрывая запрос инженера на середине; здесь сервер
+        перестаёт принимать новые соединения и даёт текущим доиграть.
+        """
+        if stopping.is_set():
+            return
+        stopping.set()
+        log.info("Получен сигнал %s — останавливаюсь", signal.Signals(signum).name)
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _stop)
+        except ValueError:
+            # serve() вызвали не из главного потока (например, из теста) —
+            # обработчик не поставить, и это не повод падать.
+            pass
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nОстановлено.")
+        log.info("Прервано с клавиатуры")
     finally:
         httpd.server_close()
         if Handler._store is not None:
             Handler._store.close()
+        log.info("Остановлено")
     return 0
 
 

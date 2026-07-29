@@ -79,6 +79,68 @@ class Store:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    # --- устойчивость соединения (прод) ---------------------------------
+    def ping(self) -> bool:
+        """Живо ли соединение. Дешёвый запрос, без побочных эффектов."""
+        try:
+            self.conn.execute("SELECT 1")
+            return True
+        except Exception:                                        # noqa: BLE001
+            return False
+
+    def reconnect(self) -> None:
+        """Пересоздать соединение.
+
+        В проде БД перезапускают (обновление, отказ реплики, обрыв сети),
+        и psycopg НЕ восстанавливает соединение сам: все последующие
+        запросы падают до перезапуска приложения. Для рабочего места КБ
+        это означало бы «после планового обслуживания базы САПС надо
+        рестартовать» — неприемлемо, поэтому переподключаемся сами.
+        """
+        psycopg, dict_row = _require_psycopg()
+        try:
+            self.conn.close()
+        except Exception:                                        # noqa: BLE001
+            pass
+        try:
+            self.conn = psycopg.connect(self.dsn, autocommit=True,
+                                        row_factory=dict_row)
+        except Exception as exc:                                 # noqa: BLE001
+            raise StoreError(
+                f"Не удалось переподключиться к PostgreSQL: {exc}") from exc
+
+    def ensure_alive(self) -> None:
+        """Проверить соединение и восстановить, если оно оборвалось."""
+        if not self.ping():
+            self.reconnect()
+
+    def health(self) -> dict[str, Any]:
+        """Состояние хранилища для /health и `saps check`.
+
+        Проверяется не «процесс жив», а «база отвечает и схема та,
+        которую понимает код» — именно это должен знать мониторинг,
+        чтобы не держать в ротации инстанс, который не может работать.
+        """
+        from .migrate import SCHEMA_VERSION, detect_version
+
+        out: dict[str, Any] = {"database": "down", "schema_version": None,
+                               "expected_schema_version": SCHEMA_VERSION,
+                               "pgvector": False}
+        try:
+            self.ensure_alive()
+        except StoreError as exc:
+            out["error"] = str(exc)
+            return out
+        out["database"] = "ok"
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM pg_extension WHERE extname='vector'").fetchone()
+            out["pgvector"] = row is not None
+            out["schema_version"] = detect_version(self.conn, self.schema)
+        except Exception as exc:                                 # noqa: BLE001
+            out["error"] = str(exc)
+        return out
+
     def init_schema(self) -> None:
         """Создать схему. Идемпотентно."""
         try:

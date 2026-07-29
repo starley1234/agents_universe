@@ -129,6 +129,14 @@ class Config:
     #: Сколько кандидатов показывать инженеру.
     classify_top_k: int = 5
 
+    # --- эксплуатация (прод) ---------------------------------------------
+    #: Уровень логов процесса. В проде логи собирает journald/Docker, а не
+    #: человек, поэтому уровень задаётся снаружи, а вывод идёт в stdout.
+    log_level: str = "INFO"
+    #: JSON-логи для сборщиков (ELK, Loki). По умолчанию текст: первым в
+    #: журнал смотрит администратор, а не парсер.
+    log_json: bool = False
+
     # --- HTTP API/дашборд (ТЗ п.3.3) -----------------------------------
     host: str = "127.0.0.1"
     port: int = 8090
@@ -223,6 +231,8 @@ class Config:
         self.classify_top_k = _env_int("SAPS_CLASSIFY_TOP_K",
                                        self.classify_top_k)
 
+        self.log_level = _env_str("SAPS_LOG_LEVEL", self.log_level)
+        self.log_json = _env_bool("SAPS_LOG_JSON", self.log_json)
         self.host = _env_str("SAPS_HOST", self.host)
         self.port = _env_int("SAPS_PORT", self.port)
         self.api_token = _env_str("SAPS_API_TOKEN", self.api_token)
@@ -253,6 +263,11 @@ class Config:
         if self.tc_write_enabled and not self.tc_url:
             raise ConfigError(
                 "tc_write_enabled=true, но не задан tc_url — некуда писать")
+        valid_levels = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+        if str(self.log_level).upper() not in valid_levels:
+            raise ConfigError(
+                f"log_level={self.log_level!r}: допустимо "
+                f"{', '.join(valid_levels)}")
 
     def require_dsn(self) -> str:
         """DSN или понятный отказ. Database-First — не пожелание."""

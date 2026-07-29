@@ -192,6 +192,108 @@ def cmd_import(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate(cfg: Config, args: argparse.Namespace) -> int:
+    """Применить миграции схемы. Отдельная команда — осознанно."""
+    from .db.migrate import (MigrationError, SCHEMA_VERSION, detect_version,
+                             history, migrate)
+    from . import __version__
+
+    with _store(cfg) as st:
+        if args.status:
+            current = detect_version(st.conn, cfg.db_schema)
+            print(f"Схема в базе: версия {current}")
+            print(f"Код требует:  версия {SCHEMA_VERSION}")
+            rows = history(st.conn, cfg.db_schema)
+            if rows:
+                print("\nПрименённые миграции:")
+                for r in rows:
+                    print(f"  v{r['version']:<3} {str(r['applied_at'])[:19]}  "
+                          f"{r['title']}")
+            if current == SCHEMA_VERSION:
+                print("\n✓ Схема актуальна.")
+                return 0
+            print(f"\n⚠ Требуется миграция: saps migrate")
+            return 1
+
+        try:
+            report = migrate(st.conn, cfg.db_schema, app_version=__version__,
+                             dry_run=args.dry_run)
+        except MigrationError as exc:
+            print(f"Ошибка миграции: {exc}", file=sys.stderr)
+            return 2
+
+        if report["dry_run"]:
+            if not report["pending"]:
+                print(f"Схема актуальна (версия {report['from']}). "
+                      "Применять нечего.")
+                return 0
+            print(f"Будут применены миграции {report['from']} -> "
+                  f"{report['to']}:")
+            for m in report["pending"]:
+                print(f"  v{m['version']}: {m['title']}")
+            print("\nЗапустить: saps migrate")
+            return 0
+
+        if not report["applied"]:
+            print(f"Схема актуальна (версия {report['to']}).")
+        else:
+            print(f"Миграция выполнена: {report['from']} -> {report['to']}")
+            for m in report["applied"]:
+                print(f"  ✓ v{m['version']}: {m['title']}")
+    return 0
+
+
+def cmd_backup(cfg: Config, args: argparse.Namespace) -> int:
+    """Резервная копия базы через pg_dump.
+
+    Своей реализации дампа нет и не будет: pg_dump — эталонный
+    инструмент, знающий о версии сервера, правах и типах больше, чем
+    когда-либо будет знать прикладной код. Здесь только удобная обёртка,
+    которая подставляет DSN и проверяет результат.
+    """
+    import shutil
+    import subprocess
+    from datetime import datetime
+
+    if not shutil.which("pg_dump"):
+        print("Не найден pg_dump. Установите клиент PostgreSQL:\n"
+              "  Debian/Ubuntu: apt install postgresql-client\n"
+              "  RHEL/CentOS:   yum install postgresql",
+              file=sys.stderr)
+        return 2
+
+    dsn = cfg.require_dsn()
+    out = Path(args.out) if args.out else Path(cfg.workdir) / (
+        f"saps_{datetime.now():%Y%m%d_%H%M%S}.dump")
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Формат custom (-Fc): сжатый, позволяет частичное восстановление и
+    # не зависит от порядка объектов, в отличие от простого SQL-текста.
+    #
+    # --extension=vector — НЕ мелочь. Тип vector объявлен в схеме public,
+    # а мы выгружаем только схему saps: без явного указания расширение в
+    # копию не попадёт, и восстановление в чистую базу упадёт на
+    # «type public.vector does not exist». Копия, из которой нельзя
+    # восстановиться, бесполезна — поймано проверкой реального restore.
+    cmd = ["pg_dump", "--format=custom", "--no-owner", "--no-privileges",
+           f"--schema={cfg.db_schema}", "--extension=vector",
+           "--file", str(out), dsn]
+    print(f"Резервная копия схемы {cfg.db_schema!r} -> {out}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"pg_dump завершился с ошибкой:\n{proc.stderr[:800]}",
+              file=sys.stderr)
+        return 2
+    size = out.stat().st_size
+    if size == 0:
+        print("pg_dump создал пустой файл — копия непригодна", file=sys.stderr)
+        return 2
+    print(f"✓ Готово: {out} ({size // 1024} КБ)")
+    print(f"\nВосстановление:\n"
+          f"  pg_restore --clean --if-exists --no-owner -d '<DSN>' {out}")
+    return 0
+
+
 def cmd_load(cfg: Config, args: argparse.Namespace) -> int:
     """Одна команда: загрузить документ, система разбирается сама."""
     from .ingest.autoload import autoload
@@ -675,6 +777,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("check", help="самопроверка окружения").set_defaults(
         func=cmd_check)
+
+    mg = sub.add_parser("migrate", help="применить миграции схемы БД")
+    mg.add_argument("--status", action="store_true",
+                    help="показать версию схемы, ничего не менять")
+    mg.add_argument("--dry-run", action="store_true",
+                    help="показать, что будет применено")
+    mg.set_defaults(func=cmd_migrate)
+
+    bk = sub.add_parser("backup", help="резервная копия базы (pg_dump)")
+    bk.add_argument("--out", default="", help="путь к файлу копии")
+    bk.set_defaults(func=cmd_backup)
 
     ld = sub.add_parser("load",
                         help="загрузить документ (PDF/Word/Excel) — "
