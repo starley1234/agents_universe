@@ -38,6 +38,8 @@ class MaintenanceReport:
     distilled: int = 0
     deduped: int = 0
     merged_entities: int = 0
+    extracted_entities: int = 0
+    extracted_relations: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -144,6 +146,52 @@ class MaintenanceService:
         self._emit("graph_synthesized", merged=merged)
         return merged
 
+    # ----------------------------------------------- экстракция сущностей
+    def extract_graph(self) -> tuple[int, int]:
+        """Автоизвлечение сущностей и связей из диалогов в онтологический граф.
+
+        Проходит по последним диалогам и пополняет long-term память (onto_entity,
+        onto_relation) новыми сущностями и связями, генерируя эмбеддинги
+        для описаний.
+        """
+        if not getattr(self.cfg, "maintenance_extract_entities", True):
+            return 0, 0
+        from .extract import extract_graph_from_messages
+        entities_added = 0
+        relations_added = 0
+        for conv in self.store.list_conversations(limit=20):
+            messages = self.store.messages(conv["id"])
+            if not messages:
+                continue
+            items = extract_graph_from_messages(messages)
+            for item in items:
+                if item["type"] == "entity":
+                    kind, name, desc = item["kind"], item["name"], item["description"]
+                    ent = self.store.get_entity(kind, name)
+                    if not ent:
+                        try:
+                            emb = self.embedder.embed_one(f"{kind}:{name} {desc}")
+                        except Exception:
+                            emb = None
+                        self.store.upsert_entity(
+                            kind, name, description=desc, embedding=emb)
+                        entities_added += 1
+                elif item["type"] == "relation":
+                    subj, pred, obj = item["subj"], item["pred"], item["obj"]
+                    for k, n in (subj, obj):
+                        if not self.store.get_entity(k, n):
+                            try:
+                                emb = self.embedder.embed_one(f"{k}:{n}")
+                            except Exception:
+                                emb = None
+                            self.store.upsert_entity(k, n, embedding=emb)
+                    if self.store.link(subj, pred, obj):
+                        relations_added += 1
+        if entities_added or relations_added:
+            self._emit("graph_extracted", entities=entities_added,
+                       relations=relations_added)
+        return entities_added, relations_added
+
     def run_once(self) -> MaintenanceReport:
         report = MaintenanceReport()
         try:
@@ -158,8 +206,16 @@ class MaintenanceService:
             report.merged_entities = self.synthesize_graph()
         except Exception as exc:
             report.errors.append(f"synthesize_graph: {exc}")
+        try:
+            ent, rel = self.extract_graph()
+            report.extracted_entities = ent
+            report.extracted_relations = rel
+        except Exception as exc:
+            report.errors.append(f"extract_graph: {exc}")
         self._emit("maintenance_cycle", distilled=report.distilled,
                    deduped=report.deduped, merged=report.merged_entities,
+                   extracted_entities=report.extracted_entities,
+                   extracted_relations=report.extracted_relations,
                    errors=report.errors)
         return report
 

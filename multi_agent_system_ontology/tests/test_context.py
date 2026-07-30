@@ -154,6 +154,49 @@ def main() -> int:
     check("при высоком пороге mid-term заметки нет",
          len(messages2) == 2)  # system + user, без вставки
 
+    section("retrieve_long_term_graph + format_long_term_note: Graph-RAG (long-term memory)")
+    from maos.orchestrator.context import retrieve_long_term_graph, format_long_term_note
+    st.upsert_entity("person", "starley", description="Создатель MAOS",
+                     embedding=emb.embed_one("person:starley Создатель MAOS"))
+    st.upsert_entity("project", "MAOS", description="мультиагентная онтология",
+                     embedding=emb.embed_one("project:MAOS мультиагентная онтология"))
+    st.link(("person", "starley"), "created", ("project", "MAOS"))
+
+    lt_hits = retrieve_long_term_graph(st, emb, "Кто такой starley и что он сделал?", cfg)
+    check("Graph-RAG нашёл сущность из long-term онтологии",
+          any(h["name"] == "starley" for h in lt_hits))
+    check("Graph-RAG подтянул связи сущности",
+          any(len(h.get("neighbours", [])) > 0 for h in lt_hits if h["name"] == "starley"))
+
+    lt_note = format_long_term_note(lt_hits)
+    check("format_long_term_note сформировал системное сообщение",
+          lt_note is not None and lt_note["role"] == "system")
+    check("заметка содержит текст про сущность и её связь created",
+          lt_note is not None and "starley" in lt_note["content"] and "created" in lt_note["content"])
+
+    st.upsert_entity("concept", "pgvector", description="векторное расширение",
+                     embedding=emb.embed_one("concept:pgvector векторное расширение"))
+    st.link(("project", "MAOS"), "uses", ("concept", "pgvector"))
+
+    cfg.long_term_max_hops = 2
+    lt_hits_2hop = retrieve_long_term_graph(st, emb, "Кто такой starley?", cfg)
+    check("Multi-Hop Graph-RAG нашёл сущность 1-го шага (project:MAOS)",
+          any(h["name"] == "MAOS" and h.get("hop") == 1 for h in lt_hits_2hop))
+    lt_note_2hop = format_long_term_note(lt_hits_2hop)
+    check("format_long_term_note указывает метку (hop 1) для соседей",
+          lt_note_2hop is not None and "(hop 1)" in lt_note_2hop["content"])
+
+    lt_hits_path = retrieve_long_term_graph(st, emb, "Как связаны starley и pgvector?", cfg)
+    lt_note_path = format_long_term_note(lt_hits_path)
+    check("format_long_term_note выводит связующий путь между starley и pgvector",
+          lt_note_path is not None and "★ Найден связующий путь:" in lt_note_path["content"] and "starley" in lt_note_path["content"] and "pgvector" in lt_note_path["content"])
+
+    messages_with_graph = build_messages(
+        "Ты ассистент.", [], "Расскажи про starley", cfg,
+        context_window=8192, store=st, embedder=emb, conversation_id=cid)
+    check("build_messages включает long-term онтологическую заметку",
+          any("long-term memory" in m["content"] for m in messages_with_graph if m["role"] == "system"))
+
     st.close()
 
     print(f"\n{'─' * 40}\nитого: {PASS} ok, {FAIL} fail")

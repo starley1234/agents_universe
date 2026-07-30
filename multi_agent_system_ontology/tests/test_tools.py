@@ -123,8 +123,8 @@ def main() -> int:
     section("maos.tools.toolbox: parse_tools_field")
     check("разбирает через запятую", parse_tools_field("files, web") == ["files", "web"])
     check("пустая строка -> пустой список", parse_tools_field("") == [])
-    check("KNOWN_TOOLS содержит files/web/office/rag",
-         set(KNOWN_TOOLS) == {"files", "web", "office", "rag"})
+    check("KNOWN_TOOLS содержит встроенные и внешние навыки",
+         set(KNOWN_TOOLS) == {"files", "web", "office", "rag", "mcp", "messaging", "site_qa", "vision"})
 
     section("maos.tools.toolbox: build_toolbox без Store — files/web/office")
     with tempfile.TemporaryDirectory() as wsroot:
@@ -145,6 +145,33 @@ def main() -> int:
         check("office-инструменты присутствуют",
              any("docx" in t.name or "xlsx" in t.name or "pptx" in t.name
                 for t in built2), [t.name for t in built2])
+
+        agent_row_qa = {"slug": "qa_agent", "tools": "site_qa,vision"}
+        built_qa = build_toolbox(cfg, agent_row_qa)
+        qa_names = {t.name for t in built_qa}
+        check("инструмент site_qa (check_site) присутствует",
+              "check_site" in qa_names)
+        check("инструмент vision (analyze_image) присутствует",
+              "analyze_image" in qa_names)
+
+        # Проверка запуска инструмента check_site
+        check_site_tool = next(t for t in built_qa if t.name == "check_site")
+        qa_ws = Path(wsroot) / "qa_agent"
+        qa_ws.mkdir(parents=True, exist_ok=True)
+        (qa_ws / "index.html").write_text("<title>Demo</title><h1>OK</h1>", encoding="utf-8")
+        res_ok = check_site_tool.fn()
+        check("check_site подтверждает корректный HTML",
+              "успешно проверен" in res_ok)
+
+        # Проверка инструмента vision
+        vision_tool = next(t for t in built_qa if t.name == "analyze_image")
+        (qa_ws / "photo.png").write_bytes(b"fake_image_data")
+        try:
+            vision_tool.fn(image_path="photo.png", prompt="Что это?")
+            check("analyze_image проверяет API-ключ", False)
+        except ToolError as exc:
+            check("analyze_image возвращает ToolError при отсутствии ключа",
+                  "API-ключ" in str(exc) or "API" in str(exc))
 
         agent_row3 = {"slug": "empty", "tools": ""}
         check("агент без tools -> пустой список инструментов",

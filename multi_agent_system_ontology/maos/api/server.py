@@ -17,6 +17,11 @@
   GET    /v1/conversations/<id>   — сообщения диалога
   GET    /v1/graph                — граф онтологии для визуализации
   POST   /v1/chain/start          — {"goal", "agents": [slug, ...]}
+  GET/POST /v1/workflows           — долгие прикладные задачи и их статусы
+  GET/POST /v1/workflows/<id>      — детали / обновление статуса и state
+  POST   /v1/workflows/<id>/artifact — зарегистрировать результат задачи
+  POST   /v1/workflows/<id>/run      — выполнить детерминированные шаги
+  POST   /v1/workflows/<id>/cancel   — отменить задачу
   GET    /v1/chain/<id>           — статус+шаги цепочки
   POST   /v1/maintenance/run      — запустить один цикл обслуживания вручную
   GET    /v1/onboarding/status    — пуста ли база / есть ли демо-агенты
@@ -42,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,6 +61,8 @@ from ..memory.store import Store, StoreError
 from ..orchestrator.chain import ChainError, ChainRunner
 from ..orchestrator.service import Orchestrator
 from ..tts.provider import TTSError, build_tts_provider
+from ..workflows.runner import WorkflowRunner
+from ..workflows import templates as workflow_templates
 
 MAX_BODY = 1_000_000
 
@@ -106,6 +114,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_file(self, file_path: Path, mime: str, filename: str) -> None:
+        if not file_path.is_file():
+            self._send(404, {"error": "файл артефакта не найден"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename.replace(chr(34), "")}"')
+        self.send_header("Content-Length", str(file_path.stat().st_size))
+        self.end_headers()
+        with file_path.open("rb") as f:
+            shutil.copyfileobj(f, self.wfile)
+
+    def _artifact_path(self, relative: str) -> Path | None:
+        root = Path(self.cfg.artifact_root).expanduser().resolve()
+        candidate = (root / relative).resolve()
+        return candidate if candidate != root and root in candidate.parents else None
 
     def _send_audio(self, audio: bytes, mime: str) -> None:
         self.send_response(200)
@@ -201,6 +226,35 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send(200, {"conversation": conv, "messages": st.messages(cid)})
             return
+        if path == "/v1/workflows":
+            with self._store() as st:
+                self._send(200, {"workflows": st.list_workflows(qi("limit", 50), str(q.get("status", [""])[0]))})
+            return
+        if path.startswith("/v1/workflows/") and "/artifacts/" in path and path.endswith("/download"):
+            parts = path.split("/")
+            if len(parts) == 7 and parts[3].isdigit() and parts[5].isdigit():
+                wid, aid = int(parts[3]), int(parts[5])
+                with self._store() as st:
+                    artifact = next((a for a in st.workflow_artifacts(wid) if a["id"] == aid), None)
+                if not artifact:
+                    self._send(404, {"error": "артефакт не найден"}); return
+                disk_path = self._artifact_path(artifact["path"])
+                if not disk_path:
+                    self._send(404, {"error": "некорректный путь артефакта"}); return
+                self._send_file(disk_path, artifact["mime_type"], artifact["name"])
+                return
+        if path.startswith("/v1/workflows/"):
+            raw_id = path[len("/v1/workflows/"):].split("/", 1)[0]
+            if raw_id.isdigit():
+                with self._store() as st:
+                    workflow = st.get_workflow(int(raw_id))
+                    if not workflow:
+                        self._send(404, {"error": f"workflow {raw_id} не найден"})
+                        return
+                    self._send(200, {"workflow": workflow,
+                                     "steps": st.workflow_steps(int(raw_id)),
+                                     "artifacts": st.workflow_artifacts(int(raw_id))})
+                return
         if path == "/v1/graph":
             with self._store() as st:
                 self._send(200, st.graph_data(qi("limit", 500)))
@@ -232,6 +286,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"error": "нужен заголовок Authorization: Bearer <token>"})
             return
+        # Загрузки фото/вложений идут multipart, все остальные API — JSON.
+        if self.path.startswith("/v1/workflows/") and self.path.endswith("/upload"):
+            try:
+                self._upload_artifact()
+            except (StoreError, ValueError) as exc:
+                self._send(400, {"error": str(exc)})
+            except Exception as exc:
+                self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+            return
         data = self._read_json()
         if data is None:
             self._send(400, {"error": "ожидается JSON в теле запроса"})
@@ -247,7 +310,114 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
 
+    def _upload_artifact(self) -> None:
+        import cgi
+        match = re.fullmatch(r"/v1/workflows/(\d+)/upload", self.path.split("?", 1)[0])
+        if not match:
+            self._send(404, {"error": "нет маршрута загрузки"}); return
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0 or length > self.cfg.artifact_upload_max_bytes:
+            raise ValueError(f"размер файла должен быть 1..{self.cfg.artifact_upload_max_bytes} байт")
+        ctype = self.headers.get("Content-Type", "")
+        if not ctype.startswith("multipart/form-data"):
+            raise ValueError("ожидается multipart/form-data")
+        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers,
+                                environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype,
+                                         "CONTENT_LENGTH": str(length)})
+        field = form["file"] if "file" in form else None
+        if field is None or not getattr(field, "filename", ""):
+            raise ValueError("multipart-поле file обязательно")
+        filename = Path(field.filename).name
+        if not filename or filename in (".", ".."):
+            raise ValueError("некорректное имя файла")
+        wid = int(match.group(1)); root = Path(self.cfg.artifact_root).expanduser().resolve()
+        relative = Path("workflow") / str(wid) / "uploads" / filename
+        dest = (root / relative).resolve()
+        if root not in dest.parents:
+            raise ValueError("некорректный путь")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with self._store() as st:
+            if not st.get_workflow(wid):
+                self._send(404, {"error": f"workflow {wid} не найден"}); return
+            with dest.open("wb") as out:
+                shutil.copyfileobj(field.file, out, length=1024 * 1024)
+            aid = st.add_artifact(wid, "upload", filename, str(relative),
+                                  field.type or "application/octet-stream", dest.stat().st_size)
+        self._send(201, {"id": aid, "name": filename, "size_bytes": dest.stat().st_size,
+                         "download_url": f"/v1/workflows/{wid}/artifacts/{aid}/download"})
+
     def _route_post(self, path: str, data: dict[str, Any]) -> None:
+        if path == "/v1/workflows/template":
+            template = str(data.get("template") or "").strip()
+            if template == "website_build":
+                payload = workflow_templates.website_build(str(data.get("topic") or "").strip(), str(data.get("implementation") or ""))
+            elif template == "room_inventory": payload = workflow_templates.room_inventory(str(data.get("title") or "Опись помещения"))
+            else:
+                self._send(400, {"error": "template: website_build или room_inventory"}); return
+            with self._store() as st:
+                wid=st.create_workflow(payload["kind"], payload["title"], payload["input"], payload["state"], payload["status"])
+                for n, step in enumerate(payload["steps"], 1): st.add_workflow_step(wid,n,step["kind"],step.get("input",{}))
+                self._send(201,{"id":wid,"workflow":st.get_workflow(wid),"steps":st.workflow_steps(wid)})
+            return
+        if path == "/v1/workflows":
+            kind = str(data.get("kind") or "").strip()
+            if not kind:
+                self._send(400, {"error": "поле 'kind' обязательно"})
+                return
+            initial_status = str(data.get("status") or "draft")
+            with self._store() as st:
+                wid = st.create_workflow(kind, title=str(data.get("title") or ""),
+                                         input=data.get("input") if isinstance(data.get("input"), dict) else {},
+                                         state=data.get("state") if isinstance(data.get("state"), dict) else {},
+                                         status=initial_status)
+                for ord_, step in enumerate(data.get("steps") or [], 1):
+                    if isinstance(step, dict) and str(step.get("kind") or "").strip():
+                        st.add_workflow_step(wid, ord_, str(step["kind"]),
+                                             step.get("input") if isinstance(step.get("input"), dict) else {})
+                self._send(201, {"id": wid, "workflow": st.get_workflow(wid),
+                                 "steps": st.workflow_steps(wid)})
+            return
+        if path.startswith("/v1/workflows/"):
+            rest = path[len("/v1/workflows/"):]
+            raw_id, _, action = rest.partition("/")
+            if not raw_id.isdigit():
+                self._send(400, {"error": "некорректный id workflow"})
+                return
+            wid = int(raw_id)
+            with self._store() as st:
+                if not st.get_workflow(wid):
+                    self._send(404, {"error": f"workflow {wid} не найден"})
+                    return
+                if action == "run":
+                    result = WorkflowRunner(self.cfg, st).run(wid)
+                    self._send(200, {"workflow": result, "steps": st.workflow_steps(wid),
+                                     "artifacts": st.workflow_artifacts(wid)})
+                    return
+                if action == "cancel":
+                    st.set_workflow(wid, status="cancelled")
+                    self._send(200, {"workflow": st.get_workflow(wid)})
+                    return
+                if action == "artifact":
+                    required = ("kind", "name", "path")
+                    missing = [k for k in required if not str(data.get(k) or "").strip()]
+                    if missing:
+                        self._send(400, {"error": "обязательные поля: " + ", ".join(missing)})
+                        return
+                    aid = st.add_artifact(wid, str(data["kind"]), str(data["name"]), str(data["path"]),
+                                          str(data.get("mime_type") or "application/octet-stream"),
+                                          int(data.get("size_bytes") or 0),
+                                          data.get("meta") if isinstance(data.get("meta"), dict) else {},
+                                          data.get("step_id"))
+                    self._send(201, {"id": aid})
+                    return
+                if action in ("", "state"):
+                    ok = st.set_workflow(wid, status=data.get("status"),
+                                         state=data.get("state") if isinstance(data.get("state"), dict) else None,
+                                         error=data.get("error") if "error" in data else None)
+                    self._send(200, {"updated": ok, "workflow": st.get_workflow(wid)})
+                    return
+            self._send(404, {"error": f"нет workflow-маршрута {action!r}"})
+            return
         if path == "/v1/chat":
             message = (data.get("message") or "").strip()
             if not message:
@@ -335,6 +505,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"distilled": report.distilled,
                                  "deduped": report.deduped,
                                  "merged_entities": report.merged_entities,
+                                 "extracted_entities": report.extracted_entities,
+                                 "extracted_relations": report.extracted_relations,
                                  "errors": report.errors})
             return
         if path == "/v1/onboarding/seed":
@@ -382,6 +554,15 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8090,
             "Отказ: сервер открыт наружу без токена. Задайте MAOS_API_TOKEN "
             "или слушайте 127.0.0.1."
         )
+    if os.getenv("MAOS_AUTO_SEED", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from ..demo_seed import seed_demo_agents
+            with Store(cfg.require_dsn(), dim=cfg.embedding_dim) as st:
+                created = seed_demo_agents(st, cfg, _make_embedder(cfg))
+                if created:
+                    print(f"MAOS: авто-посев демо-агентов выполнен — {created}")
+        except Exception as exc:
+            print(f"MAOS: авто-посев демо-агентов пропущен ({exc})")
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"MAOS: http://{host}:{port}/  "
           f"(токен: {'да' if Handler.token else 'нет, только localhost'})")
