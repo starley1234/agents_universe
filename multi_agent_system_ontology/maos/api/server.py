@@ -554,6 +554,15 @@ def serve(cfg: Config, host: str = "127.0.0.1", port: int = 8090,
             "Отказ: сервер открыт наружу без токена. Задайте MAOS_API_TOKEN "
             "или слушайте 127.0.0.1."
         )
+    if os.getenv("MAOS_AUTO_SEED", "").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            from ..demo_seed import seed_demo_agents
+            with Store(cfg.require_dsn(), dim=cfg.embedding_dim) as st:
+                created = seed_demo_agents(st, cfg, _make_embedder(cfg))
+                if created:
+                    print(f"MAOS: авто-посев демо-агентов выполнен — {created}")
+        except Exception as exc:
+            print(f"MAOS: авто-посев демо-агентов пропущен ({exc})")
     srv = ThreadingHTTPServer((host, port), Handler)
     print(f"MAOS: http://{host}:{port}/  "
           f"(токен: {'да' if Handler.token else 'нет, только localhost'})")

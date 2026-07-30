@@ -28,6 +28,7 @@ services:
       MAOS_PORT: 8090
       MAOS_ARTIFACT_ROOT: /data/artifacts
       MAOS_WORKSPACE_ROOT: /data/workspace
+      MAOS_AUTO_SEED: "${MAOS_AUTO_SEED:-true}"
     ports:
       - "127.0.0.1:${MAOS_PUBLIC_PORT:-8090}:8090"
     volumes:
@@ -44,6 +45,28 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  maos-maintenance:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DB_DSN: postgresql://${POSTGRES_USER:-maos}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-maos}
+      MAOS_ARTIFACT_ROOT: /data/artifacts
+      MAOS_WORKSPACE_ROOT: /data/workspace
+    command: ["python", "-m", "maos.maintenance_runner"]
+    volumes:
+      - maos_artifacts:/data/artifacts
+      - maos_workspace:/data/workspace
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
 volumes:
   maos_postgres:
   maos_artifacts:
