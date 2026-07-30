@@ -505,6 +505,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"distilled": report.distilled,
                                  "deduped": report.deduped,
                                  "merged_entities": report.merged_entities,
+                                 "extracted_entities": report.extracted_entities,
+                                 "extracted_relations": report.extracted_relations,
                                  "errors": report.errors})
             return
         if path == "/v1/onboarding/seed":

@@ -33,7 +33,7 @@ class ToolboxError(RuntimeError):
     """Ошибка сборки набора инструментов: неизвестный навык и т.п."""
 
 
-KNOWN_TOOLS = ("files", "web", "office", "rag", "mcp", "messaging")
+KNOWN_TOOLS = ("files", "web", "office", "rag", "mcp", "messaging", "site_qa", "vision")
 
 
 def parse_tools_field(raw: str) -> list[str]:
@@ -102,4 +102,10 @@ def build_toolbox(cfg: Config, agent_row: dict, store: Store | None = None,
                 "передайте их в build_toolbox(store=..., embedder=...)")
         from ..skills import rag
         _extend(rag.build(ws, store, embedder))
+    if "site_qa" in names:
+        from . import site_qa
+        _extend(site_qa.build(ws))
+    if "vision" in names:
+        from . import vision
+        _extend(vision.build(ws, cfg))
     return tools

@@ -164,6 +164,25 @@ def main() -> int:
     check("run_once вернул структуру с числами",
          isinstance(report.distilled, int) and isinstance(report.deduped, int))
 
+    section("extract_graph_from_messages: извлечение сущностей и связей")
+    from maos.maintenance.extract import extract_graph_from_messages
+    sample_msgs = [
+        {"role": "user", "content": "MAOS — это мультиагентная онтология"},
+        {"role": "agent", "content": "starley создал MAOS"},
+    ]
+    items = extract_graph_from_messages(sample_msgs)
+    check("нашлась сущность MAOS", any(i["type"] == "entity" and i["name"] == "MAOS" for i in items))
+    check("нашлась связь starley created MAOS",
+          any(i["type"] == "relation" and i["subj"][1] == "starley" and i["obj"][1] == "MAOS" for i in items))
+
+    section("extract_graph(): сохранение в long-term онтологию")
+    cid_ext = st.create_conversation("тест экстракции")
+    st.add_message(cid_ext, "user", "Python — это язык программирования")
+    st.add_message(cid_ext, "agent", "coder использует Python")
+    e_added, r_added = svc.extract_graph()
+    check("добавилась сущность Python", e_added >= 1 and st.get_entity("project", "Python") is not None)
+    check("добавилась связь coder uses Python", r_added >= 1)
+
     section("run_once(): фаза-исключение не роняет остальные фазы")
     class BrokenEmbedder(HashEmbedder):
         def embed_one(self, text):

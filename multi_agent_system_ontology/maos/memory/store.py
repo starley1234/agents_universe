@@ -672,6 +672,54 @@ class Store:
         return [{"pred": p, "kind": k, "name": n, "dir": d}
                 for p, k, n, d in cur.fetchall()]
 
+    def find_path(self, start: tuple[str, str], end: tuple[str, str],
+                  max_depth: int = 4) -> list[dict[str, Any]]:
+        """Поиск кратчайшего связующего пути между двумя сущностями (BFS).
+
+        Возвращает последовательность шагов:
+        [{"kind": ..., "name": ...}, {"pred": ..., "dir": ...}, {"kind": ..., "name": ...}, ...]
+        либо пустой список, если путь не найден за max_depth шагов.
+        """
+        start_ent = self.get_entity(*start)
+        end_ent = self.get_entity(*end)
+        if not start_ent or not end_ent:
+            return []
+        if start_ent["id"] == end_ent["id"]:
+            return [{"kind": start_ent["kind"], "name": start_ent["name"]}]
+
+        from collections import deque
+        queue = deque([(start_ent["id"], [{"kind": start_ent["kind"], "name": start_ent["name"]}], [])])
+        visited = {start_ent["id"]}
+
+        while queue:
+            curr_id, path_nodes, path_edges = queue.popleft()
+            if len(path_edges) >= max_depth:
+                continue
+
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT r.pred, e.id, e.kind, e.name, 'out' FROM onto_relation r
+                JOIN onto_entity e ON e.id = r.obj WHERE r.subj = %s
+                UNION ALL
+                SELECT r.pred, e.id, e.kind, e.name, 'in' FROM onto_relation r
+                JOIN onto_entity e ON e.id = r.subj WHERE r.obj = %s
+            """, (curr_id, curr_id))
+
+            for pred, next_id, next_kind, next_name, direction in cur.fetchall():
+                new_nodes = path_nodes + [{"kind": next_kind, "name": next_name}]
+                new_edges = path_edges + [{"pred": pred, "dir": direction}]
+                if next_id == end_ent["id"]:
+                    result = [new_nodes[0]]
+                    for idx, edge in enumerate(new_edges):
+                        result.append(edge)
+                        result.append(new_nodes[idx + 1])
+                    return result
+                if next_id not in visited:
+                    visited.add(next_id)
+                    queue.append((next_id, new_nodes, new_edges))
+
+        return []
+
     def graph_data(self, limit: int = 500) -> dict[str, Any]:
         """Узлы и рёбра для визуализации графа в дашборде."""
         cur = self.conn.cursor()

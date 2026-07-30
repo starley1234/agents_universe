@@ -225,6 +225,15 @@ def main() -> int:
     check("merge_entities с несуществующей сущностью -> False",
          st.merge_entities("project", "MAOS", "ghost") is False)
 
+    section("find_path: поиск связующего пути между сущностями (BFS)")
+    st.upsert_entity("concept", "pgvector", description="расширение векторного поиска")
+    st.link(("project", "MAOS"), "uses", ("concept", "pgvector"))
+    path = st.find_path(("agent", "coder"), ("concept", "pgvector"), max_depth=3)
+    check("find_path нашёл путь coder -> MAOS -> pgvector",
+          len(path) == 5 and path[0]["name"] == "coder" and path[-1]["name"] == "pgvector")
+    check("find_path для несвязанных сущностей возвращает пустой список",
+          st.find_path(("agent", "coder"), ("agent", "ghost")) == [])
+
     section("Chain: детерминированная ручная цепочка")
     chain_id = st.start_chain("тестовая цель", ["coder", "writer"], conversation_id=cid)
     check("chain id > 0", chain_id > 0)

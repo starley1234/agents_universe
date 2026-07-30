@@ -48,7 +48,7 @@ DEMO_AGENTS: tuple[DemoAgentSpec, ...] = (
                        "по существу, приводи рабочий код, объясняй "
                        "решения кратко. Если задача неоднозначна — "
                        "уточни детали, а не додумывай."),
-        tools="files",
+        tools="files,site_qa",
     ),
     DemoAgentSpec(
         slug="writer",
@@ -71,7 +71,7 @@ DEMO_AGENTS: tuple[DemoAgentSpec, ...] = (
         system_prompt=("Ты аналитик данных. Опирайся на цифры и факты, "
                        "явно указывай допущения, если данных не хватает "
                        "— так и скажи, не додумывай числа."),
-        tools="rag",
+        tools="rag,vision",
     ),
 )
 
