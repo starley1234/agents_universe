@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     embedding_key: str = "sk-local"
 
     # ── Database ─────────────────────────────────────────────
-    database_url: str = "postgresql+asyncpg://astra:astra@localhost:5432/astra_db"
+    database_url: str = "postgresql+asyncpg://astra:astra@localhost:5432/astra"
 
     # ── Redis (TaskIQ broker) ────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
