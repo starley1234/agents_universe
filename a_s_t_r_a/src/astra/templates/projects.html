@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}Проекты — A.S.T.R.A.{% endblock %}
+
+{% block breadcrumbs %}
+  <a href="/" class="text-gray-500 hover:text-gray-300 transition">Dashboard</a>
+  <span class="text-gray-600">/</span>
+  <span class="text-gray-300 font-medium">Проекты</span>
+{% endblock %}
+
+{% block header_actions %}
+<button @click="$dispatch('open-create')"
+        class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent hover:bg-accent-dim text-white text-sm font-medium transition">
+  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+  </svg>
+  Создать
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto space-y-6"
+     x-data="{
+       projects: [],
+       loaded: false,
+       showCreate: false,
+       newName: '',
+       newDesc: '',
+       async load() {
+         this.projects = await fetch('/api/data/projects').then(r => r.json());
+         this.loaded = true;
+       },
+       async create() {
+         if (!this.newName.trim()) return;
+         const res = await fetch('/api/projects/', {
+           method: 'POST',
+           headers: {'Content-Type': 'application/json'},
+           body: JSON.stringify({ name: this.newName, description: this.newDesc }),
+         });
+         if (res.ok) {
+           const p = await res.json();
+           this.projects.unshift({ ...p, created_at: new Date().toISOString() });
+           this.showCreate = false;
+           this.newName = ''; this.newDesc = '';
+           window.dispatchEvent(new CustomEvent('toast', { detail: { msg: 'Проект создан!', type: 'success' } }));
+         } else {
+           window.dispatchEvent(new CustomEvent('toast', { detail: { msg: 'Ошибка создания проекта', type: 'error' } }));
+         }
+       }
+     }"
+     x-init="load()"
+     @open-create.window="showCreate = true">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold">Проекты</h1>
+      <p class="text-sm text-gray-500 mt-1">Изолированные рабочие пространства агента</p>
+    </div>
+  </div>
+
+  <!-- Create project modal -->
+  <div x-show="showCreate" x-transition.opacity
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+       @click.self="showCreate = false" @keydown.escape.window="showCreate = false">
+    <div x-show="showCreate" x-transition:enter="transition ease-out duration-200"
+         x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100"
+         class="bg-surface border border-surface-light rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-5">
+      <h3 class="text-lg font-semibold">Новый проект</h3>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1.5">Название</label>
+          <input x-model="newName" type="text" placeholder="My Project"
+                 class="w-full bg-gray-950 border border-surface-light rounded-lg px-3 py-2.5 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition"
+                 @keydown.enter="create()">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1.5">Описание</label>
+          <textarea x-model="newDesc" rows="3" placeholder="Описание проекта…"
+                    class="w-full bg-gray-950 border border-surface-light rounded-lg px-3 py-2.5 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition resize-none"></textarea>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button @click="showCreate = false"
+                class="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-light transition">
+          Отмена
+        </button>
+        <button @click="create()"
+                class="px-4 py-2 rounded-lg bg-accent hover:bg-accent-dim text-white text-sm font-medium transition"
+                :class="{ 'opacity-50 pointer-events-none': !newName.trim() }">
+          Создать
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <template x-if="!loaded">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <template x-for="i in 6"><div class="h-44 bg-surface rounded-xl border border-surface-light animate-pulse"></div></template>
+    </div>
+  </template>
+
+  <!-- Empty state -->
+  <template x-if="loaded && projects.length === 0">
+    <div class="text-center py-20">
+      <svg class="w-16 h-16 mx-auto mb-4 text-gray-700" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/>
+      </svg>
+      <p class="text-gray-500 mb-4">Проектов пока нет</p>
+      <button @click="showCreate = true"
+              class="px-4 py-2 rounded-lg bg-accent hover:bg-accent-dim text-white text-sm font-medium transition">
+        Создать первый проект
+      </button>
+    </div>
+  </template>
+
+  <!-- Project cards -->
+  <template x-if="loaded && projects.length > 0">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- Create card -->
+      <button @click="showCreate = true"
+              class="group border-2 border-dashed border-surface-light rounded-xl p-6 flex flex-col items-center justify-center gap-3
+                     hover:border-accent/40 hover:bg-accent/5 transition min-h-[180px]">
+        <div class="w-12 h-12 rounded-xl bg-surface-light group-hover:bg-accent/20 flex items-center justify-center transition">
+          <svg class="w-6 h-6 text-gray-500 group-hover:text-accent transition" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+          </svg>
+        </div>
+        <span class="text-sm text-gray-500 group-hover:text-gray-300 transition">Новый проект</span>
+      </button>
+
+      <!-- Project cards -->
+      <template x-for="p in projects" :key="p.id">
+        <a :href="'/ui/projects/' + p.id"
+           class="group bg-surface rounded-xl border border-surface-light p-5 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 transition-all block">
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-10 h-10 rounded-lg bg-accent/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/>
+              </svg>
+            </div>
+            <svg class="w-4 h-4 text-gray-600 group-hover:text-accent transition" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+            </svg>
+          </div>
+          <h3 class="font-semibold text-sm mb-1 group-hover:text-accent-light transition" x-text="p.name"></h3>
+          <p class="text-xs text-gray-500 line-clamp-2 mb-3" x-text="p.description || 'Без описания'"></p>
+          <div class="text-[11px] text-gray-600" x-text="'Создан: ' + new Date(p.created_at).toLocaleDateString('ru')"></div>
+        </a>
+      </template>
+    </div>
+  </template>
+</div>
+{% endblock %}

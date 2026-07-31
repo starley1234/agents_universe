@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ru" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}A.S.T.R.A.{% endblock %}</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface:   { DEFAULT: '#111827', light: '#1f2937', lighter: '#374151' },
+            accent:    { DEFAULT: '#6366f1', light: '#818cf8', dim: '#4f46e5' },
+            nebula:    { DEFAULT: '#22d3ee', dim: '#0891b2' },
+            star:      { DEFAULT: '#fbbf24' },
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+          },
+        },
+      },
+    }
+  </script>
+
+  <!-- HTMX 2 -->
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
+  <!-- Alpine.js 3 -->
+  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <style>
+    * { font-family: 'Inter', system-ui, sans-serif; }
+    code, pre, .font-mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+    [x-cloak] { display: none !important; }
+
+    /* HTMX loading indicator */
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { display: flex; }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+    /* Pulse animation for status dot */
+    @keyframes pulse-ring {
+      0% { transform: scale(0.8); opacity: 1; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+    .pulse-dot::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 9999px;
+      background: inherit;
+      animation: pulse-ring 1.5s ease-out infinite;
+    }
+
+    /* Smooth page transitions */
+    .page-enter { animation: fadeIn 0.2s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+
+  {% block head %}{% endblock %}
+</head>
+
+<body class="h-full bg-[#030712] text-gray-100 antialiased"
+      x-data="{ sidebarOpen: false }" x-cloak>
+
+  <!-- ─── Sidebar overlay (mobile) ─────────────────────────── -->
+  <div x-show="sidebarOpen" x-transition.opacity
+       @click="sidebarOpen = false"
+       class="fixed inset-0 z-40 bg-black/60 lg:hidden"></div>
+
+  <!-- ─── Sidebar ──────────────────────────────────────────── -->
+  <aside class="fixed inset-y-0 left-0 z-50 w-64 bg-surface border-r border-surface-light
+                flex flex-col transform transition-transform duration-200 lg:translate-x-0"
+         :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'">
+
+    <!-- Logo -->
+    <div class="flex items-center gap-3 h-16 px-5 border-b border-surface-light shrink-0">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-accent to-nebula flex items-center justify-center shadow-lg shadow-accent/20">
+        <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26"/>
+        </svg>
+      </div>
+      <div>
+        <div class="text-sm font-bold tracking-wide">A.S.T.R.A.</div>
+        <div class="text-[10px] text-gray-500 tracking-widest uppercase">Agent System</div>
+      </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
+      {% set current = request.url.path %}
+
+      <a href="/"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all
+                {{ 'bg-accent/15 text-accent-light' if current == '/' else 'text-gray-400 hover:text-gray-100 hover:bg-surface-light' }}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/>
+        </svg>
+        Dashboard
+      </a>
+
+      <a href="/ui/projects"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all
+                {{ 'bg-accent/15 text-accent-light' if '/ui/projects' in current else 'text-gray-400 hover:text-gray-100 hover:bg-surface-light' }}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/>
+        </svg>
+        Проекты
+      </a>
+
+      <!-- Divider -->
+      <div class="pt-3 pb-1 px-3">
+        <div class="text-[10px] font-semibold text-gray-600 uppercase tracking-widest">Проект</div>
+      </div>
+
+      {% if project is defined and project %}
+      <a href="/ui/projects/{{ project.id }}"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all
+                {{ 'bg-accent/15 text-accent-light' if current.endswith(project.id|string) and '/playground' not in current and '/graph' not in current else 'text-gray-400 hover:text-gray-100 hover:bg-surface-light' }}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"/>
+        </svg>
+        {{ project.name }}
+      </a>
+      <a href="/ui/projects/{{ project.id }}/playground"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ml-2
+                {{ 'bg-accent/15 text-accent-light' if '/playground' in current else 'text-gray-400 hover:text-gray-100 hover:bg-surface-light' }}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/>
+        </svg>
+        Playground
+      </a>
+      <a href="/ui/projects/{{ project.id }}/graph"
+         class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ml-2
+                {{ 'bg-accent/15 text-accent-light' if '/graph' in current else 'text-gray-400 hover:text-gray-100 hover:bg-surface-light' }}">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/>
+        </svg>
+        Граф знаний
+      </a>
+      {% else %}
+      <div class="px-3 py-2 text-xs text-gray-600 italic">Выберите проект…</div>
+      {% endif %}
+    </nav>
+
+    <!-- System status -->
+    <div class="p-4 border-t border-surface-light shrink-0">
+      <div class="flex items-center gap-2">
+        <div class="relative w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></div>
+        <span class="text-xs text-gray-500">Система активна</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ─── Main wrapper ─────────────────────────────────────── -->
+  <div class="lg:pl-64 min-h-full flex flex-col">
+
+    <!-- Top bar -->
+    <header class="sticky top-0 z-30 h-14 bg-[#030712]/80 backdrop-blur-xl border-b border-surface-light shrink-0">
+      <div class="flex items-center justify-between h-full px-4 lg:px-6">
+        <div class="flex items-center gap-3">
+          <!-- Mobile menu button -->
+          <button @click="sidebarOpen = !sidebarOpen" class="lg:hidden p-1.5 rounded-lg hover:bg-surface-light text-gray-400">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/>
+            </svg>
+          </button>
+          <!-- Breadcrumbs -->
+          <div class="flex items-center gap-1.5 text-sm">
+            {% block breadcrumbs %}
+            <span class="text-gray-300 font-medium">Dashboard</span>
+            {% endblock %}
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          {% block header_actions %}{% endblock %}
+        </div>
+      </div>
+    </header>
+
+    <!-- Page content -->
+    <main class="flex-1 p-4 lg:p-6 page-enter">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <!-- ─── Toast container ──────────────────────────────────── -->
+  <div id="toasts"
+       x-data="{
+         toasts: [],
+         add(msg, type='info') {
+           const id = Date.now();
+           this.toasts.push({ id, msg, type });
+           setTimeout(() => this.remove(id), 4000);
+         },
+         remove(id) { this.toasts = this.toasts.filter(t => t.id !== id); }
+       }"
+       @toast.window="add($event.detail.msg, $event.detail.type || 'info')"
+       class="fixed bottom-4 right-4 z-[999] space-y-2 pointer-events-none">
+    <template x-for="t in toasts" :key="t.id">
+      <div x-show="true" x-transition:enter="transition ease-out duration-300"
+           x-transition:enter-start="opacity-0 translate-y-4"
+           x-transition:enter-end="opacity-100 translate-y-0"
+           x-transition:leave="transition ease-in duration-200"
+           x-transition:leave-start="opacity-100"
+           x-transition:leave-end="opacity-0"
+           class="pointer-events-auto max-w-sm px-4 py-3 rounded-lg shadow-xl text-sm flex items-center gap-2"
+           :class="{
+             'bg-emerald-900/90 text-emerald-200 border border-emerald-700': t.type === 'success',
+             'bg-red-900/90 text-red-200 border border-red-700':         t.type === 'error',
+             'bg-amber-900/90 text-amber-200 border border-amber-700':   t.type === 'warning',
+             'bg-surface text-gray-200 border border-surface-light':     t.type === 'info',
+           }">
+        <span x-text="t.msg"></span>
+        <button @click="remove(t.id)" class="ml-auto opacity-60 hover:opacity-100">&times;</button>
+      </div>
+    </template>
+  </div>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

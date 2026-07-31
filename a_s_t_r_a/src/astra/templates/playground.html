@@ -1,0 +1,254 @@
+{% extends "base.html" %}
+
+{% block title %}Playground — {{ project.name }} — A.S.T.R.A.{% endblock %}
+
+{% block breadcrumbs %}
+  <a href="/" class="text-gray-500 hover:text-gray-300 transition">Dashboard</a>
+  <span class="text-gray-600">/</span>
+  <a href="/ui/projects" class="text-gray-500 hover:text-gray-300 transition">Проекты</a>
+  <span class="text-gray-600">/</span>
+  <a href="/ui/projects/{{ project.id }}" class="text-gray-500 hover:text-gray-300 transition">{{ project.name }}</a>
+  <span class="text-gray-600">/</span>
+  <span class="text-gray-300 font-medium">Playground</span>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto h-[calc(100vh-7rem)]"
+     x-data="{
+       goal: '',
+       running: false,
+       result: null,
+       error: null,
+       history: [],
+
+       async run() {
+         if (!this.goal.trim() || this.running) return;
+         this.running = true;
+         this.result = null;
+         this.error = null;
+
+         try {
+           const res = await fetch('/api/agents/run', {
+             method: 'POST',
+             headers: {'Content-Type': 'application/json'},
+             body: JSON.stringify({ project_id: '{{ project.id }}', goal: this.goal }),
+           });
+           const data = await res.json();
+
+           if (res.ok) {
+             this.result = data;
+             this.history.unshift({
+               goal: this.goal,
+               status: data.status,
+               result: data.result,
+               sessionId: data.session_id,
+               time: new Date().toLocaleTimeString('ru'),
+             });
+             window.dispatchEvent(new CustomEvent('toast', {
+               detail: { msg: data.status === 'completed' ? 'Агент завершил работу!' : 'Агент остановлен', type: data.status === 'completed' ? 'success' : 'warning' }
+             }));
+           } else {
+             this.error = data.detail || 'Ошибка запуска агента';
+             window.dispatchEvent(new CustomEvent('toast', { detail: { msg: this.error, type: 'error' } }));
+           }
+         } catch (e) {
+           this.error = 'Сетевая ошибка: ' + e.message;
+           window.dispatchEvent(new CustomEvent('toast', { detail: { msg: this.error, type: 'error' } }));
+         } finally {
+           this.running = false;
+         }
+       }
+     }">
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
+
+    <!-- ─── Left panel: Input ──────────────────────────────── -->
+    <div class="flex flex-col gap-4">
+      <!-- Goal input -->
+      <div class="bg-surface rounded-xl border border-surface-light p-5 flex-1 flex flex-col">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/>
+          </svg>
+          <span class="text-sm font-semibold">Задача для агента</span>
+        </div>
+
+        <textarea x-model="goal" rows="8"
+                  :disabled="running"
+                  placeholder="Опишите задачу, которую нужно решить агенту A.S.T.R.A.&#10;&#10;Примеры:&#1;• Проанализируй структуру проекта и предложи улучшения&#10;• Найди информацию о ... и составь отчёт&#10;• Создай план интеграции ..."
+                  class="flex-1 w-full bg-gray-950 border border-surface-light rounded-lg px-4 py-3 text-sm font-mono
+                         focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent transition resize-none
+                         disabled:opacity-50"
+                  @keydown.meta.enter="run()"
+                  @keydown.ctrl.enter="run()"></textarea>
+
+        <div class="flex items-center justify-between mt-3">
+          <div class="text-xs text-gray-600">
+            <kbd class="px-1.5 py-0.5 rounded bg-surface-light text-gray-400 text-[10px]">Ctrl</kbd>
+            +
+            <kbd class="px-1.5 py-0.5 rounded bg-surface-light text-gray-400 text-[10px]">Enter</kbd>
+            для запуска
+          </div>
+          <button @click="run()"
+                  :disabled="!goal.trim() || running"
+                  class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-all
+                         disabled:opacity-40 disabled:cursor-not-allowed"
+                  :class="running ? 'bg-amber-600 text-white cursor-wait' : 'bg-accent hover:bg-accent-dim text-white shadow-lg shadow-accent/20'">
+            <template x-if="!running">
+              <span class="flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/>
+                </svg>
+                Запустить
+              </span>
+            </template>
+            <template x-if="running">
+              <span class="flex items-center gap-2">
+                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Выполняется…
+              </span>
+            </template>
+          </button>
+        </div>
+      </div>
+
+      <!-- Project info card -->
+      <div class="bg-surface rounded-xl border border-surface-light p-4">
+        <div class="flex items-center gap-3 mb-2">
+          <div class="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+            <svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/>
+            </svg>
+          </div>
+          <div>
+            <div class="text-sm font-medium">{{ project.name }}</div>
+            <div class="text-xs text-gray-500">{{ project.description or 'Без описания' }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Right panel: Output ────────────────────────────── -->
+    <div class="flex flex-col gap-4">
+      <!-- Result -->
+      <div class="bg-surface rounded-xl border border-surface-light flex-1 flex flex-col overflow-hidden">
+        <div class="px-5 py-3 border-b border-surface-light flex items-center gap-2">
+          <svg class="w-4 h-4 text-nebula" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25"/>
+          </svg>
+          <span class="text-sm font-semibold">Результат</span>
+          <div class="ml-auto flex items-center gap-2" x-show="result">
+            <div class="w-2 h-2 rounded-full"
+                 :class="{'bg-emerald-500': result?.status==='completed', 'bg-amber-500': result?.status==='halted', 'bg-red-500': result?.status==='error'}"></div>
+            <span class="text-xs text-gray-400" x-text="result?.status"></span>
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-5">
+          <!-- Empty state -->
+          <template x-if="!result && !error && !running">
+            <div class="h-full flex flex-col items-center justify-center text-gray-600">
+              <svg class="w-16 h-16 mb-4 opacity-30" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/>
+              </svg>
+              <p class="text-sm">Введите задачу и нажмите «Запустить»</p>
+            </div>
+          </template>
+
+          <!-- Loading -->
+          <template x-if="running">
+            <div class="h-full flex flex-col items-center justify-center">
+              <div class="relative mb-6">
+                <div class="w-16 h-16 rounded-full border-2 border-accent/20 border-t-accent animate-spin"></div>
+                <div class="absolute inset-0 flex items-center justify-center">
+                  <svg class="w-6 h-6 text-accent" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26"/>
+                  </svg>
+                </div>
+              </div>
+              <p class="text-sm text-gray-400 mb-1">A.S.T.R.A. размышляет…</p>
+              <p class="text-xs text-gray-600">Это может занять несколько минут</p>
+            </div>
+          </template>
+
+          <!-- Error -->
+          <template x-if="error && !running">
+            <div class="bg-red-950/50 border border-red-800/50 rounded-lg p-4">
+              <div class="flex items-center gap-2 text-red-400 text-sm font-medium mb-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+                </svg>
+                Ошибка
+              </div>
+              <div class="text-sm text-red-300" x-text="error"></div>
+            </div>
+          </template>
+
+          <!-- Result content -->
+          <template x-if="result && !running">
+            <div class="space-y-4">
+              <!-- Status banner -->
+              <div class="rounded-lg p-3 flex items-center gap-3"
+                   :class="{
+                     'bg-emerald-950/50 border border-emerald-800/50': result.status === 'completed',
+                     'bg-amber-950/50 border border-amber-800/50':   result.status === 'halted',
+                     'bg-red-950/50 border border-red-800/50':       result.status === 'error',
+                   }">
+                <template x-if="result.status === 'completed'">
+                  <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                  </svg>
+                </template>
+                <template x-if="result.status === 'halted'">
+                  <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+                  </svg>
+                </template>
+                <div>
+                  <div class="text-sm font-medium" :class="{'text-emerald-300': result.status==='completed', 'text-amber-300': result.status==='halted', 'text-red-300': result.status==='error'}"
+                       x-text="result.status === 'completed' ? 'Задача выполнена!' : result.status === 'halted' ? 'Агент остановлен (circuit breaker)' : 'Ошибка выполнения'"></div>
+                </div>
+              </div>
+
+              <!-- Result text -->
+              <div class="bg-gray-950 rounded-lg border border-surface-light p-4">
+                <div class="text-xs text-gray-500 mb-2">Ответ агента:</div>
+                <div class="text-sm font-mono whitespace-pre-wrap text-gray-200 leading-relaxed"
+                     x-text="result.result"></div>
+              </div>
+
+              <!-- Session ID -->
+              <div class="text-xs text-gray-600">
+                Session ID: <span class="font-mono text-gray-500" x-text="result.session_id"></span>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="bg-surface rounded-xl border border-surface-light overflow-hidden"
+           x-show="history.length > 0">
+        <div class="px-5 py-3 border-b border-surface-light">
+          <span class="text-sm font-semibold">История сессий</span>
+        </div>
+        <div class="max-h-48 overflow-y-auto divide-y divide-surface-light">
+          <template x-for="h in history" :key="h.sessionId">
+            <div class="px-5 py-2.5 flex items-center gap-3 hover:bg-surface-light/50 transition">
+              <div class="w-2 h-2 rounded-full shrink-0"
+                   :class="{'bg-emerald-500': h.status==='completed', 'bg-amber-500': h.status==='halted', 'bg-red-500': h.status==='error'}"></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-xs truncate text-gray-300" x-text="h.goal"></div>
+              </div>
+              <div class="text-[11px] text-gray-600 shrink-0" x-text="h.time"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

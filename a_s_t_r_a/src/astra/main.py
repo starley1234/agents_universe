@@ -16,6 +16,7 @@ from astra.config import settings
 from astra.db.engine import init_db
 from astra.mcp.tool_registry import tool_registry
 from astra.utils.logger import setup_logging
+from astra.web.routes import router as web_router
 
 
 @asynccontextmanager
@@ -68,10 +69,13 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-# ── Routers ──────────────────────────────────────────────────
+# ── API Routers ───────────────────────────────────────────────
 app.include_router(health.router, tags=["health"])
-app.include_router(projects.router, prefix="/projects", tags=["projects"])
-app.include_router(agents.router, prefix="/agents", tags=["agents"])
+app.include_router(projects.router, prefix="/api/projects", tags=["projects-api"])
+app.include_router(agents.router, prefix="/api/agents", tags=["agents-api"])
+
+# ── Web UI (HTML pages + extra JSON endpoints) ───────────────
+app.include_router(web_router, tags=["web"])
 
 
 if __name__ == "__main__":

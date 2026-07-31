@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Граф знаний — {{ project.name }} — A.S.T.R.A.{% endblock %}
+
+{% block breadcrumbs %}
+  <a href="/" class="text-gray-500 hover:text-gray-300 transition">Dashboard</a>
+  <span class="text-gray-600">/</span>
+  <a href="/ui/projects" class="text-gray-500 hover:text-gray-300 transition">Проекты</a>
+  <span class="text-gray-600">/</span>
+  <a href="/ui/projects/{{ project.id }}" class="text-gray-500 hover:text-gray-300 transition">{{ project.name }}</a>
+  <span class="text-gray-600">/</span>
+  <span class="text-gray-300 font-medium">Граф знаний</span>
+{% endblock %}
+
+{% block header_actions %}
+<button @click="if(window._graph) window._graph.fit({animation:true})"
+        class="px-3 py-1.5 rounded-lg bg-surface-light hover:bg-surface-lighter text-sm text-gray-300 transition">
+  <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+  </svg>
+  Вписать
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto h-[calc(100vh-7rem)]"
+     x-data="{
+       selected: null,
+       nodes: [],
+       edges: [],
+       loaded: false,
+
+       async load() {
+         const data = await fetch('/api/projects/{{ project.id }}/graph').then(r => r.json());
+         this.nodes = data.nodes || [];
+         this.edges = data.edges || [];
+         this.loaded = true;
+         this.$nextTick(() => this.renderGraph());
+       },
+
+       renderGraph() {
+         const container = document.getElementById('graph-container');
+         if (!container || !this.nodes.length) return;
+
+         const groups = {};
+         const colors = ['#6366f1','#22d3ee','#f59e0b','#10b981','#f87171','#a78bfa','#ec4899','#6ee7b7'];
+         const uniqueGroups = [...new Set(this.nodes.map(n => n.group))];
+         uniqueGroups.forEach((g, i) => {
+           groups[g] = { color: { background: colors[i % colors.length], border: colors[i % colors.length] }, font: { color: '#e5e7eb' } };
+         });
+
+         const visNodes = new vis.DataSet(this.nodes.map(n => ({
+           id: n.id, label: n.label, group: n.group,
+           shape: 'dot', size: 16, font: { size: 13, color: '#d1d5db' },
+           borderWidth: 2,
+         })));
+
+         const visEdges = new vis.DataSet(this.edges.map(e => ({
+           from: e.from, to: e.to, label: e.label,
+           arrows: 'to', font: { size: 10, color: '#6b7280', strokeWidth: 0 },
+           color: { color: '#374151', highlight: '#6366f1' },
+           smooth: { type: 'cubicBezier' },
+         })));
+
+         const graph = new vis.Network(container, { nodes: visNodes, edges: visEdges }, {
+           groups,
+           physics: {
+             solver: 'forceAtlas2Based',
+             forceAtlas2Based: { gravitationalConstant: -60, centralGravity: 0.008, springLength: 140, springConstant: 0.04, damping: 0.5 },
+             stabilization: { iterations: 150 },
+           },
+           interaction: { hover: true, tooltipDelay: 200, zoomView: true, dragView: true },
+           edges: { width: 1.5 },
+         });
+
+         graph.on('click', (params) => {
+           if (params.nodes.length > 0) {
+             const nodeId = params.nodes[0];
+             const node = this.nodes.find(n => n.id === nodeId);
+             const relatedEdges = this.edges.filter(e => e.from === nodeId || e.to === nodeId);
+             this.selected = { ...node, relations: relatedEdges };
+           } else {
+             this.selected = null;
+           }
+         });
+
+         window._graph = graph;
+       }
+     }"
+     x-init="load()">
+
+  <div class="relative h-full flex gap-4">
+
+    <!-- Graph -->
+    <div class="flex-1 bg-surface rounded-xl border border-surface-light overflow-hidden relative">
+      <!-- Loading -->
+      <template x-if="!loaded">
+        <div class="absolute inset-0 flex items-center justify-center">
+          <div class="w-10 h-10 border-2 border-accent/20 border-t-accent rounded-full animate-spin"></div>
+        </div>
+      </template>
+
+      <!-- Empty state -->
+      <template x-if="loaded && nodes.length === 0">
+        <div class="absolute inset-0 flex flex-col items-center justify-center text-gray-600">
+          <svg class="w-20 h-20 mb-4 opacity-20" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/>
+          </svg>
+          <p class="text-sm mb-1">Граф знаний пуст</p>
+          <p class="text-xs text-gray-600">Запустите агента — он построит граф по мере работы</p>
+        </div>
+      </template>
+
+      <div id="graph-container" class="w-full h-full"></div>
+
+      <!-- Legend -->
+      <div x-show="loaded && nodes.length > 0"
+           class="absolute bottom-4 left-4 bg-surface/90 backdrop-blur border border-surface-light rounded-lg px-3 py-2">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Узлов: <span x-text="nodes.length"></span> · Связей: <span x-text="edges.length"></span></div>
+      </div>
+    </div>
+
+    <!-- Details panel -->
+    <div x-show="selected" x-transition
+         class="w-72 bg-surface rounded-xl border border-surface-light p-5 shrink-0 overflow-y-auto">
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wider">Детали</span>
+        <button @click="selected = null" class="text-gray-500 hover:text-gray-300">&times;</button>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <div class="text-xs text-gray-500 mb-1">Сущность</div>
+          <div class="text-sm font-semibold text-accent-light" x-text="selected?.label"></div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500 mb-1">Тип</div>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-accent/20 text-accent-light" x-text="selected?.group"></span>
+        </div>
+        <div x-show="selected?.relations?.length > 0">
+          <div class="text-xs text-gray-500 mb-2">Связи</div>
+          <div class="space-y-2">
+            <template x-for="r in selected?.relations || []" :key="r.from + r.to">
+              <div class="bg-gray-950 rounded-lg px-3 py-2 text-xs">
+                <span class="text-gray-400" x-text="r.from === selected.id ? '→ ' + r.to : r.from + ' →'"></span>
+                <span class="text-nebula ml-1" x-text="r.label" x-show="r.label"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- vis-network -->
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+{% endblock %}
