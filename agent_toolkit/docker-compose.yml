@@ -1,0 +1,51 @@
+services:
+  agent-toolkit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-toolkit:latest
+    container_name: agent-toolkit-service
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${APP_HOST:-0.0.0.0}:${APP_PORT:-8090}:${APP_PORT:-8090}"
+    environment:
+      # Основные параметры режима и безопасности сервиса
+      - AGENT_TOOLKIT_ENV=production
+      - AGENT_TOOLKIT_MOCK_MODE=false
+      - AGENT_TOOLKIT_ALLOW_DANGEROUS=false
+      - AGENT_TOOLKIT_READ_ONLY=false
+      - AGENT_TOOLKIT_LOG_LEVEL=INFO
+      - AGENT_TOOLKIT_API_PORT=${APP_PORT:-8090}
+      - AGENT_TOOLKIT_HTTP_TIMEOUT=15
+      - AGENT_TOOLKIT_CONFIG_PATH=/var/lib/agent_toolkit/workspace/toolkit_config.json
+      # Настройки безголового браузера (Chromium / Playwright) в контейнере
+      - CHROME_BIN=/usr/bin/chromium
+      - CHROMEDRIVER_BIN=/usr/bin/chromedriver
+      - PLAYWRIGHT_BROWSERS_PATH=/usr/bin
+      - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+      # Реквизиты интеграций (SMTP/IMAP, Telegram, MAX, S3, 1C/ERP, Teamcenter PLM)
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-agent-bucket}
+      - ERP_ODATA_URL=${ERP_ODATA_URL:-}
+      - TC_ENDPOINT_URL=${TC_ENDPOINT_URL:-}
+    volumes:
+      - agent_toolkit_workspace:/var/lib/agent_toolkit/workspace
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8090/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  agent_toolkit_workspace:
+    name: agent_toolkit_workspace_data

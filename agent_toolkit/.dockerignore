@@ -1,0 +1,19 @@
+# Исключения для сборки Docker образа agent_toolkit
+.git
+.gitignore
+.dockerignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.venv
+venv
+env
+*.egg-info
+dist
+build
+tests
+*.log
+.agent_render.png
