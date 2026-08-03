@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}A.S.T.R.A.{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌌</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config={theme:{extend:{colors:{surface:{DEFAULT:'#111827',light:'#1f2937',lighter:'#374151'},accent:{DEFAULT:'#6366f1',light:'#818cf8',dim:'#4f46e5'},nebula:{DEFAULT:'#22d3ee',dim:'#0891b2'}},fontFamily:{sans:['Inter','system-ui','sans-serif'],mono:['JetBrains Mono','monospace']}}}}</script>
+  <script defer src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *{font-family:'Inter',system-ui,sans-serif}code,pre,.font-mono{font-family:'JetBrains Mono',monospace}
+    [x-cloak]{display:none !important}
+    ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#374151;border-radius:3px}
+    @keyframes pulse-ring{0%{transform:scale(0.8);opacity:1}100%{transform:scale(2.2);opacity:0}}
+    .pulse-dot::before{content:'';position:absolute;inset:0;border-radius:9999px;background:inherit;animation:pulse-ring 1.5s ease-out infinite}
+    .page-enter{animation:fadeIn 0.25s ease-out}@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+    /* Light theme overrides */
+    html.light body{background:#f8fafc!important;color:#0f172a!important}
+    html.light .bg-\[\#030712\]{background:#ffffff!important;border-color:#e2e8f0!important}
+    html.light .bg-\[\#111827\]{background:#ffffff!important;border-color:#e2e8f0!important;box-shadow:0 1px 3px rgba(0,0,0,0.05)!important}
+    html.light .bg-\[\#111827\]\/90{background:rgba(255,255,255,0.9)!important}
+    html.light .bg-\[\#111827\]\/80{background:rgba(255,255,255,0.85)!important}
+    html.light .bg-\[\#1f2937\]{background:#f1f5f9!important}
+    html.light .border-\[\#1f2937\]{border-color:#e2e8f0!important}
+    html.light .text-gray-100{color:#0f172a!important}
+    html.light .text-gray-300{color:#334155!important}
+    html.light .text-gray-400{color:#475569!important}
+    html.light .text-gray-500{color:#64748b!important}
+    html.light .text-gray-600{color:#94a3b8!important}
+    html.light header{ background:rgba(248,250,252,0.8)!important; border-color:#e2e8f0!important }
+    html.light aside{ background:#ffffff!important; border-color:#e2e8f0!important }
+    html.light .custom-scrollbar::-webkit-scrollbar-thumb{background:#cbd5e1}
+  </style>
+  {% block head %}{% endblock %}
+  <script>
+    // Theme init before Alpine
+    (function(){
+      const saved = localStorage.getItem('astra_theme') || 'dark';
+      if(saved==='light') document.documentElement.classList.add('light');
+    })();
+    document.addEventListener('DOMContentLoaded',()=>{
+      setTimeout(()=>{if(!window.Alpine){document.querySelectorAll('[x-cloak]').forEach(el=>el.removeAttribute('x-cloak'));}},2000);
+    });
+    function toggleTheme(){
+      const html=document.documentElement;
+      const isLight=html.classList.contains('light');
+      if(isLight){ html.classList.remove('light'); localStorage.setItem('astra_theme','dark'); }
+      else { html.classList.add('light'); localStorage.setItem('astra_theme','light'); }
+    }
+  </script>
+</head>
+<body class="h-full bg-[#030712] text-gray-100 antialiased">
+<div x-data="{ sidebarOpen:false, toasts:[], token: localStorage.getItem('astra_token'), theme: localStorage.getItem('astra_theme')||'dark' }" @toast.window="toasts.push({id:Date.now(),msg:$event.detail.msg,type:$event.detail.type||'info'});setTimeout(()=>toasts.shift(),4000)" class="h-full flex">
+  <div x-show="sidebarOpen" x-cloak x-transition.opacity @click="sidebarOpen=false" class="fixed inset-0 z-40 bg-black/60 lg:hidden"></div>
+  <aside class="fixed inset-y-0 left-0 z-50 w-64 bg-[#111827] border-r border-[#1f2937] flex flex-col transform transition-transform duration-200 lg:translate-x-0" :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'">
+    <div class="flex items-center gap-3 h-16 px-5 border-b border-[#1f2937] shrink-0">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6366f1] to-[#22d3ee] flex items-center justify-center"><span class="text-white font-bold">A</span></div>
+      <div><div class="text-sm font-bold">A.S.T.R.A.</div><div class="text-[10px] text-gray-500">v{{ version if version is defined else '0.3.1' }} • pgvector</div></div>
+    </div>
+    <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
+      {% set current = request.url.path %}
+      <a href="/" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if current=='/' %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">◫ Dashboard</a>
+      <a href="/ui/projects" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if '/ui/projects' in current and project is not defined %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">📁 Проекты</a>
+      <div class="pt-3 pb-1 px-3"><div class="text-[10px] font-semibold text-gray-600 uppercase">Observability</div></div>
+      <a href="/ui/mcp" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if '/ui/mcp' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">🔌 MCP Servers</a>
+      <a href="/ui/prompts" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if '/ui/prompts' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">📝 Prompts</a>
+      <a href="/ui/eval" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if '/ui/eval' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">🧪 Eval Harness</a>
+      <a href="/ui/settings" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if '/ui/settings' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">⚙️ Настройки</a>
+      <a href="/docs" target="_blank" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-500 hover:bg-[#1f2937]">📚 API Docs</a>
+      <a href="/login" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm {% if '/login' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-500 hover:bg-[#1f2937]{% endif %}">🔐 Login / JWT</a>
+      {% if project is defined and project %}
+      <div class="pt-4 pb-1 px-3"><div class="text-[10px] font-semibold text-gray-600 uppercase">Проект</div><div class="text-xs text-gray-500 truncate">{{ project.name }}</div></div>
+      <a href="/ui/projects/{{ project.id }}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm ml-2 {% if request.url.path == '/ui/projects/' + project.id|string %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">Обзор</a>
+      <a href="/ui/projects/{{ project.id }}/playground" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm ml-2 {% if '/playground' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">▶️ Playground (SSE)</a>
+      <a href="/ui/projects/{{ project.id }}/graph" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm ml-2 {% if '/graph' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">🕸️ Граф (FalkorDB)</a>
+      <a href="/ui/projects/{{ project.id }}/memory" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm ml-2 {% if '/memory' in current %}bg-[#6366f1]/15 text-[#818cf8]{% else %}text-gray-400 hover:bg-[#1f2937]{% endif %}">🧠 Память</a>
+      {% endif %}
+    </nav>
+    <div class="p-4 border-t border-[#1f2937] shrink-0">
+      <div class="flex items-center gap-2 mb-2"><div class="relative w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></div><span class="text-xs text-gray-500" x-text="token ? 'JWT: logged in' : 'JWT: dev mode'"></span></div>
+      <div class="flex items-center justify-between"><div class="text-[10px] text-gray-600">SSE • TaskIQ • FalkorDB • Langfuse • Eval</div><button onclick="toggleTheme()" class="w-6 h-6 rounded-full bg-[#1f2937] hover:bg-[#374151] flex items-center justify-center text-[10px]" title="День/Ночь">🌓</button></div>
+    </div>
+  </aside>
+  <div class="flex-1 lg:pl-64 min-h-screen flex flex-col w-full">
+    <header class="sticky top-0 z-30 h-14 bg-[#030712]/80 backdrop-blur-xl border-b border-[#1f2937] shrink-0">
+      <div class="flex items-center justify-between h-full px-4 lg:px-6">
+        <div class="flex items-center gap-3">
+          <button @click="sidebarOpen=!sidebarOpen" class="lg:hidden p-1.5 rounded-lg hover:bg-[#1f2937] text-gray-400">☰</button>
+          <div class="flex items-center gap-1.5 text-sm">{% block breadcrumbs %}<span class="text-gray-300 font-medium">Dashboard</span>{% endblock %}</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="toggleTheme()" class="px-2.5 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-xs flex items-center gap-1.5" title="Переключить день/ночь"><span>🌓</span><span class="hidden sm:inline">День/Ночь</span></button>
+          {% block header_actions %}{% endblock %}
+        </div>
+      </div>
+    </header>
+    <main class="flex-1 p-4 lg:p-6 page-enter">{% block content %}{% endblock %}</main>
+    <footer class="px-6 py-3 border-t border-[#1f2937] text-[11px] text-gray-600">ASTRA v0.3.1 — SSE • JWT • TaskIQ • FalkorDB • Prompts • Langfuse • Eval — <a href="/health" class="hover:text-gray-400">health</a> • <a href="/docs" class="hover:text-gray-400">docs</a></footer>
+  </div>
+</div>
+<div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="pointer-events-auto min-w-[320px] max-w-md rounded-xl border shadow-2xl p-4 backdrop-blur-xl" :class="{'bg-emerald-950/90 border-emerald-800/50 text-emerald-200': t.type==='success','bg-red-950/90 border-red-800/50 text-red-200': t.type==='error','bg-amber-950/90 border-amber-800/50 text-amber-200': t.type==='warning','bg-[#111827]/90 border-[#1f2937] text-gray-200': true}">
+      <div class="flex items-start gap-3"><div class="flex-1 text-sm" x-text="t.msg"></div><button @click="toasts=toasts.filter(x=>x.id!==t.id)" class="opacity-60 hover:opacity-100">✕</button></div>
+    </div>
+  </template>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Eval Harness — A.S.T.R.A.{% endblock %}
+{% block breadcrumbs %}
+<a href="/" class="text-gray-500 hover:text-gray-300">Dashboard</a><span class="text-gray-600">/</span><span class="text-gray-300 font-medium">Eval</span>
+{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6"
+     x-data="{
+       tasks: [],
+       results: null,
+       running: false,
+       async loadTasks() {
+         try { this.tasks = await fetch('/api/data/eval/tasks').then(r=>r.json()); } catch { this.tasks=[]; }
+       },
+       async runEval() {
+         this.running=true; this.results=null;
+         try {
+           const res = await fetch('/api/eval/run', { method: 'POST' });
+           const data = await res.json();
+           this.results = data;
+           window.dispatchEvent(new CustomEvent('toast', {detail:{msg:'Eval done: '+data.success_rate*100+'% success', type: data.success_rate>=0.8?'success':'warning'}}));
+         } catch(e){
+           window.dispatchEvent(new CustomEvent('toast', {detail:{msg:'Eval error: '+e.message, type:'error'}}));
+         } finally { this.running=false; }
+       }
+     }" x-init="loadTasks()">
+
+  <div class="flex items-center justify-between">
+    <div><h1 class="text-2xl font-bold">Evaluation Harness</h1><p class="text-sm text-gray-500 mt-1">Golden tasks для проверки агента — success rate, steps, duration</p></div>
+    <button @click="runEval()" :disabled="running" class="px-4 py-2 rounded-lg bg-[#6366f1] hover:bg-[#4f46e5] text-white text-sm font-medium disabled:opacity-40" x-text="running ? 'Running...' : '▶️ Run Eval'"></button>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4" x-show="tasks.length>0">
+    <template x-for="t in tasks" :key="t.id">
+      <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-5">
+        <div class="font-mono text-sm font-bold text-[#818cf8]" x-text="t.id"></div>
+        <div class="text-xs text-gray-400 mt-1" x-text="t.goal"></div>
+        <div class="mt-2 flex gap-2 text-[11px]">
+          <span class="px-2 py-0.5 rounded-full bg-[#1f2937] text-gray-500" x-text="'max_steps: '+t.max_steps"></span>
+          <span class="px-2 py-0.5 rounded-full bg-[#1f2937] text-gray-400" x-text="(t.expected_contains||[]).join(', ')"></span>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <template x-if="results">
+    <div class="space-y-4">
+      <div class="grid grid-cols-4 gap-4">
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Success Rate</div><div class="text-2xl font-bold" :class="results.success_rate>=0.8?'text-emerald-400':'text-amber-400'" x-text="(results.success_rate*100).toFixed(1)+'%'"></div></div>
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Passed</div><div class="text-2xl font-bold" x-text="results.passed_tasks+'/'+results.total_tasks"></div></div>
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Avg Steps</div><div class="text-2xl font-bold" x-text="results.avg_steps"></div></div>
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Avg Duration</div><div class="text-2xl font-bold" x-text="results.avg_duration+'s'"></div></div>
+      </div>
+
+      <div class="bg-[#111827] rounded-xl border border-[#1f2937] overflow-hidden">
+        <div class="px-5 py-3 border-b border-[#1f2937] text-sm font-semibold">Results</div>
+        <div class="divide-y divide-[#1f2937]">
+          <template x-for="r in results.results" :key="r.task_id">
+            <div class="px-5 py-3 flex items-center gap-3">
+              <div class="w-2 h-2 rounded-full" :class="r.passed ? 'bg-emerald-500' : 'bg-red-500'"></div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-mono" x-text="r.task_id + ' — ' + (r.passed ? 'PASS' : 'FAIL') + ' score=' + r.score"></div>
+                <div class="text-xs text-gray-500" x-text="r.status + ' ' + r.steps_taken + ' steps'"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="bg-[#030712] rounded-xl border border-[#1f2937] p-4 overflow-auto max-h-[400px]">
+        <pre class="text-xs font-mono text-gray-400" x-text="JSON.stringify(results, null, 2)"></pre>
+      </div>
+    </div>
+  </template>
+</div>
+{% endblock %}

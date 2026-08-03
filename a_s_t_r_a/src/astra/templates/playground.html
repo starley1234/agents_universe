@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% block title %}Playground — {{ project.name }} — A.S.T.R.A.{% endblock %}
+{% block breadcrumbs %}
+<a href="/" class="text-gray-500 hover:text-gray-300">Dashboard</a><span class="text-gray-600">/</span><a href="/ui/projects" class="text-gray-500 hover:text-gray-300">Проекты</a><span class="text-gray-600">/</span><a href="/ui/projects/{{ project.id }}" class="text-gray-500 hover:text-gray-300">{{ project.name }}</a><span class="text-gray-600">/</span><span class="text-gray-300 font-medium">Playground</span>
+{% endblock %}
+
+{% block head %}
+<style>
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+  .glass{backdrop-filter:blur(16px);background:rgba(17,24,39,0.85)}
+  .glow{box-shadow:0 0 24px rgba(99,102,241,0.12)}
+  .custom-scrollbar::-webkit-scrollbar{width:5px}
+  .custom-scrollbar::-webkit-scrollbar-thumb{background:#374151;border-radius:3px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto h-[calc(100vh-6.5rem)] flex flex-col gap-4"
+     x-data="{
+       goal: '',
+       followUp: '',
+       running: false,
+       mode: localStorage.getItem('astra_mode') || 'stream',
+       provider: localStorage.getItem('astra_provider') || 'local',
+       model: localStorage.getItem('astra_model') || 'unsloth/gemma-4-12b-it',
+       llmUrl: localStorage.getItem('astra_llm_url') || 'http://host.docker.internal:1234/v1',
+       result: null,
+       error: null,
+       events: [],
+       planSteps: [],
+       currentStep: -1,
+       history: [],
+       token: localStorage.getItem('astra_token') || '',
+       showSettings: false,
+       availableProviders: [],
+       chatThread: [],
+
+       init() {
+         this.$watch('mode', v=>localStorage.setItem('astra_mode',v));
+         this.$watch('provider', v=>{ localStorage.setItem('astra_provider',v); document.cookie=`astra_provider=${encodeURIComponent(v)}; path=/; max-age=2592000`; });
+         this.$watch('model', v=>{ localStorage.setItem('astra_model',v); document.cookie=`astra_model=${encodeURIComponent(v)}; path=/; max-age=2592000`; });
+         this.$watch('llmUrl', v=>localStorage.setItem('astra_llm_url',v));
+         const cookies=document.cookie.split(';').reduce((a,c)=>{const [k,v]=c.trim().split('='); if(k) a[k]=decodeURIComponent(v||''); return a;},{});
+         if(cookies.astra_provider) this.provider=cookies.astra_provider;
+         if(cookies.astra_model) this.model=cookies.astra_model;
+         fetch('/api/llm/providers').then(r=>r.json()).then(d=>{ this.availableProviders=d.providers||[]; }).catch(()=>{});
+         try{ this.history=JSON.parse(localStorage.getItem('astra_history_{{ project.id }}')||'[]'); }catch{}
+       },
+
+       saveHistory(){ try{ localStorage.setItem('astra_history_{{ project.id }}', JSON.stringify(this.history.slice(0,30))); }catch{} },
+
+       authHeaders(){ const h={'Content-Type':'application/json'}; if(this.token) h['Authorization']='Bearer '+this.token; return h; },
+
+       bodyWithLLM(goalOverride) {
+         const body={ project_id:'{{ project.id }}', goal: goalOverride || this.goal };
+         if(this.provider) body.llm_provider=this.provider;
+         if(this.model) body.llm_model=this.model;
+         if(this.llmUrl && this.llmUrl.trim()) body.llm_url=this.llmUrl.trim();
+         return body;
+       },
+
+       async run() {
+         if(!this.goal.trim() || this.running) return;
+         this.running=true; this.result=null; this.error=null; this.events=[]; this.planSteps=[]; this.currentStep=-1; this.showSettings=false;
+         // Add to chat thread as user message
+         this.chatThread.push({role:'user', content:this.goal, time:new Date().toLocaleTimeString()});
+         if(this.mode==='stream') await this.runStream();
+         else if(this.mode==='async') await this.runAsync();
+         else await this.runSync();
+       },
+
+       async sendFollowUp() {
+         if(!this.followUp.trim() || this.running) return;
+         const msg=this.followUp.trim();
+         this.followUp='';
+         // Build contextual goal: previous result + new question
+         const prevResult = this.result ? this.result.result : (this.history[0]?.result||'');
+         const contextualGoal = prevResult ? `Предыдущий результат: ${prevResult.slice(0,2000)}\n\nНовый запрос: ${msg}` : msg;
+         this.goal = msg;
+         // Push user follow-up to thread
+         this.chatThread.push({role:'user', content:msg, time:new Date().toLocaleTimeString()});
+         this.running=true; this.result=null; this.error=null; this.events=[]; this.planSteps=[]; this.currentStep=-1;
+         // Use contextual goal for run but keep original msg as displayed goal
+         if(this.mode==='stream') await this.runStreamContextual(contextualGoal);
+         else {
+           // For sync/async, temporarily override goal
+           const origGoal=this.goal;
+           this.goal=contextualGoal;
+           if(this.mode==='async') await this.runAsync();
+           else await this.runSync();
+           this.goal=origGoal;
+         }
+       },
+
+       async runSync() {
+         try{
+           const res=await fetch('/api/agents/run',{method:'POST',headers:this.authHeaders(),body:JSON.stringify(this.bodyWithLLM())});
+           const data=await res.json().catch(async()=>({detail:await res.text()}));
+           if(res.ok){
+             this.result=data;
+             this.chatThread.push({role:'assistant', content:data.result, status:data.status, time:new Date().toLocaleTimeString()});
+             this.history.unshift({goal:this.goal,status:data.status,result:data.result,sessionId:data.session_id,time:new Date().toLocaleTimeString('ru')});
+             this.saveHistory();
+           } else this.error=data.detail||'Ошибка '+res.status;
+         }catch(e){ this.error='Сеть: '+e.message; }finally{ this.running=false; }
+       },
+
+       async runAsync() {
+         try{
+           const res=await fetch('/api/agents/run/async',{method:'POST',headers:this.authHeaders(),body:JSON.stringify(this.bodyWithLLM())});
+           const data=await res.json();
+           if(res.ok){
+             this.result={status:'queued',result:'Job queued: '+data.job_id+'\\nPolling...',session_id:data.session_id,job_id:data.job_id};
+             this.history.unshift({goal:this.goal,status:'queued',result:data.job_id,sessionId:data.session_id,time:new Date().toLocaleTimeString('ru')});
+             this.saveHistory();
+             this.pollJob(data.session_id);
+           } else this.error=data.detail||'Ошибка';
+         }catch(e){ this.error=e.message; }finally{ this.running=false; }
+       },
+
+       async pollJob(sid){
+         for(let i=0;i<30;i++){
+           await new Promise(r=>setTimeout(r,2000));
+           try{
+             const res=await fetch('/api/agents/jobs/'+sid,{headers:this.authHeaders()});
+             const j=await res.json();
+             this.events.push({type:'poll', data:{status:j.status, attempt:i}, time:new Date().toLocaleTimeString()});
+             if(j.status!=='running' && j.status!=='queued'){
+               this.result={status:j.status,result:j.result,session_id:j.id};
+               this.chatThread.push({role:'assistant', content:j.result, status:j.status, time:new Date().toLocaleTimeString()});
+               break;
+             }
+           }catch{}
+         }
+         this.running=false;
+       },
+
+       async runStream(){
+         await this.runStreamContextual(null);
+       },
+
+       async runStreamContextual(contextualGoal){
+         this.events=[]; this.planSteps=[];
+         let gotAny=false;
+         let fallbackTimer=null;
+         try{
+           const body = contextualGoal ? {...this.bodyWithLLM(), goal: contextualGoal} : this.bodyWithLLM();
+           const controller=new AbortController();
+           const timeoutId=setTimeout(()=>{ if(!gotAny) controller.abort(); }, 20000);
+
+           const res=await fetch('/api/agents/run/stream',{method:'POST',headers:this.authHeaders(),body:JSON.stringify(body),signal:controller.signal});
+           clearTimeout(timeoutId);
+
+           if(!res.ok){ throw new Error('HTTP '+res.status+': '+(await res.text()).slice(0,800)); }
+           if(!res.body) throw new Error('ReadableStream not supported');
+
+           const reader=res.body.getReader();
+           const decoder=new TextDecoder();
+           let buffer='';
+           let final={status:'running',result:'',session_id:''};
+
+           fallbackTimer=setTimeout(()=>{ if(!gotAny){ this.error='Нет событий 10с, пробую sync fallback...'; reader.cancel(); this.runSync(); } }, 10000);
+
+           while(true){
+             const {value,done}=await reader.read();
+             if(done) break;
+             buffer+=decoder.decode(value,{stream:true});
+             buffer=buffer.replace(/\\r\\n/g,'\\n');
+             const parts=buffer.split('\\n\\n');
+             buffer=parts.pop()||'';
+             for(const rawPart of parts){
+               const part=rawPart.trim();
+               if(!part) continue;
+               gotAny=true;
+               if(fallbackTimer){ clearTimeout(fallbackTimer); fallbackTimer=null; }
+               let evType='message';
+               let evData={};
+               let dataLines=[];
+               for(const line of part.split('\\n')){
+                 const t=line.trim();
+                 if(!t) continue;
+                 if(t.startsWith('event:')) evType=t.slice(6).trim();
+                 else if(t.startsWith('data:')) dataLines.push(t.slice(5).trim());
+                 else if(!t.startsWith(':')) dataLines.push(t);
+               }
+               const dataStr=dataLines.join('\\n');
+               if(dataStr){ try{ evData=JSON.parse(dataStr); }catch{ evData={raw:dataStr.slice(0,2000)}; } }
+
+               this.events.push({type:evType,data:evData,time:new Date().toLocaleTimeString()});
+               if(this.events.length>200) this.events=this.events.slice(-200);
+               if(evType==='plan_generated'){ this.planSteps=evData.steps||[]; }
+               if(evType==='step_start'){ this.currentStep=evData.index; }
+               if(evType==='done'){ final={status:evData.status,result:evData.result,session_id:evData.session_id||''}; }
+               if(evType==='error'){ this.error=evData.error||JSON.stringify(evData); }
+
+               this.$nextTick(()=>{ const el=document.getElementById('events-log'); if(el) el.scrollTop=el.scrollHeight; });
+             }
+           }
+
+           if(final.result){
+             this.result=final;
+             this.chatThread.push({role:'assistant', content:final.result, status:final.status, time:new Date().toLocaleTimeString()});
+             this.history.unshift({goal:this.goal,status:final.status,result:final.result,sessionId:final.session_id,time:new Date().toLocaleTimeString('ru')});
+             this.saveHistory();
+           } else {
+             // Try fetch last session
+             try{
+               const sessRes=await fetch('/api/projects/{{ project.id }}/sessions',{headers:this.authHeaders()});
+               const sessData=await sessRes.json();
+               if(sessData.length>0 && sessData[0].result){
+                 const last=sessData[0];
+                 this.result={status:last.status,result:last.result,session_id:last.id};
+                 this.chatThread.push({role:'assistant', content:last.result, status:last.status, time:new Date().toLocaleTimeString()});
+               }
+             }catch{}
+           }
+
+         }catch(e){
+           console.error('Stream error', e);
+           if(e.name==='AbortError'){
+             this.error='Таймаут стрима — LMStudio медленно думает или не отвечает. Попробуйте Sync режим. Проверьте LMStudio логи.';
+           } else {
+             this.error='Stream: '+e.message;
+             if(!this.result){
+               console.log('Fallback to sync');
+               await this.runSync();
+             }
+           }
+         }finally{
+           this.running=false;
+           if(fallbackTimer) clearTimeout(fallbackTimer);
+           if(!this.result && !this.error){
+             this.error='Пустой результат — модель вернула пусто. Попробуйте qwen2.5 или увеличьте max_tokens. Логи: docker logs astra_app';
+           }
+         }
+       }
+     }" x-init="init()">
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
+    <!-- Left: Task + Plan + Chat History -->
+    <div class="flex flex-col gap-4 overflow-hidden">
+      <div class="bg-[#111827]/90 rounded-xl border border-[#1f2937] p-5 flex flex-col overflow-hidden glow">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2"><div class="w-2 h-2 rounded-full bg-[#6366f1] animate-pulse"></div><span class="text-sm font-semibold">Задача для агента</span><span class="text-[10px] px-2 py-0.5 rounded-full bg-[#1f2937] text-gray-400" x-text="mode"></span></div>
+          <div class="flex items-center gap-2">
+            <button @click="showSettings=!showSettings" class="px-3 py-1 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-xs flex items-center gap-1" :title="provider+'/'+model"><span>⚙️</span><span class="font-mono text-[11px]" x-text="provider+'/'+model"></span></button>
+            <select x-model="mode" class="bg-[#030712] border border-[#1f2937] rounded-lg px-2 py-1 text-xs text-gray-400"><option value="stream">SSE Stream</option><option value="sync">Sync</option><option value="async">Async TaskIQ</option></select>
+          </div>
+        </div>
+
+        <div x-show="showSettings" x-transition class="mb-4 p-4 rounded-xl bg-[#030712] border border-[#6366f1]/20 space-y-3">
+          <div class="text-xs font-semibold text-[#818cf8]">🤖 LLM (сохраняется в cookie)</div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label class="text-[10px] text-gray-500 uppercase">Провайдер</label><select x-model="provider" class="w-full mt-1 bg-[#111827] border border-[#1f2937] rounded-lg px-3 py-2 text-xs"><option value="local">local (LMStudio)</option><option value="openrouter">openrouter</option><option value="mock">mock</option></select></div>
+            <div><label class="text-[10px] text-gray-500 uppercase">Модель</label><input x-model="model" list="models-list" class="w-full mt-1 bg-[#111827] border border-[#1f2937] rounded-lg px-3 py-2 text-xs font-mono"><datalist id="models-list"><template x-for="p in availableProviders" :key="p.id"><optgroup :label="p.name"><template x-for="m in p.models" :key="m"><option :value="m"></option></template></optgroup></template></datalist></div>
+          </div>
+          <div><label class="text-[10px] text-gray-500 uppercase">LLM URL (Docker: host.docker.internal)</label><input x-model="llmUrl" class="w-full mt-1 bg-[#111827] border border-[#1f2937] rounded-lg px-3 py-2 text-xs font-mono text-gray-400" placeholder="http://host.docker.internal:1234/v1"></div>
+          <div class="flex gap-2"><button @click="showSettings=false" class="px-4 py-1.5 rounded-lg bg-[#6366f1] text-white text-xs">✓ Сохранить в cookie</button><button @click="provider='local'; model='unsloth/gemma-4-12b-it'; llmUrl='http://host.docker.internal:1234/v1'" class="px-3 py-1.5 rounded-lg bg-[#1f2937] text-xs">Сбросить</button></div>
+        </div>
+
+        <div class="relative flex-1 flex flex-col">
+          <textarea x-model="goal" rows="5" :disabled="running" placeholder="Опишите задачу...\nНапример: Проверь работоспособность всех модулей и дай отчёт" class="peer flex-1 w-full bg-[#030712] border border-[#1f2937] rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#6366f1]/50 focus:border-[#6366f1]/50 transition resize-none disabled:opacity-50 placeholder-gray-600"></textarea>
+          <div class="absolute bottom-3 right-3 text-[10px] text-gray-600" x-text="goal.length+' chars'"></div>
+        </div>
+
+        <!-- КНОПКА ОТПРАВИТЬ — всегда видима, не зависит от x-show span -->
+        <div class="flex items-center justify-between mt-4">
+          <div class="text-xs text-gray-500 truncate max-w-[50%]"><span class="font-mono" x-text="provider+'/'+model" :title="provider+'/'+model"></span></div>
+          <!-- КНОПКА ОТПРАВИТЬ — всегда видима -->
+          <button @click="run()" :disabled="!goal.trim() || running" id="run-button"
+                  class="group relative px-6 py-2.5 rounded-xl font-medium text-sm transition-all disabled:opacity-40 overflow-hidden min-w-[160px] bg-gradient-to-r from-[#6366f1] to-[#4f46e5] hover:from-[#4f46e5] hover:to-[#6366f1] text-white shadow-lg shadow-indigo-500/25">
+            <span x-text="running ? (currentStep>=0 ? 'Шаг '+(currentStep+1)+'/'+planSteps.length+'...' : '⏳ Думает...') : '🚀 Запустить агента'">🚀 Запустить агента</span>
+          </button>
+        </div>
+
+        <!-- Plan -->
+        <div class="mt-4 p-3 rounded-xl bg-gradient-to-br from-[#111827] to-[#030712] border border-[#1f2937]/50">
+          <div class="flex items-center justify-between mb-2"><div class="text-xs font-semibold text-gray-400 uppercase">План</div><span class="text-[10px] text-gray-600" x-text="planSteps.length ? (currentStep+1)+'/'+planSteps.length : 'ожидает'"></span></div>
+          <template x-if="planSteps.length===0"><div class="text-xs text-gray-600 py-2 text-center">🧭 План появится после старта</div></template>
+          <div class="space-y-1.5 max-h-[140px] overflow-y-auto custom-scrollbar">
+            <template x-for="(step, idx) in planSteps" :key="idx">
+              <div class="flex items-start gap-2 text-xs p-2 rounded-lg border" :class="idx===currentStep ? 'bg-[#6366f1]/10 border-[#6366f1]/30 text-[#818cf8]' : idx < currentStep ? 'bg-emerald-950/20 border-emerald-900/30 text-emerald-300' : 'bg-[#111827] border-transparent text-gray-500'">
+                <span class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono shrink-0" :class="idx < currentStep ? 'bg-emerald-500/20 text-emerald-400' : idx===currentStep ? 'bg-[#6366f1]/20 text-[#6366f1] animate-pulse' : 'bg-[#1f2937] text-gray-500'" x-text="idx+1"></span><span class="flex-1 leading-relaxed" x-text="step"></span><span x-show="idx < currentStep">✓</span>
+              </div>
+            </template>
+          </div>
+          <div x-show="planSteps.length>0" class="mt-2 h-1 bg-[#1f2937] rounded-full overflow-hidden"><div class="h-full bg-gradient-to-r from-[#6366f1] to-[#22d3ee] transition-all duration-500" :style="`width: ${planSteps.length ? ((currentStep+1)/planSteps.length*100) : 0}%`"></div></div>
+        </div>
+      </div>
+
+      <!-- Chat Thread -->
+      <div class="bg-[#111827]/80 rounded-xl border border-[#1f2937] flex flex-col overflow-hidden min-h-[200px] max-h-[300px]">
+        <div class="px-4 py-2 border-b border-[#1f2937]/50 flex items-center justify-between"><span class="text-xs font-semibold text-gray-400 uppercase">💬 Чат с агентом</span><span class="text-[10px] text-gray-600" x-text="chatThread.length+' сообщений'"></span><button @click="chatThread=[]" class="text-[10px] text-gray-600 hover:text-gray-300">Clear</button></div>
+        <div class="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar" id="chat-thread">
+          <template x-if="chatThread.length===0"><div class="text-xs text-gray-600 text-center py-6">История диалога появится здесь. После ответа агента можно отправить уточняющее сообщение ниже.</div></template>
+          <template x-for="(msg, idx) in chatThread" :key="idx">
+            <div class="flex gap-2" :class="msg.role==='user' ? 'justify-end' : 'justify-start'">
+              <div class="max-w-[85%] rounded-xl px-3 py-2 text-xs" :class="msg.role==='user' ? 'bg-[#6366f1]/20 border border-[#6366f1]/30 text-[#C7D2FE]' : 'bg-[#1f2937] border border-[#374151] text-gray-300'">
+                <div class="font-mono text-[10px] opacity-60 mb-1" x-text="msg.role==='user' ? 'Вы • '+msg.time : 'A.S.T.R.A. • '+msg.time+' • '+(msg.status||'')"></div>
+                <div class="whitespace-pre-wrap break-words leading-relaxed" x-text="msg.content.slice(0,2000)"></div>
+              </div>
+            </div>
+          </template>
+          <div x-show="running" class="flex gap-2 justify-start"><div class="bg-[#1f2937] rounded-xl px-3 py-2 text-xs text-gray-500 flex items-center gap-2"><div class="flex gap-1"><span class="w-1 h-1 bg-[#6366f1] rounded-full animate-bounce"></span><span class="w-1 h-1 bg-[#6366f1] rounded-full animate-bounce" style="animation-delay:0.1s"></span><span class="w-1 h-1 bg-[#6366f1] rounded-full animate-bounce" style="animation-delay:0.2s"></span></div> думает...</div></div>
+        </div>
+        <!-- Follow-up input with SEND button — ALWAYS VISIBLE -->
+        <div class="p-3 border-t border-[#1f2937]/50 bg-[#030712]/50 flex gap-2">
+          <input x-model="followUp" @keydown.enter="sendFollowUp()" :disabled="running" placeholder="Уточните задачу или задайте вопрос агенту..." class="flex-1 bg-[#111827] border border-[#1f2937] rounded-xl px-3 py-2.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#6366f1]/30 disabled:opacity-40">
+          <button @click="sendFollowUp()" :disabled="!followUp.trim() || running" class="px-4 py-2.5 rounded-xl bg-[#1f2937] hover:bg-[#6366f1] text-white text-xs font-medium transition disabled:opacity-30 flex items-center gap-1.5 min-w-[90px] justify-center">
+            <span>📤</span><span>Отправить</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-[#111827]/60 rounded-xl border border-[#1f2937]/50 p-3 flex items-center gap-3"><div class="w-8 h-8 rounded-lg bg-[#6366f1]/10 flex items-center justify-center">📁</div><div class="flex-1 min-w-0"><div class="text-xs font-medium truncate">{{ project.name }}</div><div class="text-[11px] text-gray-500 truncate">{{ project.description or 'Изолированный проект' }}</div></div><a href="/ui/projects/{{ project.id }}" class="text-[10px] text-gray-500 hover:text-gray-300">Обзор →</a></div>
+    </div>
+
+    <!-- Right: Thinking + Result -->
+    <div class="flex flex-col gap-4 overflow-hidden">
+      <div class="bg-[#111827]/90 rounded-xl border border-[#1f2937] flex-1 flex flex-col overflow-hidden min-h-[280px] glass glow">
+        <div class="px-5 py-3 border-b border-[#1f2937]/50 flex items-center gap-3"><div class="w-2 h-2 rounded-full bg-[#22d3ee] animate-pulse"></div><span class="text-sm font-semibold">🧠 Мышление агента</span><span class="text-[10px] px-2 py-0.5 rounded-full bg-[#22d3ee]/10 text-[#22d3ee]">Live SSE</span><span class="ml-auto text-xs text-gray-500" x-text="events.length+' events'"></span><button @click="events=[]" class="ml-2 text-xs text-gray-600 hover:text-gray-300">Clear</button></div>
+        <div class="flex-1 overflow-y-auto p-3 space-y-2.5 font-mono text-xs custom-scrollbar" id="events-log">
+          <template x-if="events.length===0 && !running"><div class="h-full flex flex-col items-center justify-center text-gray-600 py-12"><div class="w-14 h-14 rounded-2xl bg-[#1f2937] flex items-center justify-center mb-3">💭</div><p class="text-xs font-medium">Процесс мышления</p><p class="text-[11px] text-gray-700 mt-1 text-center">plan → step_start → llm_call → step_act → tool_call → reflect → done</p></div></template>
+          <template x-for="(ev, idx) in events" :key="idx">
+            <div class="rounded-xl px-3 py-2.5 border" :class="{'bg-[#030712] border-[#1f2937]': true, 'bg-emerald-950/10 border-emerald-800/30': ev.type==='done', 'bg-[#6366f1]/5 border-[#6366f1]/20': ev.type==='step_start' || ev.type==='plan_generated', 'bg-amber-950/10 border-amber-800/20': ev.type.includes('tool'), 'bg-red-950/10 border-red-800/20': ev.type==='error'}">
+              <div class="flex items-center gap-2 mb-1.5">
+                <span class="text-[10px] px-2 py-0.5 rounded-full font-bold tracking-wider" :class="{'bg-[#6366f1]/20 text-[#818cf8]': ev.type.includes('step') || ev.type==='plan_generated', 'bg-emerald-900/30 text-emerald-400': ev.type==='done', 'bg-amber-900/30 text-amber-400': ev.type.includes('tool'), 'bg-[#1f2937] text-gray-500': true}" x-text="ev.type"></span>
+                <span class="text-[10px] text-gray-600" x-text="ev.time"></span>
+                <span x-show="ev.data.index!==undefined" class="text-[10px] px-1.5 py-0.5 rounded bg-[#1f2937] text-gray-500" x-text="'#'+(ev.data.index+1)"></span>
+              </div>
+              <div class="text-gray-300 leading-relaxed whitespace-pre-wrap break-words text-[11px]" x-text="ev.type==='step_act' ? (ev.data.content||ev.data.thinking||'').slice(0,1000) : (ev.type==='plan_generated' ? (ev.data.steps||[]).map((s,i)=> (i+1)+'. '+s).join('\n') : JSON.stringify(ev.data, null, 2).slice(0,1200))"></div>
+            </div>
+          </template>
+          <template x-if="running"><div class="flex items-center gap-2 text-[#6366f1] p-2 text-xs"><div class="w-3 h-3 border-2 border-[#6366f1]/20 border-t-[#6366f1] rounded-full animate-spin"></div> Агент думает... <span x-text="currentStep>=0 ? 'шаг '+(currentStep+1) : ''"></span></div></template>
+        </div>
+      </div>
+
+      <div class="bg-[#111827]/90 rounded-xl border border-[#1f2937] flex flex-col overflow-hidden min-h-[260px] glass">
+        <div class="px-5 py-3 border-b border-[#1f2937]/50 flex items-center gap-2"><span class="text-sm font-semibold">📝 Результат</span><div class="ml-auto flex items-center gap-2" x-show="result"><div class="w-2 h-2 rounded-full animate-pulse" :class="{'bg-emerald-500': result?.status==='completed','bg-amber-500': result?.status==='halted'||result?.status==='queued','bg-red-500': result?.status==='error'}"></div><span class="text-xs px-2 py-0.5 rounded-full" :class="{'bg-emerald-900/30 text-emerald-400': result?.status==='completed','bg-amber-900/30 text-amber-400': result?.status==='halted','bg-red-900/30 text-red-400': result?.status==='error','bg-gray-800 text-gray-400': true}" x-text="result?.status"></span></div></div>
+        <div class="flex-1 overflow-y-auto p-5 custom-scrollbar">
+          <template x-if="!result && !error && !running"><div class="h-full flex flex-col items-center justify-center text-gray-600 py-10"><div class="w-12 h-12 rounded-xl bg-[#1f2937] flex items-center justify-center mb-3">📄</div><p class="text-sm font-medium">Результат появится здесь</p><p class="text-xs text-gray-700 mt-1">После завершения всех шагов</p></div></template>
+          <template x-if="error && !running"><div class="bg-red-950/20 border border-red-800/30 rounded-xl p-4"><div class="flex items-center gap-2 text-red-400 text-sm font-medium mb-2">❌ Ошибка</div><div class="text-sm text-red-300/80 whitespace-pre-wrap break-words" x-text="error"></div></div></template>
+          <template x-if="result">
+            <div class="space-y-4">
+              <div class="relative overflow-hidden rounded-xl bg-gradient-to-br from-[#030712] to-[#111827] border border-[#1f2937] p-5"><div class="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-[#6366f1] to-[#22d3ee]"></div><div class="text-xs text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-2">Ответ агента <span class="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-[#1f2937]" x-text="(result.result||'').length+' chars'"></span></div><div class="prose prose-invert prose-sm max-w-none text-sm text-gray-200 leading-relaxed whitespace-pre-wrap break-words" x-text="result.result"></div></div>
+              <div class="flex items-center gap-2 text-xs text-gray-600 bg-[#030712] rounded-lg p-3 border border-[#1f2937]/50"><span>Session:</span><span class="font-mono text-gray-500 break-all flex-1" x-text="result.session_id"></span><button @click="navigator.clipboard.writeText(result.session_id); $dispatch('toast',{detail:{msg:'Copied',type:'success'}})" class="px-2 py-1 rounded bg-[#1f2937] hover:bg-[#374151] text-[10px]">Copy</button><button @click="fetch('/api/projects/{{ project.id }}/sessions',{headers:authHeaders()}).then(r=>r.json()).then(d=>{ if(d[0]) { result={status:d[0].status,result:d[0].result,session_id:d[0].id}; } })" class="px-2 py-1 rounded bg-[#1f2937] text-[10px]">↻ Refresh</button></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}MCP Servers — A.S.T.R.A.{% endblock %}
+{% block breadcrumbs %}<a href="/" class="text-gray-500 hover:text-gray-300">Dashboard</a><span class="text-gray-600">/</span><span class="text-gray-300 font-medium">MCP Servers</span>{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6"
+     x-data="{
+       servers: [],
+       loaded: false,
+       showAdd: false,
+       newName: '',
+       newUrl: '',
+       newDesc: '',
+       async load() {
+         this.loaded=false;
+         try { this.servers = await fetch('/api/mcp/servers').then(r=>r.json()); } catch { this.servers=[]; }
+         this.loaded=true;
+       },
+       async add() {
+         if (!this.newName || !this.newUrl) return;
+         const res = await fetch('/api/mcp/servers', { method: 'POST', headers: {'Content-Type':'application/json','Authorization': 'Bearer '+ (localStorage.getItem('astra_token')||'')}, body: JSON.stringify({name: this.newName, url: this.newUrl, description: this.newDesc}) });
+         if(res.ok){ this.showAdd=false; this.newName=''; this.newUrl=''; this.newDesc=''; await this.load(); window.dispatchEvent(new CustomEvent('toast',{detail:{msg:'MCP server added',type:'success'}}));}
+         else { const err = await res.text(); window.dispatchEvent(new CustomEvent('toast',{detail:{msg:'Error: '+err.slice(0,200), type:'error'}})); }
+       },
+       async del(id) {
+         if(!confirm('Delete MCP server?')) return;
+         const res = await fetch('/api/mcp/servers/'+id, { method: 'DELETE', headers: {'Authorization': 'Bearer '+(localStorage.getItem('astra_token')||'')} });
+         if(res.ok){ await this.load(); window.dispatchEvent(new CustomEvent('toast',{detail:{msg:'Deleted',type:'success'}}));}
+       },
+       async connect(id) {
+         const res = await fetch('/api/mcp/servers/'+id+'/connect', { method: 'POST', headers: {'Authorization': 'Bearer '+(localStorage.getItem('astra_token')||'')} });
+         if(res.ok){ await this.load(); window.dispatchEvent(new CustomEvent('toast',{detail:{msg:'Connected',type:'success'}})); }
+         else { window.dispatchEvent(new CustomEvent('toast',{detail:{msg:'Connect failed',type:'error'}})); }
+       }
+     }" x-init="load()">
+
+  <div class="flex items-center justify-between">
+    <div><h1 class="text-2xl font-bold">MCP Servers & Tools</h1><p class="text-sm text-gray-500 mt-1">Model Context Protocol — расширяет агента инструментами (search, image, tts, filesystem)</p></div>
+    <button @click="showAdd=true" class="px-4 py-2 rounded-lg bg-[#6366f1] hover:bg-[#4f46e5] text-white text-sm">+ Добавить сервер</button>
+  </div>
+
+  <div x-show="showAdd" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="showAdd=false">
+    <div class="bg-[#111827] border border-[#1f2937] rounded-2xl p-6 w-full max-w-md space-y-4">
+      <h3 class="text-lg font-semibold">Новый MCP сервер</h3>
+      <div><label class="text-xs text-gray-400">Name (a-z0-9_-, уникальный)</label><input x-model="newName" placeholder="my_search" class="w-full mt-1 bg-[#030712] border border-[#1f2937] rounded-lg px-3 py-2 text-sm"></div>
+      <div><label class="text-xs text-gray-400">URL (SSE)</label><input x-model="newUrl" placeholder="http://localhost:8001/sse" class="w-full mt-1 bg-[#030712] border border-[#1f2937] rounded-lg px-3 py-2 text-sm font-mono"></div>
+      <div><label class="text-xs text-gray-400">Description</label><input x-model="newDesc" placeholder="Search MCP" class="w-full mt-1 bg-[#030712] border border-[#1f2937] rounded-lg px-3 py-2 text-sm"></div>
+      <div class="flex justify-end gap-3 pt-2"><button @click="showAdd=false" class="px-4 py-2 rounded-lg text-sm text-gray-400 hover:bg-[#1f2937]">Отмена</button><button @click="add()" class="px-4 py-2 rounded-lg bg-[#6366f1] text-white text-sm" :class="!newName||!newUrl ? 'opacity-40 pointer-events-none' : ''">Добавить и подключить</button></div>
+      <div class="text-[11px] text-gray-600">Примеры: npx @modelcontextprotocol/server-brave-search, filesystem, github. Для stdio используйте SSE-прокси.</div>
+    </div>
+  </div>
+
+  <template x-if="!loaded"><div class="grid gap-4"><template x-for="i in 3"><div class="h-24 bg-[#111827] rounded-xl border border-[#1f2937] animate-pulse"></div></template></div></template>
+
+  <template x-if="loaded && servers.length===0">
+    <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-10 text-center"><div class="text-4xl mb-3">🔌</div><p class="text-sm text-gray-500">Нет MCP серверов. Добавьте первый — например search.</p><p class="text-xs text-gray-600 mt-2">Можно также задать в .env: MCP_SEARCH_URL=http://localhost:8001/sse</p></div>
+  </template>
+
+  <template x-if="loaded && servers.length>0">
+    <div class="grid gap-4">
+      <template x-for="srv in servers" :key="srv.id">
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6 hover:border-[#374151] transition">
+          <div class="flex items-start justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-3 h-3 rounded-full" :class="srv.connected ? 'bg-emerald-500' : 'bg-red-500'"></div>
+              <div>
+                <div class="font-mono text-sm font-bold" x-text="srv.name"></div>
+                <div class="text-xs text-gray-500 font-mono" x-text="srv.url"></div>
+                <div class="text-xs text-gray-600 mt-1" x-text="srv.description || ''"></div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] px-2 py-0.5 rounded-full" :class="srv.source==='env' ? 'bg-[#1f2937] text-gray-500' : 'bg-[#6366f1]/20 text-[#818cf8]'" x-text="srv.source || (srv.id.startsWith('env-') ? 'env' : 'db')"></span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full" :class="srv.connected ? 'bg-emerald-900/50 text-emerald-400' : 'bg-red-900/50 text-red-400'" x-text="srv.connected ? 'connected' : 'disconnected'"></span>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            <div class="text-xs text-gray-500 mb-2">Инструменты (<span x-text="srv.tools.length"></span>):</div>
+            <template x-if="srv.tools.length===0"><div class="text-xs text-gray-600">Нет инструментов или сервер не подключен. Нажмите Connect.</div></template>
+            <div class="grid gap-2">
+              <template x-for="tool in srv.tools" :key="tool.name">
+                <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-3">
+                  <div class="font-mono text-xs font-bold text-[#22d3ee]" x-text="tool.name"></div>
+                  <div class="text-xs text-gray-500 mt-1" x-text="tool.description || 'No description'"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <div class="mt-4 flex gap-2">
+            <button @click="connect(srv.id)" x-show="!srv.connected" class="px-3 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-xs">🔌 Connect</button>
+            <button @click="del(srv.id)" x-show="!String(srv.id).startsWith('env-')" class="px-3 py-1.5 rounded-lg bg-red-900/20 hover:bg-red-900/40 text-xs text-red-400">🗑️ Delete</button>
+            <a :href="'/api/mcp/servers/'+srv.id+'/tools'" target="_blank" class="px-3 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-xs">Raw JSON</a>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6">
+    <h3 class="text-sm font-semibold mb-3">Как добавить MCP сервер</h3>
+    <div class="text-xs text-gray-400 leading-relaxed space-y-2">
+      <p>1. Запустите MCP сервер, например Brave Search:</p>
+      <pre class="bg-[#030712] rounded-lg p-3 font-mono text-gray-500">npx -y @modelcontextprotocol/server-brave-search --env BRAVE_API_KEY=xxx
+# или через SSE прокси:
+npx @modelcontextprotocol/server-brave-search | npx mcp-remote --transport sse --port 8001</pre>
+      <p>2. Добавьте URL в UI выше или в .env:</p>
+      <pre class="bg-[#030712] rounded-lg p-3 font-mono text-gray-500">MCP_SEARCH_URL=http://localhost:8001/sse
+MCP_IMAGE_GEN_URL=http://localhost:8002/sse
+# Для Docker используйте host.docker.internal:
+MCP_SEARCH_URL=http://host.docker.internal:8001/sse</pre>
+      <p>3. Перезапустите <code>docker compose up -d --build</code> или нажмите Connect в UI.</p>
+      <p>Инструменты появятся в <code>/api/mcp/servers</code> и будут доступны агенту в Playground (автоматически выбирает нужный tool).</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
