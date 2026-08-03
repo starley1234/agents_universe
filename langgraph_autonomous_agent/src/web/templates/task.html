@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Task — Agent Universe{% endblock %}
+
+{% block content %}
+<div x-data="taskView('{{ task_id }}')" x-init="init()" x-cloak>
+
+    <!-- Breadcrumb -->
+    <nav class="flex items-center space-x-2 text-sm text-gray-500 mb-4">
+        <a href="/" class="hover:text-blue-600 transition">Dashboard</a>
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        <span class="text-gray-900 font-medium truncate max-w-xs" x-text="t.title||'Loading…'"></span>
+    </nav>
+
+    <!-- ── Header ─────────────────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-5 p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <h1 class="text-xl font-bold text-gray-900" x-text="t.title||'Loading…'"></h1>
+            <div class="flex items-center space-x-2">
+                <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full"
+                      :class="{'bg-yellow-100 text-yellow-800':t.status==='pending','bg-blue-100 text-blue-800':t.status==='running',
+                               'bg-green-100 text-green-800':t.status==='completed','bg-red-100 text-red-800':t.status==='failed',
+                               'bg-gray-100 text-gray-600':t.status==='cancelled'}"
+                      x-text="t.status"></span>
+                <button x-show="t.status==='running'||t.status==='pending'" @click="cancelTask()"
+                        class="px-3 py-1 text-xs bg-red-50 text-red-600 rounded-lg hover:bg-red-100 font-medium transition">
+                    Cancel</button>
+                <button @click="load()" class="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100" title="Refresh">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="mb-4">
+            <div class="flex justify-between text-xs text-gray-500 mb-1">
+                <span>Progress</span>
+                <span class="font-mono" x-text="(t.progress||0).toFixed(0)+'%'"></span>
+            </div>
+            <div class="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                <div class="progress-bar h-full rounded-full" :class="{'bg-blue-500':t.status==='running','bg-green-500':t.status==='completed','bg-red-500':t.status==='failed','bg-gray-400':true}"
+                     :style="'width:'+(t.progress||0)+'%'"></div>
+            </div>
+        </div>
+
+        <!-- Stats grid -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-xs text-gray-500">Quality</p>
+                <p class="text-lg font-bold font-mono" :class="t.quality>=0.8?'text-green-600':t.quality>=0.5?'text-yellow-600':'text-red-600'"
+                   x-text="(t.quality||0).toFixed(2)"></p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-xs text-gray-500">Iterations</p>
+                <p class="text-lg font-bold font-mono" x-text="(t.iterations||0)+'/'+(t.max_iterations||20)"></p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-xs text-gray-500">Steps</p>
+                <p class="text-lg font-bold font-mono" x-text="t.total_steps||0"></p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-3">
+                <p class="text-xs text-gray-500">Created</p>
+                <p class="text-sm font-medium" x-text="fmtDate(t.created_at)"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Description ────────────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-5 p-5">
+        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Description</h2>
+        <p class="text-gray-700 whitespace-pre-wrap text-sm leading-relaxed" x-text="t.description"></p>
+    </div>
+
+    <!-- ── Plan / Timeline ────────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-5 overflow-hidden">
+        <div class="p-5 border-b border-gray-100">
+            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">📋 Execution Plan</h2>
+        </div>
+        <div x-show="!plan.length" class="p-10 text-center text-gray-400">
+            <svg class="w-8 h-8 mx-auto mb-2 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            <p>Planning…</p>
+        </div>
+        <!-- Timeline -->
+        <div class="relative">
+            <div class="absolute left-8 top-0 bottom-0 w-0.5 bg-gray-100"></div>
+            <template x-for="(s,idx) in plan" :key="s.id||idx">
+                <div class="relative flex items-start p-4 pl-20 hover:bg-gray-50 transition-colors">
+                    <!-- Status dot on timeline -->
+                    <div class="absolute left-6 top-5 w-4 h-4 rounded-full border-2 flex items-center justify-center z-10"
+                         :class="{'bg-green-500 border-green-500':s.status==='completed','bg-red-500 border-red-500':s.status==='failed',
+                                  'bg-blue-500 border-blue-500 animate-pulse':s.status==='in_progress',
+                                  'bg-white border-gray-300':s.status==='pending'}">
+                        <svg x-show="s.status==='completed'" class="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+                        <svg x-show="s.status==='failed'" class="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                    </div>
+                    <!-- Step content -->
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center justify-between">
+                            <p class="text-sm font-medium text-gray-900" x-text="s.description"></p>
+                            <span x-show="s.duration_s" class="text-xs text-gray-400 font-mono ml-2 flex-shrink-0"
+                                  x-text="(s.duration_s||0).toFixed(1)+'s'"></span>
+                        </div>
+                        <template x-if="s.result">
+                            <div class="mt-2">
+                                <button @click="s._expanded=!s._expanded" class="text-xs text-blue-600 hover:text-blue-800"
+                                        x-text="s._expanded?'Hide details':'Show details'"></button>
+                                <div x-show="s._expanded" class="mt-1 p-3 bg-gray-50 rounded-lg text-xs text-gray-700 font-mono whitespace-pre-wrap max-h-60 overflow-y-auto"
+                                     x-text="s.result"></div>
+                            </div>
+                        </template>
+                        <template x-if="s.error">
+                            <p class="mt-1 text-xs text-red-600" x-text="s.error"></p>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ── Live Log ───────────────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-5 overflow-hidden">
+        <div class="p-5 border-b border-gray-100 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">📟 Live Log</h2>
+            <div class="flex items-center space-x-2">
+                <template x-for="lf in logFilters" :key="lf">
+                    <button @click="toggleLogFilter(lf)"
+                            class="px-2 py-0.5 text-xs rounded-full transition"
+                            :class="logActiveFilters.includes(lf)?logFilterClass(lf):'bg-gray-100 text-gray-500'"
+                            x-text="lf"></button>
+                </template>
+                <button @click="logs=[]" class="text-xs text-gray-400 hover:text-gray-600">Clear</button>
+            </div>
+        </div>
+        <div id="logbox" class="bg-gray-900 font-mono text-xs max-h-80 overflow-y-auto">
+            <div x-show="!filteredLogs.length" class="p-8 text-center text-gray-500">Waiting for events…</div>
+            <template x-for="(l,i) in filteredLogs" :key="i">
+                <div class="log-entry px-4 py-1.5 border-b border-gray-800/50 flex items-start space-x-3"
+                     :class="{'text-green-400':l.level==='INFO','text-yellow-400':l.level==='WARN','text-red-400':l.level==='ERROR','text-blue-400':l.level==='SYS'}">
+                    <span class="text-gray-600 flex-shrink-0" x-text="l.time"></span>
+                    <span class="flex-shrink-0 w-10" :class="{'text-green-500':l.level==='INFO','text-yellow-500':l.level==='WARN','text-red-500':l.level==='ERROR','text-blue-500':l.level==='SYS'}"
+                          x-text="'['+l.level+']'"></span>
+                    <span class="flex-1 break-all" x-text="l.msg"></span>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ── Final Result ───────────────────────────────────── -->
+    <div x-show="t.result" class="bg-white rounded-xl shadow-sm border border-gray-100 mb-5 overflow-hidden">
+        <div class="p-5 border-b border-gray-100 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">✅ Final Result</h2>
+            <button @click="copyResult()" class="text-xs text-blue-600 hover:text-blue-800 flex items-center space-x-1">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                <span x-text="copied?'Copied!':'Copy'"></span>
+            </button>
+        </div>
+        <div class="p-5 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50" x-text="t.result"></div>
+    </div>
+
+    <!-- ── Error ──────────────────────────────────────────── -->
+    <div x-show="t.error" class="bg-white rounded-xl shadow-sm border border-red-200 mb-5 overflow-hidden">
+        <div class="p-5 border-b border-red-100">
+            <h2 class="text-sm font-semibold text-red-600 uppercase tracking-wide">❌ Error</h2>
+        </div>
+        <pre class="p-5 text-xs text-red-600 bg-red-50 overflow-x-auto" x-text="t.error"></pre>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function taskView(id){return{
+    t:{},plan:[],logs:[],wsConn:null,copied:false,
+    logFilters:['INFO','WARN','ERROR','SYS'],logActiveFilters:['INFO','WARN','ERROR','SYS'],
+
+    async init(){
+        await this.load();this.connectWS();
+        setInterval(()=>this.load(),5000);
+    },
+
+    async load(){
+        try{
+            const r=await fetch(`/api/tasks/${id}`);
+            if(!r.ok)return;
+            this.t=await r.json();
+            let p=this.t.plan;
+            if(typeof p==='string'){try{p=JSON.parse(p||'[]')}catch(e){p=[]}}
+            // preserve _expanded state
+            const expanded={};
+            this.plan.forEach(s=>{if(s._expanded)expanded[s.id]=true});
+            this.plan=(Array.isArray(p)?p:[]).map(s=>({...s,_expanded:expanded[s.id]||false}));
+        }catch(e){}
+    },
+
+    connectWS(){
+        const p=location.protocol==='https:'?'wss:':'ws:';
+        this.wsConn=new WebSocket(`${p}//${location.host}/api/ws/tasks/${id}`);
+        this.wsConn.onmessage=e=>{
+            if(e.data==='pong')return;
+            try{
+                const d=JSON.parse(e.data);
+                if(d.type==='task_update'){
+                    this.t={...this.t,...d.data};
+                    this.addLog('SYS',d.data.message||d.data.node||'update');
+                }
+            }catch(x){}
+        };
+        this.wsConn.onclose=()=>setTimeout(()=>this.connectWS(),3000);
+    },
+
+    addLog(level,msg){
+        this.logs.push({time:new Date().toLocaleTimeString(),level,msg});
+        if(this.logs.length>500)this.logs=this.logs.slice(-300);
+        this.$nextTick(()=>{const b=document.getElementById('logbox');if(b)b.scrollTop=b.scrollHeight});
+    },
+
+    get filteredLogs(){
+        if(this.logActiveFilters.length===4)return this.logs;
+        return this.logs.filter(l=>this.logActiveFilters.includes(l.level));
+    },
+
+    toggleLogFilter(f){
+        const i=this.logActiveFilters.indexOf(f);
+        if(i>=0)this.logActiveFilters.splice(i,1);else this.logActiveFilters.push(f);
+    },
+
+    logFilterClass(f){
+        return{'bg-green-900 text-green-300':f==='INFO','bg-yellow-900 text-yellow-300':f==='WARN',
+               'bg-red-900 text-red-300':f==='ERROR','bg-blue-900 text-blue-300':f==='SYS'}[f]||'bg-gray-700 text-gray-300';
+    },
+
+    async cancelTask(){
+        if(!confirm('Cancel this task?'))return;
+        await fetch(`/api/tasks/${id}`,{method:'DELETE'});
+        await this.load();
+    },
+
+    async copyResult(){
+        try{await navigator.clipboard.writeText(this.t.result||'');this.copied=true;setTimeout(()=>this.copied=false,2000)}catch(e){}},
+    fmtDate(iso){return iso?new Date(iso).toLocaleString():'-'},
+};}
+</script>
+{% endblock %}

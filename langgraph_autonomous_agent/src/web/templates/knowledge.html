@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Knowledge — Agent Universe{% endblock %}
+{% block nav_knowledge %}text-blue-700 bg-blue-50 active{% endblock %}
+
+{% block content %}
+<div x-data="knowledge()" x-init="init()" x-cloak>
+
+    <!-- ── Search ─────────────────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-6 p-5">
+        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">🔍 Search Memory</h2>
+        <form @submit.prevent="search()" class="flex space-x-3">
+            <input x-model="query" type="text" class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                   placeholder="Search semantic + ontological memory…">
+            <button type="submit" :disabled="searching||!query"
+                    class="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium text-sm transition">
+                <span x-text="searching?'Searching…':'Search'"></span>
+            </button>
+        </form>
+
+        <!-- Results -->
+        <div x-show="results.length" class="mt-4 space-y-3">
+            <p class="text-xs text-gray-500" x-text="results.length+' results'"></p>
+            <template x-for="r in results" :key="r.content.slice(0,50)">
+                <div class="p-3 bg-gray-50 rounded-lg border border-gray-100">
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="px-1.5 py-0.5 text-xs rounded font-medium"
+                              :class="{'bg-blue-100 text-blue-700':r.source==='semantic','bg-purple-100 text-purple-700':r.source==='ontology','bg-gray-100 text-gray-600':r.source==='keyword'}"
+                              x-text="r.source"></span>
+                        <span class="text-xs text-gray-400 font-mono" x-text="'sim='+r.similarity.toFixed(3)"></span>
+                    </div>
+                    <p class="text-sm text-gray-700 whitespace-pre-wrap" x-text="r.content"></p>
+                </div>
+            </template>
+        </div>
+        <div x-show="searched&&!results.length" class="mt-4 text-center text-gray-400 text-sm">No results found</div>
+    </div>
+
+    <!-- ── Add Knowledge ──────────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-6 p-5">
+        <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">➕ Add Knowledge</h2>
+        <form @submit.prevent="addKnowledge()" class="space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Concept</label>
+                    <input x-model="kf.concept" type="text" required class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                           placeholder="e.g., Neural Architecture Search">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-600 mb-1">Category <span class="text-gray-400">(optional)</span></label>
+                    <input x-model="kf.category" type="text" class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                           placeholder="e.g., machine_learning">
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Knowledge Text</label>
+                <textarea x-model="kf.text" rows="3" required class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                          placeholder="Fact or knowledge about this concept…"></textarea>
+            </div>
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Source</label>
+                        <input x-model="kf.source" type="text" class="w-40 px-3 py-2 border rounded-lg text-sm" placeholder="(optional)">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Confidence</label>
+                        <input x-model.number="kf.confidence" type="number" min="0" max="1" step="0.1" class="w-20 px-3 py-2 border rounded-lg text-sm">
+                    </div>
+                </div>
+                <button type="submit" :disabled="adding"
+                        class="px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium text-sm transition">
+                    <span x-text="adding?'Saving…':'Add'"></span>
+                </button>
+            </div>
+        </form>
+        <div x-show="added" class="mt-3 p-2 bg-green-50 text-green-700 text-sm rounded-lg text-center">✓ Knowledge added</div>
+    </div>
+
+    <!-- ── Ontology Concepts ──────────────────────────────── -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100">
+        <div class="p-5 border-b border-gray-100 flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">🌐 Ontology Concepts</h2>
+            <div class="flex items-center space-x-2">
+                <input x-model="conceptQuery" @input.debounce.300ms="loadConcepts()" type="text"
+                       class="px-3 py-1.5 border rounded-lg text-xs w-48 focus:ring-2 focus:ring-blue-500"
+                       placeholder="Filter…">
+                <button @click="loadConcepts()" class="p-1 text-gray-400 hover:text-gray-600">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                </button>
+            </div>
+        </div>
+        <div x-show="!concepts.length" class="p-10 text-center text-gray-400 text-sm">No concepts yet</div>
+        <div class="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+            <template x-for="c in concepts" :key="c.id">
+                <div class="p-4 hover:bg-gray-50">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-900" x-text="c.concept"></h3>
+                            <p x-show="c.description" class="text-xs text-gray-500 mt-0.5" x-text="c.description"></p>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <span x-show="c.category" class="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full" x-text="c.category"></span>
+                            <span class="text-xs text-gray-400" x-text="'×'+c.visits"></span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function knowledge(){return{
+    query:'',results:[],searching:false,searched:false,
+    kf:{concept:'',text:'',category:'',source:'',confidence:1.0},adding:false,added:false,
+    concepts:[],conceptQuery:'',
+
+    async init(){await this.loadConcepts()},
+
+    async search(){
+        if(!this.query||this.searching)return;
+        this.searching=true;this.searched=false;
+        try{
+            const r=await fetch('/api/memory/search',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({query:this.query,top_k:15})});
+            if(r.ok)this.results=await r.json();
+        }catch(e){this.results=[]}
+        finally{this.searching=false;this.searched=true}
+    },
+
+    async addKnowledge(){
+        if(this.adding)return;this.adding=true;this.added=false;
+        try{
+            const r=await fetch('/api/memory/knowledge',{method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify(this.kf)});
+            if(r.ok){this.added=true;this.kf={concept:'',text:'',category:'',source:'',confidence:1.0};
+                setTimeout(()=>this.added=false,3000);await this.loadConcepts()}
+            else{alert('Error: '+(await r.json()).detail)}
+        }catch(e){alert(e.message)}finally{this.adding=false}
+    },
+
+    async loadConcepts(){
+        try{
+            const url=this.conceptQuery?`/api/ontology/concepts?query=${encodeURIComponent(this.conceptQuery)}`:'/api/ontology/concepts';
+            const r=await fetch(url);if(r.ok)this.concepts=await r.json();
+        }catch(e){}
+    },
+};}
+</script>
+{% endblock %}

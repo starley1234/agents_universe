@@ -1,0 +1,4 @@
+/* Agent Universe — custom styles */
+#logbox::-webkit-scrollbar{width:6px}#logbox::-webkit-scrollbar-track{background:transparent}
+#logbox::-webkit-scrollbar-thumb{background:#4b5563;border-radius:3px}
+.progress-bar{transition:width .5s ease-in-out}
