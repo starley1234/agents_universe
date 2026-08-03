@@ -1,17 +1,23 @@
-"""Memory Dreaming — background consolidation of accumulated knowledge."""
+"""Memory Dreaming — uses prompt registry."""
 
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from langchain_core.messages import SystemMessage
 from loguru import logger
+from sqlalchemy import update
 
+from astra.db.engine import get_session
+from astra.db.models import MemoryChunk
+from astra.db.repositories import MemoryChunkRepo
+from astra.config import settings
 from astra.llm.gateway import llm_gateway
 from astra.memory.ontology import ontology_store
-from astra.memory.semantic import semantic_memory
+from astra.prompts.registry import prompt_registry
 
-CONSOLIDATION_PROMPT = """You are the memory consolidation module of A.S.T.R.A.
+FALLBACK_PROMPT = """You are the memory consolidation module of A.S.T.R.A.
 Given a batch of recent facts and observations, produce a concise structured summary
 that identifies:
 1. Key entities (people, tools, concepts)
@@ -20,65 +26,92 @@ that identifies:
 
 Output as JSON:
 {
-  "entities": [{"name": "...", "type": "..."}],
-  "relations": [{"source": "...", "target": "...", "relation": "..."}],
+  "entities": [{"name": "...", "type": "concept"}],
+  "relations": [{"source": "...", "target": "...", "relation": "related_to"}],
   "contradictions": ["..."]
 }
+Return ONLY valid JSON, no markdown.
 """
 
 
-async def consolidate_project(project_id: UUID, batch_size: int = 50) -> None:
-    """
-    Run a single consolidation cycle for a project.
+def _get_consolidation_prompt() -> str:
+    try:
+        return prompt_registry.get("consolidation", default=FALLBACK_PROMPT) or FALLBACK_PROMPT
+    except Exception:
+        return FALLBACK_PROMPT
 
-    1. Pull recent unprocessed chunks from semantic memory.
-    2. Ask LLM to extract entities & relations.
-    3. Update the ontology graph.
-    4. Mark chunks as processed.
-    """
-    logger.info("💤  Memory dreaming started for project {}", project_id)
 
-    # 1. Get recent facts (placeholder)
-    recent_facts = "[placeholder: recent facts from DB]"
-    # TODO: query unprocessed embeddings
-
-    # 2. LLM extraction
-    messages = [
-        SystemMessage(content=CONSOLIDATION_PROMPT),
-        SystemMessage(content=f"Recent facts:\n{recent_facts}"),
-    ]
-    response = await llm_gateway.chat(messages=messages)
-
-    # 3. Parse and apply to ontology
-    import json
+async def consolidate_project(project_id: UUID, batch_size: int = 50) -> dict:
+    logger.info("💤 Memory dreaming started for project {}", project_id)
 
     try:
+        async with get_session() as session:
+            repo = MemoryChunkRepo(session)
+            chunks = await repo.get_unconsolidated(project_id, limit=batch_size)
+            if not chunks:
+                logger.info("No unconsolidated chunks for project {}", project_id)
+                return {"entities": 0, "relations": 0, "processed": 0}
+            recent_facts = "\n---\n".join([c.text[:500] for c in chunks if c.text])
+            chunk_ids = [c.id for c in chunks]
+    except Exception as exc:
+        logger.warning("Failed to fetch unconsolidated chunks: {}, using fallback", exc)
+        recent_facts = "[no facts available]"
+        chunk_ids = []
+
+    if not recent_facts.strip():
+        return {"entities": 0, "relations": 0, "processed": 0}
+
+    messages = [
+        SystemMessage(content=_get_consolidation_prompt()),
+        SystemMessage(content=f"Recent facts:\n{recent_facts[:8000]}"),
+    ]
+    try:
+        response = await llm_gateway.chat(messages=messages, temperature=0.2, max_tokens=2048, metadata={"prompt": "consolidation"})
         raw = response.content.strip()
         if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+            if raw.endswith("```"):
+                raw = raw.rsplit("```", 1)[0]
+            raw = raw.strip()
         data = json.loads(raw)
+    except Exception as exc:
+        logger.error("Dreaming LLM call or parse failed: {}", exc)
+        return {"entities": 0, "relations": 0, "processed": 0, "error": str(exc)}
 
+    entity_count = 0
+    relation_count = 0
+    try:
         for entity in data.get("entities", []):
-            ontology_store.add_entity(
-                project_id,
-                entity["name"],
-                entity.get("type", "concept"),
-            )
+            if isinstance(entity, dict) and entity.get("name"):
+                ontology_store.add_entity(project_id, entity["name"], entity.get("type", "concept"))
+                entity_count += 1
 
         for rel in data.get("relations", []):
-            ontology_store.add_relation(
-                project_id,
-                rel["source"],
-                rel["target"],
-                rel.get("relation", "related_to"),
-            )
+            if isinstance(rel, dict) and rel.get("source") and rel.get("target"):
+                ontology_store.add_relation(project_id, rel["source"], rel["target"], rel.get("relation", "related_to"))
+                relation_count += 1
 
-        logger.info(
-            "✅  Dreaming complete: {} entities, {} relations",
-            len(data.get("entities", [])),
-            len(data.get("relations", [])),
-        )
+        try:
+            ws = settings.resolved_workspace / str(project_id) / "ontology.json"
+            ontology_store.save(project_id, ws)
+        except Exception as exc:
+            logger.debug("Failed to save ontology to file: {}", exc)
+
+        logger.info("✅ Dreaming complete for {}: {} entities, {} relations, {} chunks", project_id, entity_count, relation_count, len(chunk_ids))
     except Exception as exc:
-        logger.error("Dreaming parse failed: {}", exc)
+        logger.error("Failed to update ontology: {}", exc)
 
-    # 4. TODO: mark chunks as consolidated
+    if chunk_ids:
+        try:
+            async with get_session() as session:
+                stmt = update(MemoryChunk).where(MemoryChunk.id.in_(chunk_ids)).values(consolidated=True)
+                await session.execute(stmt)
+        except Exception as exc:
+            logger.warning("Failed to mark chunks as consolidated: {}", exc)
+
+    return {
+        "entities": entity_count,
+        "relations": relation_count,
+        "processed": len(chunk_ids),
+        "contradictions": data.get("contradictions", []),
+    }

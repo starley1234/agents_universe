@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Настройки — A.S.T.R.A.{% endblock %}
+{% block breadcrumbs %}<a href="/" class="text-gray-500 hover:text-gray-300">Dashboard</a><span class="text-gray-600">/</span><span class="text-gray-300 font-medium">Настройки</span>{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-6" x-data="{ cfg: null, health: null, loaded: false }" x-init="Promise.all([fetch('/api/config').then(r=>r.json()), fetch('/api/health/full').then(r=>r.json())]).then(([c,h])=>{ cfg=c; health=h; loaded=true; })">
+  <h1 class="text-2xl font-bold">Настройки системы v0.3.0</h1>
+  <p class="text-sm text-gray-500 -mt-4">Postgres • SSE streaming • JWT • TaskIQ • FalkorDB • Langfuse • Eval</p>
+
+  <template x-if="!loaded"><div class="grid gap-4"><template x-for="i in 3"><div class="h-32 bg-[#111827] rounded-xl border border-[#1f2937] animate-pulse"></div></template></div></template>
+
+  <template x-if="loaded">
+    <div class="space-y-6">
+      <!-- LLM -->
+      <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6">
+        <h2 class="text-sm font-semibold mb-4">🤖 LLM & Embeddings</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Провайдер</div><div class="font-mono text-sm font-bold mt-1" :class="cfg.llm_provider==='mock'?'text-emerald-400':'text-[#818cf8]'" x-text="cfg.llm_provider"></div><div class="text-xs text-gray-600 mt-1" x-text="cfg.llm_model"></div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Эмбеддинги</div><div class="font-mono text-sm mt-1" x-text="cfg.embedding_model"></div><div class="text-xs text-gray-500" x-text="cfg.embedding_dimensions+' dim'"></div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="text-xs text-gray-500">Prompts</div><div class="text-sm mt-1" x-text="(cfg.prompts||[]).join(', ')"></div><a href="/ui/prompts" class="text-xs text-[#6366f1] hover:underline">→ Prompt Registry</a></div>
+        </div>
+      </div>
+
+      <!-- Infra -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6">
+          <h2 class="text-sm font-semibold mb-4">🗄️ Инфраструктура</h2>
+          <div class="space-y-3">
+            <div class="flex justify-between p-3 rounded-lg bg-[#030712] border" :class="health.db==='ok'?'border-emerald-800/50':'border-red-800/50'"><span class="text-xs text-gray-500">Postgres + pgvector</span><span class="text-xs font-mono" :class="health.db==='ok'?'text-emerald-400':'text-red-400'" x-text="health.db"></span></div>
+            <div class="flex justify-between p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><span class="text-xs text-gray-500">FalkorDB</span><span class="text-xs" :class="health.falkordb==='connected'?'text-emerald-400': health.falkordb==='disabled'?'text-gray-500':'text-amber-400'" x-text="health.falkordb"></span></div>
+            <div class="flex justify-between p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><span class="text-xs text-gray-500">Redis / TaskIQ</span><span class="text-xs text-gray-400" x-text="cfg.workspace_path"></span></div>
+            <div class="flex justify-between p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><span class="text-xs text-gray-500">Workspace</span><span class="text-xs font-mono" x-text="health.workspace_exists ? 'exists ✓' : 'missing'"></span></div>
+          </div>
+        </div>
+        <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6">
+          <h2 class="text-sm font-semibold mb-4">🔐 Auth & Tracing</h2>
+          <div class="space-y-3">
+            <div class="flex justify-between p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><span class="text-xs text-gray-500">JWT Auth</span><span class="text-xs" :class="health.auth==='enabled'?'text-emerald-400':'text-gray-500'" x-text="health.auth"></span></div>
+            <div class="flex justify-between p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><span class="text-xs text-gray-500">Langfuse</span><span class="text-xs" :class="health.langfuse==='connected'?'text-emerald-400': health.langfuse==='disabled'?'text-gray-500':'text-amber-400'" x-text="health.langfuse"></span></div>
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">LLM URL</div><div class="text-xs font-mono mt-1 break-all" x-text="health.llm?.url"></div></div>
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">MCP Servers</div><div class="mt-1"><template x-for="m in health.mcp" :key="m.name"><div class="flex items-center gap-2 text-xs"><div class="w-2 h-2 rounded-full" :class="m.connected?'bg-emerald-500':'bg-red-500'"></div><span x-text="m.name"></span></div></template><template x-if="health.mcp?.length===0"><span class="text-xs text-gray-600">none</span></template></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Streaming & TaskIQ -->
+      <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6">
+        <h2 class="text-sm font-semibold mb-4">⚡ Новые фичи v0.3.0</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="font-semibold text-sm mb-1">SSE Streaming</div><div class="text-gray-500">POST /api/agents/run/stream — EventSource, события plan, step_start, tool_call, reflect, done. Playground теперь стримит шаги без блокировки.</div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="font-semibold text-sm mb-1">TaskIQ Очередь</div><div class="text-gray-500">POST /api/agents/run/async — кидает задачу в Redis, не теряет job при падении pod. Воркер: astra-worker service, taskiq worker astra.tasks.worker:broker</div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="font-semibold text-sm mb-1">FalkorDB</div><div class="text-gray-500">USE_FALKORDB=true → граф в FalkorDB (RedisGraph), иначе NetworkX. Docker profile: --profile falkor или full. Граф /api/projects/{id}/graph показывает backend.</div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="font-semibold text-sm mb-1">JWT Auth</div><div class="text-gray-500">AUTH_ENABLED=true → требует Bearer token. Endpoints: /api/auth/register, /login, /me. Playground сохраняет токен в localStorage. Default admin/admin.</div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="font-semibold text-sm mb-1">Prompt Registry</div><div class="text-gray-500">YAML в src/astra/prompts/*.yaml — версионирование, hot reload. Список в /ui/prompts и /api/prompts. Langfuse логирует какой prompt использовался.</div></div>
+          <div class="bg-[#030712] rounded-lg border border-[#1f2937] p-4"><div class="font-semibold text-sm mb-1">Langfuse + Eval</div><div class="text-gray-500">LANGFUSE_ENABLED=true → трассировка всех LLM вызовов. Eval: tests/eval/tasks.json — 5 golden задач, /ui/eval и POST /api/eval/run — success rate, steps, duration.</div></div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <a href="/docs" class="bg-[#111827] rounded-xl border border-[#1f2937] p-5 hover:border-[#6366f1]/40 block"><div class="text-sm font-semibold">📚 API Docs</div><div class="text-xs text-gray-500">/docs — Swagger, все эндпоинты: streaming, async, auth, eval</div></a>
+        <a href="/ui/eval" class="bg-[#111827] rounded-xl border border-[#1f2937] p-5 hover:border-emerald-500/40 block"><div class="text-sm font-semibold">🧪 Eval Harness</div><div class="text-xs text-gray-500">/ui/eval — запуск golden задач, метрики</div></a>
+      </div>
+
+      <div class="bg-[#111827] rounded-xl border border-[#1f2937] p-6">
+        <h2 class="text-sm font-semibold mb-3">Docker запуск (Postgres + все фичи)</h2>
+        <pre class="bg-[#030712] rounded-lg border border-[#1f2937] p-4 text-xs font-mono text-gray-400 overflow-x-auto">docker compose up -d --build
+# с воркером и falkordb:
+docker compose --profile full up -d --build
+# только falkordb:
+docker compose --profile falkor up -d
+
+# Логи
+docker logs -f astra_app
+docker logs -f astra_worker
+# http://localhost:8101/  http://localhost:8101/docs
+# http://localhost:8101/login  (если AUTH_ENABLED=true)
+</pre>
+      </div>
+    </div>
+  </template>
+</div>
+{% endblock %}

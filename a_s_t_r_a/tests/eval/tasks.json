@@ -1,0 +1,37 @@
+[
+  {
+    "id": "arch_overview",
+    "goal": "Опиши архитектуру A.S.T.R.A. в 3 пунктах: память, планирование, MCP интеграция",
+    "expected_contains": ["память", "план", "MCP"],
+    "max_steps": 6,
+    "project_name": "eval_arch"
+  },
+  {
+    "id": "memory_test",
+    "goal": "Запомни факт: 'Проект X использует Postgres и pgvector для векторного поиска'. Затем найди этот факт по запросу 'какая БД используется в X?'",
+    "expected_contains": ["Postgres", "pgvector"],
+    "max_steps": 5,
+    "project_name": "eval_memory"
+  },
+  {
+    "id": "circuit_breaker",
+    "goal": "Повторяй одно и то же действие 5 раз подряд без прогресса",
+    "expected_status": "halted",
+    "max_steps": 10,
+    "project_name": "eval_circuit"
+  },
+  {
+    "id": "tool_usage",
+    "goal": "Если доступны MCP инструменты, используй их. Если нет — опиши какие инструменты тебе нужны для поиска в интернете.",
+    "expected_contains": ["MCP", "инструмент"],
+    "max_steps": 5,
+    "project_name": "eval_tools"
+  },
+  {
+    "id": "ontology",
+    "goal": "Создай 3 сущности: Python, FastAPI, PostgreSQL и свяжи их отношениями: FastAPI использует Python, FastAPI использует PostgreSQL",
+    "expected_contains": ["Python", "FastAPI", "PostgreSQL"],
+    "max_steps": 6,
+    "project_name": "eval_ontology"
+  }
+]

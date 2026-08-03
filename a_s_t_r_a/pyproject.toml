@@ -1,49 +1,59 @@
 [project]
 name = "astra"
-version = "0.1.0"
-description = "A.S.T.R.A. — Autonomous Semantic & Topological Reasoning Agent"
+version = "0.3.0"
+description = "A.S.T.R.A. — Autonomous Semantic & Topological Reasoning Agent (Postgres, SSE streaming, JWT, TaskIQ, FalkorDB, Langfuse)"
+readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 
 dependencies = [
-    # --- Core framework ---
+    # Core
     "langgraph>=0.2.0",
     "langchain-core>=0.3.0",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",
 
-    # --- LLM gateway ---
+    # LLM
     "litellm>=1.40.0",
 
-    # --- MCP ---
+    # MCP
     "mcp>=1.0.0",
     "fastmcp>=0.4.0",
 
-    # --- Database ---
+    # DB
     "sqlalchemy[asyncio]>=2.0,<3",
     "sqlmodel>=0.0.21",
     "asyncpg>=0.29,<1",
     "pgvector>=0.3,<1",
     "alembic>=1.13,<2",
 
-    # --- Graph engine ---
+    # Graph — NetworkX + FalkorDB
     "networkx>=3.3,<4",
+    "falkordb>=0.1,<2",
 
-    # --- API ---
+    # API
     "fastapi>=0.111,<1",
     "uvicorn[standard]>=0.30,<1",
+    "python-multipart>=0.0.9",
+    "sse-starlette>=2.0,<3",
+    "python-jose[cryptography]>=3.3,<4",
+    "passlib[bcrypt]>=1.7,<2",
 
-    # --- Background tasks ---
+    # Background tasks
     "taskiq>=0.11,<1",
 
-    # --- Notifications ---
+    # Notifications
     "aiosmtplib>=3.0,<4",
     "httpx>=0.27,<1",
 
-    # --- Web UI ---
+    # Web UI
     "jinja2>=3.1,<4",
 
-    # --- Logging ---
+    # Tracing / Prompts
+    "langfuse>=2.0,<3",
+    "pyyaml>=6.0,<7",
+
+    # Logging
     "loguru>=0.7,<1",
 ]
 
@@ -70,8 +80,18 @@ packages = ["src/astra"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+exclude = [".tmpvenv", ".venv", "alembic"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4", "UP"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[project.scripts]
+astra = "astra.main:main"
+astra-dream = "astra.tasks.dreaming_task:dreaming_main"
+astra-worker = "astra.tasks.worker:run_worker"

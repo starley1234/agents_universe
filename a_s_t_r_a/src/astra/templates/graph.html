@@ -14,10 +14,7 @@
 
 {% block header_actions %}
 <button @click="if(window._graph) window._graph.fit({animation:true})"
-        class="px-3 py-1.5 rounded-lg bg-surface-light hover:bg-surface-lighter text-sm text-gray-300 transition">
-  <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
-  </svg>
+        class="px-3 py-1.5 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-sm text-gray-300 transition">
   Вписать
 </button>
 {% endblock %}
@@ -29,18 +26,25 @@
        nodes: [],
        edges: [],
        loaded: false,
-
        async load() {
-         const data = await fetch('/api/projects/{{ project.id }}/graph').then(r => r.json());
-         this.nodes = data.nodes || [];
-         this.edges = data.edges || [];
+         try {
+           const data = await fetch('/api/projects/{{ project.id }}/graph').then(r => r.json());
+           this.nodes = data.nodes || [];
+           this.edges = data.edges || [];
+         } catch(e) {
+           this.nodes = []; this.edges = [];
+         }
          this.loaded = true;
          this.$nextTick(() => this.renderGraph());
        },
-
        renderGraph() {
          const container = document.getElementById('graph-container');
-         if (!container || !this.nodes.length) return;
+         if (!container) return;
+         if (!this.nodes.length) return;
+         if (typeof vis === 'undefined') {
+           container.innerHTML = '<div class=\'p-10 text-center text-gray-500 text-sm\'>vis-network не загрузился. Проверьте интернет.</div>';
+           return;
+         }
 
          const groups = {};
          const colors = ['#6366f1','#22d3ee','#f59e0b','#10b981','#f87171','#a78bfa','#ec4899','#6ee7b7'];
@@ -56,7 +60,7 @@
          })));
 
          const visEdges = new vis.DataSet(this.edges.map(e => ({
-           from: e.from, to: e.to, label: e.label,
+           from: e.from, to: e.to, label: e.label || '',
            arrows: 'to', font: { size: 10, color: '#6b7280', strokeWidth: 0 },
            color: { color: '#374151', highlight: '#6366f1' },
            smooth: { type: 'cubicBezier' },
@@ -91,59 +95,59 @@
 
   <div class="relative h-full flex gap-4">
 
-    <!-- Graph -->
-    <div class="flex-1 bg-surface rounded-xl border border-surface-light overflow-hidden relative">
-      <!-- Loading -->
+    <div class="flex-1 bg-[#111827] rounded-xl border border-[#1f2937] overflow-hidden relative">
       <template x-if="!loaded">
         <div class="absolute inset-0 flex items-center justify-center">
-          <div class="w-10 h-10 border-2 border-accent/20 border-t-accent rounded-full animate-spin"></div>
+          <div class="w-10 h-10 border-2 border-[#6366f1]/20 border-t-[#6366f1] rounded-full animate-spin"></div>
         </div>
       </template>
 
-      <!-- Empty state -->
       <template x-if="loaded && nodes.length === 0">
         <div class="absolute inset-0 flex flex-col items-center justify-center text-gray-600">
-          <svg class="w-20 h-20 mb-4 opacity-20" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/>
-          </svg>
+          <div class="text-6xl mb-4 opacity-20">🕸️</div>
           <p class="text-sm mb-1">Граф знаний пуст</p>
           <p class="text-xs text-gray-600">Запустите агента — он построит граф по мере работы</p>
+          <div class="mt-6 bg-[#030712] rounded-lg border border-[#1f2937] p-4 text-xs text-gray-500 max-w-md text-left">
+            <div class="font-semibold text-gray-400 mb-2">Как работает онтология:</div>
+            • Агент выявляет сущности из диалога<br/>
+            • Связи строятся автоматически<br/>
+            • Граф сохраняется в workspace/ontology.json<br/>
+            • Используется для контекстного сжатия
+          </div>
         </div>
       </template>
 
       <div id="graph-container" class="w-full h-full"></div>
 
-      <!-- Legend -->
       <div x-show="loaded && nodes.length > 0"
-           class="absolute bottom-4 left-4 bg-surface/90 backdrop-blur border border-surface-light rounded-lg px-3 py-2">
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Узлов: <span x-text="nodes.length"></span> · Связей: <span x-text="edges.length"></span></div>
+           class="absolute bottom-4 left-4 bg-[#111827]/90 backdrop-blur border border-[#1f2937] rounded-lg px-3 py-2">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider">Узлов: <span x-text="nodes.length"></span> · Связей: <span x-text="edges.length"></span></div>
       </div>
     </div>
 
-    <!-- Details panel -->
     <div x-show="selected" x-transition
-         class="w-72 bg-surface rounded-xl border border-surface-light p-5 shrink-0 overflow-y-auto">
+         class="w-72 bg-[#111827] rounded-xl border border-[#1f2937] p-5 shrink-0 overflow-y-auto">
       <div class="flex items-center justify-between mb-4">
         <span class="text-xs text-gray-500 uppercase tracking-wider">Детали</span>
-        <button @click="selected = null" class="text-gray-500 hover:text-gray-300">&times;</button>
+        <button @click="selected = null" class="text-gray-500 hover:text-gray-300 w-6 h-6 rounded hover:bg-[#1f2937] flex items-center justify-center">✕</button>
       </div>
 
       <div class="space-y-4">
         <div>
           <div class="text-xs text-gray-500 mb-1">Сущность</div>
-          <div class="text-sm font-semibold text-accent-light" x-text="selected?.label"></div>
+          <div class="text-sm font-semibold text-[#818cf8]" x-text="selected?.label"></div>
         </div>
         <div>
           <div class="text-xs text-gray-500 mb-1">Тип</div>
-          <span class="text-xs px-2 py-0.5 rounded-full bg-accent/20 text-accent-light" x-text="selected?.group"></span>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-[#6366f1]/20 text-[#818cf8]" x-text="selected?.group"></span>
         </div>
         <div x-show="selected?.relations?.length > 0">
           <div class="text-xs text-gray-500 mb-2">Связи</div>
           <div class="space-y-2">
             <template x-for="r in selected?.relations || []" :key="r.from + r.to">
-              <div class="bg-gray-950 rounded-lg px-3 py-2 text-xs">
+              <div class="bg-[#030712] rounded-lg px-3 py-2 text-xs border border-[#1f2937]">
                 <span class="text-gray-400" x-text="r.from === selected.id ? '→ ' + r.to : r.from + ' →'"></span>
-                <span class="text-nebula ml-1" x-text="r.label" x-show="r.label"></span>
+                <span class="text-[#22d3ee] ml-1" x-text="r.label" x-show="r.label"></span>
               </div>
             </template>
           </div>
@@ -155,6 +159,5 @@
 {% endblock %}
 
 {% block scripts %}
-<!-- vis-network -->
 <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 {% endblock %}

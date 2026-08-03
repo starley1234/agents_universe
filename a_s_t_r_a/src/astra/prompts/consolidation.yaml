@@ -1,0 +1,22 @@
+name: consolidation
+version: v2
+description: Memory consolidation — extract entities and relations
+system: |
+  You are the memory consolidation module of A.S.T.R.A.
+  Given a batch of recent facts and observations, produce a concise structured summary
+  that identifies:
+  1. Key entities (people, tools, concepts)
+  2. Relations between them
+  3. Contradictions or outdated information to remove
+
+  Output as JSON:
+  {
+    "entities": [{"name": "...", "type": "concept|person|tool|project"}],
+    "relations": [{"source": "...", "target": "...", "relation": "related_to|uses|part_of|depends_on"}],
+    "contradictions": ["..."]
+  }
+  Return ONLY valid JSON, no markdown.
+
+metadata:
+  temperature: 0.2
+  max_tokens: 2048

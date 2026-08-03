@@ -1,7 +1,4 @@
-version: "3.9"
-
 services:
-  # ── PostgreSQL + pgvector ──────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg16
     container_name: astra_postgres
@@ -20,7 +17,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Redis (TaskIQ broker) ──────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: astra_redis
@@ -35,9 +31,27 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── A.S.T.R.A. application ────────────────────────────────
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: astra_falkordb
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - falkordata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - falkor
+      - full
+
   astra:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: astra_app
     restart: unless-stopped
     env_file:
@@ -45,17 +59,73 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://astra:astra@postgres:5432/astra
       REDIS_URL: redis://redis:6379/0
+      LLM_DEFAULT_PROVIDER: ${LLM_DEFAULT_PROVIDER:-mock}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      APP_PORT: 8101
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-super-secret-jwt-change-me-in-prod}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      USE_FALKORDB: ${USE_FALKORDB:-false}
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: 6379
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
     ports:
       - "8101:8101"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - ./workspace:/app/workspace
-      - ./logs:/app/logs
+      # Use named volume for workspace to avoid WSL /mnt/c file exists bug
+      # If you need host workspace, uncomment bind mount and ensure ./workspace is a directory, not a file
+      - workspace_data:/app/workspace
+      - logsdata:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8101/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  astra-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: astra_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://astra:astra@postgres:5432/astra
+      REDIS_URL: redis://redis:6379/0
+      LLM_DEFAULT_PROVIDER: ${LLM_DEFAULT_PROVIDER:-mock}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      USE_FALKORDB: ${USE_FALKORDB:-false}
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: 6379
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - workspace_data:/app/workspace
+      - logsdata:/app/logs
+    command: ["sh", "-c", "taskiq worker astra.tasks.worker:broker --fs-discover --tasks-pattern 'src/astra/tasks/*.py'"]
+    profiles:
+      - worker
+      - full
 
 volumes:
   pgdata:
   redisdata:
+  falkordata:
+  workspace_data:
+  logsdata:

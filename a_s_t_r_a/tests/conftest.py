@@ -6,7 +6,8 @@ import os
 
 # Force test environment BEFORE any astra imports
 os.environ["ENVIRONMENT"] = "development"
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///test.db"
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
+os.environ["LLM_DEFAULT_PROVIDER"] = "mock"
 os.environ["LOCAL_LLM_URL"] = "http://localhost:9999/v1"
 os.environ["LOCAL_LLM_API_KEY"] = "test-key"
 os.environ["EMBEDDING_URL"] = "http://localhost:9999/v1"
@@ -14,7 +15,6 @@ os.environ["EMBEDDING_KEY"] = "test-key"
 
 import asyncio
 import pytest
-from sqlalchemy import text
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -31,7 +31,10 @@ def _init_db():
     yield
     # Cleanup: remove the test db file
     if os.path.exists("test.db"):
-        os.remove("test.db")
+        try:
+            os.remove("test.db")
+        except Exception:
+            pass
 
 
 @pytest.fixture

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Login — A.S.T.R.A.{% endblock %}
+{% block content %}
+<div class="max-w-md mx-auto mt-20"
+     x-data="{ username: '', password: '', error: '', loading: false,
+       async login() {
+         this.loading=true; this.error='';
+         try {
+           const form = new URLSearchParams();
+           form.append('username', this.username);
+           form.append('password', this.password);
+           const res = await fetch('/api/auth/login', { method: 'POST', body: form, headers: {'Content-Type': 'application/x-www-form-urlencoded'} });
+           const data = await res.json();
+           if(res.ok){
+             localStorage.setItem('astra_token', data.access_token);
+             window.dispatchEvent(new CustomEvent('toast', {detail:{msg:'Logged in as '+this.username, type:'success'}}));
+             window.location.href='/';
+           } else {
+             this.error = data.detail || 'Login failed';
+           }
+         } catch(e){ this.error=e.message; } finally { this.loading=false; }
+       }
+     }">
+  <div class="bg-[#111827] rounded-2xl border border-[#1f2937] p-8 space-y-6">
+    <div class="text-center">
+      <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-[#6366f1] to-[#22d3ee] mx-auto flex items-center justify-center mb-3">🌌</div>
+      <h1 class="text-xl font-bold">A.S.T.R.A. Login</h1>
+      <p class="text-xs text-gray-500 mt-1">JWT Auth — default admin/admin if AUTH_ENABLED=true</p>
+    </div>
+
+    <template x-if="error"><div class="bg-red-950/50 border border-red-800/50 rounded-lg p-3 text-sm text-red-300" x-text="error"></div></template>
+
+    <div class="space-y-4">
+      <div>
+        <label class="text-xs text-gray-400">Username</label>
+        <input x-model="username" type="text" class="w-full mt-1 bg-[#030712] border border-[#1f2937] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#6366f1]/50">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">Password</label>
+        <input x-model="password" type="password" @keydown.enter="login()" class="w-full mt-1 bg-[#030712] border border-[#1f2937] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#6366f1]/50">
+      </div>
+    </div>
+
+    <button @click="login()" :disabled="loading || !username || !password" class="w-full py-2.5 rounded-lg bg-[#6366f1] hover:bg-[#4f46e5] text-white text-sm font-medium transition disabled:opacity-40">
+      <span x-show="!loading">Login</span><span x-show="loading">...</span>
+    </button>
+
+    <div class="text-center text-xs text-gray-600">
+      No account? <a href="#" @click.prevent="fetch('/api/auth/register', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username: username, email: username+'@astra.local', password: password})}).then(r=>r.json()).then(d=>{ if(d.id){ error='Registered! Now login'; } else { error=JSON.stringify(d); } })" class="text-[#6366f1] hover:underline">Register</a>
+    </div>
+
+    <div class="text-[11px] text-gray-700">
+      If AUTH_ENABLED=false (default dev), you can use UI without login. Token stored in localStorage.
+    </div>
+  </div>
+</div>
+{% endblock %}

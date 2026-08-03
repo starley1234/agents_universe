@@ -1,153 +1,60 @@
 {% extends "base.html" %}
-
 {% block title %}Dashboard — A.S.T.R.A.{% endblock %}
-
-{% block breadcrumbs %}
-  <span class="text-gray-300 font-medium">Dashboard</span>
-{% endblock %}
-
+{% block breadcrumbs %}<span class="text-gray-300 font-medium">Dashboard v0.3.0</span>{% endblock %}
 {% block content %}
 <div class="max-w-7xl mx-auto space-y-6">
-
-  <!-- Header -->
   <div class="flex items-center justify-between">
-    <div>
-      <h1 class="text-2xl font-bold">Dashboard</h1>
-      <p class="text-sm text-gray-500 mt-1">Обзор состояния системы A.S.T.R.A.</p>
-    </div>
-    <a href="/ui/projects"
-       class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-accent hover:bg-accent-dim text-white text-sm font-medium transition shadow-lg shadow-accent/20">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
-      </svg>
-      Новый проект
-    </a>
+    <div><h1 class="text-2xl font-bold">Dashboard v0.3.0</h1><p class="text-sm text-gray-500 mt-1">Postgres • SSE streaming • JWT • TaskIQ • FalkorDB • Langfuse • Eval</p></div>
+    <div class="flex gap-2"><a href="/ui/eval" class="px-3 py-2.5 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-sm">🧪 Eval</a><a href="/ui/prompts" class="px-3 py-2.5 rounded-lg bg-[#1f2937] hover:bg-[#374151] text-sm">📝 Prompts</a><a href="/ui/projects" class="px-4 py-2.5 rounded-lg bg-[#6366f1] hover:bg-[#4f46e5] text-white text-sm font-medium shadow-lg shadow-indigo-500/20">Новый проект</a></div>
   </div>
 
-  <!-- Stat cards -->
-  <div class="grid grid-cols-2 lg:grid-cols-5 gap-4"
-       x-data="{ stats: {}, loaded: false }"
-       x-init="fetch('/api/stats').then(r=>r.json()).then(d=>{ stats=d; loaded=true; })">
-
-    {% macro stat_card(label, icon, color, key) %}
-    <div class="bg-surface rounded-xl border border-surface-light p-4 space-y-2">
-      <div class="flex items-center justify-between">
-        <span class="text-xs text-gray-500 uppercase tracking-wider">{{ label }}</span>
-        <div class="w-8 h-8 rounded-lg {{ color }} flex items-center justify-center text-white opacity-80">
-          {{ icon }}
-        </div>
-      </div>
-      <div class="text-2xl font-bold" x-text="loaded ? stats.{{ key }} : '—'"></div>
-    </div>
-    {% endmacro %}
-
-    {{ stat_card("Проекты",
-       '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>',
-       "bg-accent/20 text-accent", "projects") }}
-
-    {{ stat_card("Сессии",
-       '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg>',
-       "bg-nebula/20 text-nebula", "sessions") }}
-
-    {{ stat_card("Активные",
-       '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>',
-       "bg-amber-500/20 text-amber-400", "active_sessions") }}
-
-    {{ stat_card("Память",
-       '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375"/></svg>',
-       "bg-emerald-500/20 text-emerald-400", "memory_chunks") }}
-
-    {{ stat_card("MCP Tools",
-       '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17l-5.1-5.1m0 0L11.42 4.97m-5.1 5.1H21M3 3v18"/></svg>',
-       "bg-pink-500/20 text-pink-400", "mcp_tools") }}
+  <div class="grid grid-cols-2 lg:grid-cols-6 gap-4" x-data="{ stats: {projects:0,sessions:0,active_sessions:0,memory_chunks:0,mcp_tools:0,users:0,auth_enabled:false,falkordb_enabled:false,langfuse_enabled:false}, loaded:false, async load(){ try{ const d=await fetch('/api/stats').then(r=>r.json()); this.stats=d; }catch{} this.loaded=true; } }" x-init="load()">
+    {% macro card(label, key, bg) %}<div class="bg-[#111827] rounded-xl border border-[#1f2937] p-4 space-y-2"><div class="flex items-center justify-between"><span class="text-xs text-gray-500 uppercase">{{ label }}</span><div class="w-6 h-6 rounded-lg {{ bg }} flex items-center justify-center text-[10px]">●</div></div><div class="text-2xl font-bold" x-text="loaded ? stats.{{ key }} : '—'"></div></div>{% endmacro %}
+    {{ card("Проекты","projects","bg-[#6366f1]/20 text-[#6366f1]") }}
+    {{ card("Сессии","sessions","bg-[#22d3ee]/20 text-[#22d3ee]") }}
+    {{ card("Активные","active_sessions","bg-amber-500/20 text-amber-400") }}
+    {{ card("Память","memory_chunks","bg-emerald-500/20 text-emerald-400") }}
+    {{ card("MCP Tools","mcp_tools","bg-pink-500/20 text-pink-400") }}
+    {{ card("Users","users","bg-purple-500/20 text-purple-400") }}
   </div>
 
-  <!-- Recent sessions -->
-  <div class="bg-surface rounded-xl border border-surface-light overflow-hidden">
-    <div class="px-5 py-4 border-b border-surface-light flex items-center justify-between">
-      <h2 class="text-sm font-semibold">Последние сессии</h2>
-      <a href="/ui/projects" class="text-xs text-accent hover:text-accent-light transition">Все проекты →</a>
-    </div>
-    <div x-data="{ sessions: [], loaded: false }"
-         x-init="fetch('/api/data/projects').then(r=>r.json()).then(ps => {
-           Promise.all(ps.map(p => fetch('/api/projects/'+p.id+'/sessions').then(r=>r.json())))
-             .then(arr => { sessions = arr.flat().sort((a,b) => b.created_at.localeCompare(a.created_at)).slice(0,10); loaded = true; });
-         })">
-
-      <!-- Loading skeleton -->
-      <template x-if="!loaded">
-        <div class="p-5 space-y-3">
-          <template x-for="i in 3"><div class="h-12 bg-surface-light rounded-lg animate-pulse"></div></template>
-        </div>
-      </template>
-
-      <!-- Empty state -->
-      <template x-if="loaded && sessions.length === 0">
-        <div class="p-10 text-center text-gray-600">
-          <svg class="w-12 h-12 mx-auto mb-3 opacity-40" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25-2.25M12 13.875V7.5"/>
-          </svg>
-          <p class="text-sm">Пока нет сессий. Создайте проект и запустите агента.</p>
-        </div>
-      </template>
-
-      <!-- Session rows -->
-      <template x-if="loaded && sessions.length > 0">
-        <div class="divide-y divide-surface-light">
-          <template x-for="s in sessions" :key="s.id">
-            <div class="px-5 py-3 flex items-center gap-4 hover:bg-surface-light/50 transition">
-              <!-- Status badge -->
-              <div class="w-2 h-2 rounded-full shrink-0"
-                   :class="{
-                     'bg-emerald-500': s.status === 'completed',
-                     'bg-amber-500 animate-pulse': s.status === 'running',
-                     'bg-red-500': s.status === 'error' || s.status === 'halted',
-                     'bg-gray-500': s.status === 'created',
-                   }"></div>
-              <!-- Goal -->
-              <div class="flex-1 min-w-0">
-                <div class="text-sm truncate" x-text="s.goal"></div>
-                <div class="text-xs text-gray-500" x-text="new Date(s.created_at).toLocaleString('ru')"></div>
-              </div>
-              <!-- Status text -->
-              <span class="text-xs px-2 py-0.5 rounded-full shrink-0"
-                    :class="{
-                      'bg-emerald-900/50 text-emerald-400': s.status === 'completed',
-                      'bg-amber-900/50 text-amber-400':    s.status === 'running',
-                      'bg-red-900/50 text-red-400':        s.status === 'error' || s.status === 'halted',
-                      'bg-gray-800 text-gray-400':         true,
-                    }" x-text="s.status"></span>
-            </div>
-          </template>
-        </div>
-      </template>
-    </div>
-  </div>
-
-  <!-- MCP servers -->
-  <div class="bg-surface rounded-xl border border-surface-light overflow-hidden"
-       x-data="{ servers: [], loaded: false }"
-       x-init="fetch('/api/mcp/servers').then(r=>r.json()).then(d=>{ servers=d; loaded=true; })">
-    <div class="px-5 py-4 border-b border-surface-light">
-      <h2 class="text-sm font-semibold">MCP Серверы</h2>
-    </div>
-    <template x-if="loaded && servers.length === 0">
-      <div class="p-6 text-center text-gray-600 text-sm">Нет подключённых MCP серверов</div>
-    </template>
-    <template x-if="loaded && servers.length > 0">
-      <div class="divide-y divide-surface-light">
-        <template x-for="srv in servers" :key="srv.name">
-          <div class="px-5 py-3 flex items-center gap-4">
-            <div class="w-2 h-2 rounded-full" :class="srv.connected ? 'bg-emerald-500' : 'bg-red-500'"></div>
-            <div class="flex-1">
-              <div class="text-sm font-medium" x-text="srv.name"></div>
-              <div class="text-xs text-gray-500" x-text="srv.url"></div>
-            </div>
-            <div class="text-xs text-gray-400" x-text="srv.tools.length + ' инструментов'"></div>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 bg-[#111827] rounded-xl border border-[#1f2937] p-5" x-data="{ cfg:{}, loaded:false }" x-init="fetch('/api/health/full').then(r=>r.json()).then(d=>{ cfg=d; loaded=true; })">
+      <div class="flex items-center justify-between mb-4"><h2 class="text-sm font-semibold">Состояние</h2><span class="text-[11px] px-2 py-0.5 rounded-full bg-[#1f2937] text-gray-400" x-text="loaded ? cfg.env : '...'"></span></div>
+      <template x-if="!loaded"><div class="h-20 bg-[#1f2937] rounded-lg animate-pulse"></div></template>
+      <template x-if="loaded">
+        <div class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">LLM</div><div class="text-sm font-mono mt-1" x-text="cfg.llm?.provider + ' / ' + cfg.llm?.model"></div></div>
+            <div class="p-3 rounded-lg bg-[#030712] border" :class="cfg.db==='ok'?'border-emerald-800/50':'border-red-800/50'"><div class="text-xs text-gray-500">Postgres</div><div class="text-sm mt-1" :class="cfg.db==='ok'?'text-emerald-400':'text-red-400'" x-text="cfg.db"></div></div>
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">FalkorDB</div><div class="text-sm mt-1" :class="cfg.falkordb==='connected'?'text-emerald-400': cfg.falkordb==='disabled'?'text-gray-500':'text-amber-400'" x-text="cfg.falkordb"></div></div>
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">Langfuse</div><div class="text-sm mt-1" :class="cfg.langfuse==='connected'?'text-emerald-400': cfg.langfuse==='disabled'?'text-gray-500':'text-amber-400'" x-text="cfg.langfuse"></div></div>
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">Auth</div><div class="text-sm mt-1" x-text="cfg.auth"></div></div>
+            <div class="p-3 rounded-lg bg-[#030712] border border-[#1f2937]"><div class="text-xs text-gray-500">Workspace</div><div class="text-xs font-mono truncate" x-text="cfg.workspace"></div></div>
           </div>
-        </template>
+        </div>
+      </template>
+    </div>
+    <div class="bg-[#111827] rounded-xl border border-[#1f2937] overflow-hidden" x-data="{ servers:[], loaded:false }" x-init="fetch('/api/mcp/servers').then(r=>r.json()).then(d=>{ servers=d; loaded=true; })">
+      <div class="px-5 py-4 border-b border-[#1f2937]"><h2 class="text-sm font-semibold">MCP + Фичи</h2></div>
+      <div class="p-4 space-y-2 text-xs">
+        <div class="flex justify-between"><span class="text-gray-500">SSE Streaming</span><span class="text-emerald-400">/run/stream</span></div>
+        <div class="flex justify-between"><span class="text-gray-500">TaskIQ Async</span><span class="text-emerald-400">/run/async</span></div>
+        <div class="flex justify-between"><span class="text-gray-500">JWT</span><a href="/login" class="text-[#6366f1]">/login</a></div>
+        <div class="flex justify-between"><span class="text-gray-500">Prompts</span><a href="/ui/prompts" class="text-[#6366f1]">/ui/prompts</a></div>
+        <div class="flex justify-between"><span class="text-gray-500">Eval</span><a href="/ui/eval" class="text-[#6366f1]">/ui/eval</a></div>
       </div>
-    </template>
+      <template x-if="loaded && servers.length>0"><div class="divide-y divide-[#1f2937] border-t border-[#1f2937] mt-2"><template x-for="srv in servers" :key="srv.name"><div class="px-5 py-2 flex items-center gap-2"><div class="w-2 h-2 rounded-full" :class="srv.connected?'bg-emerald-500':'bg-red-500'"></div><span class="text-xs" x-text="srv.name"></span><span class="text-[10px] text-gray-500" x-text="srv.tools.length+' tools'"></span></div></template></div></template>
+    </div>
+  </div>
+
+  <div class="bg-[#111827] rounded-xl border border-[#1f2937] overflow-hidden">
+    <div class="px-5 py-4 border-b border-[#1f2937] flex justify-between"><h2 class="text-sm font-semibold">Последние сессии</h2><a href="/ui/projects" class="text-xs text-[#6366f1]">Все →</a></div>
+    <div x-data="{ sessions:[], loaded:false }" x-init="fetch('/api/data/projects').then(r=>r.json()).then(ps=>{ if(!ps.length){loaded=true;return;} Promise.all(ps.map(p=>fetch('/api/projects/'+p.id+'/sessions').then(r=>r.json()))).then(arr=>{ sessions=arr.flat().sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,10); loaded=true; }).catch(()=>{loaded=true;}); })">
+      <template x-if="!loaded"><div class="p-5 space-y-2"><template x-for="i in 3"><div class="h-10 bg-[#1f2937] rounded-lg animate-pulse"></div></template></div></template>
+      <template x-if="loaded && sessions.length===0"><div class="p-10 text-center text-gray-600 text-sm">Нет сессий. Создайте проект и запустите в Playground (SSE).</div></template>
+      <template x-if="loaded && sessions.length>0"><div class="divide-y divide-[#1f2937]"><template x-for="s in sessions" :key="s.id"><div class="px-5 py-3 flex items-center gap-3"><div class="w-2 h-2 rounded-full" :class="{'bg-emerald-500': s.status==='completed','bg-amber-500': s.status==='running'||s.status==='queued','bg-red-500': s.status==='error'||s.status==='halted', 'bg-gray-500': true}"></div><div class="flex-1 min-w-0"><div class="text-sm truncate" x-text="s.goal"></div><div class="text-xs text-gray-500" x-text="new Date(s.created_at).toLocaleString('ru') + (s.job_id ? ' job:'+s.job_id.slice(0,8) : '')"></div></div><span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-gray-400" x-text="s.status"></span></div></template></div></template>
+    </div>
   </div>
 </div>
 {% endblock %}
