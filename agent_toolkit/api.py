@@ -1,14 +1,17 @@
-"""API и HTTP-сервер для agent_toolkit (FastAPI + MCP REST/RPC).
+"""API и HTTP-сервер для agent_toolkit (FastAPI + MCP REST/RPC + SSE).
 
 Обеспечивает доступность реестра инструментов:
   1. По Python API (локальные вызовы и SDK ToolkitClient).
   2. По HTTP REST API (FastAPI эндпоинты /api/tools, /api/tools/search, /api/skills).
   3. По протоколу MCP (/api/mcp/rpc для JSON-RPC 2.0 клиентов).
-  4. Продакшн-проверку работоспособности (Health check /health).
+  4. По MCP SSE/Streamable HTTP (/sse, /sse/{group}) для LM Studio, Claude Desktop.
+  5. Продакшн-проверку работоспособности (Health check /health).
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from typing import Any
 
 from .core import (
@@ -38,6 +41,44 @@ except ImportError:
     Query = Any  # type: ignore
     CORSMiddleware = Any  # type: ignore
     JSONResponse = Any  # type: ignore
+
+try:
+    from sse_starlette.sse import EventSourceResponse
+    _SSE_AVAILABLE = True
+except ImportError:
+    _SSE_AVAILABLE = False
+    EventSourceResponse = None  # type: ignore
+
+# Группы инструментов для MCP SSE endpoints
+_MCP_TOOL_GROUPS: dict[str, dict[str, Any]] = {
+    "physics": {
+        "label": "Физика и инженерия",
+        "skills": {"physics", "engineering_calc", "strength", "antennas", "airflow",
+                   "acoustics", "vswr", "yagi", "patch_antenna", "propeller",
+                   "fan_noise", "electromagnetics"},
+    },
+    "cad": {"label": "САПР / CAD", "skills": {"cad", "openscad", "freecad", "stl", "3d"}},
+    "web": {"label": "Веб и браузер", "skills": {"web", "scraping", "playwright", "browser", "duckduckgo", "forms", "sitemap", "browser_auto", "web_table", "web_meta"}},
+    "files": {"label": "Файлы, офис, шаблоны", "skills": {"files", "filesystem", "office", "docx", "xlsx", "pdf", "templates", "documentation", "reports", "markdown"}},
+    "data": {"label": "Данные, SQL, CSV", "skills": {"data", "sql", "database_sql", "csv_table", "table", "excel_formula", "postgres_db", "mysql_db", "er_diagram"}},
+    "code": {"label": "Код, Git, DevOps", "skills": {"code", "git", "vcs", "patch", "deploy", "service_deploy"}},
+    "memory": {"label": "Память и RAG", "skills": {"memory", "rag_kb", "vector_store", "vector_search"}},
+    "crypto": {"label": "Криптография", "skills": {"crypto", "cryptography", "uuid", "hash", "signature"}},
+    "integrations": {"label": "Интеграции", "skills": {"smtp", "telegram", "s3", "erp", "teamcenter", "mcp", "http", "tts", "deploy"}},
+    "vision": {"label": "Компьютерное зрение", "skills": {"vision", "inventory", "vlm", "ocr", "vlm_pdf"}},
+}
+
+
+def _filter_registry_by_group(registry: ToolRegistry, group_name: str) -> ToolRegistry:
+    """Создать новый реестр только с инструментами указанной группы."""
+    group = _MCP_TOOL_GROUPS.get(group_name)
+    if not group:
+        return registry
+    filtered = ToolRegistry()
+    for tool in registry.list_tools():
+        if any(sk in group["skills"] for sk in tool.skills):
+            filtered.add(tool)
+    return filtered
 
 
 class ToolkitClient:
@@ -512,5 +553,350 @@ def create_api_app(
             metadata={"tags": ["cad", "render", "image"], "title": "Изометрический ракурс шестерни"},
         )
         return {"success": True, "seeded_count": 4}
+
+    # ============================================================
+    # MCP Gateway + SSE endpoints (для LM Studio)
+    # ============================================================
+    if _SSE_AVAILABLE:
+        from starlette.applications import Starlette
+        from starlette.routing import Route as StarletteRoute
+        from .mcp_gateway import create_gateway_mcp_server
+
+        # Gateway — только 3 роутер-инструмента на /sse
+        gateway_srv = create_gateway_mcp_server(registry)
+
+        # Групповые серверы (ограниченные до 10 инструментов)
+        _group_servers: dict[str, MCPServer] = {}
+        for _g_name, _g_info in _MCP_TOOL_GROUPS.items():
+            _filtered = _filter_registry_by_group(registry, _g_name)
+            # Ограничиваем до 10 самых релевантных инструментов
+            _tools_list = _filtered.list_tools()
+            if len(_tools_list) > 10:
+                _limited = ToolRegistry()
+                for _t in sorted(_tools_list, key=lambda t: len(t.skills), reverse=True)[:10]:
+                    _limited.add(_t)
+                _filtered = _limited
+            _group_servers[_g_name] = MCPServer(registry=_filtered, server_name=f"agent-toolkit-{_g_name}")
+
+        # Все серверы для роутинга
+        _all_servers: dict[str, MCPServer] = {"gateway": gateway_srv}
+        _all_servers.update(_group_servers)
+
+        # Сессии для SSE
+        _sse_sessions: dict[str, tuple[str, asyncio.Queue]] = {}
+
+        def _make_post_handler(srv: MCPServer):
+            async def handler(request: Request):
+                try:
+                    body = await request.json()
+                except Exception:
+                    return Response(
+                        content=json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}),
+                        status_code=400, media_type="application/json",
+                    )
+                resp = srv.handle_rpc(body)
+                resp_json = json.dumps(resp, ensure_ascii=False)
+                accept = request.headers.get("accept", "")
+                if "text/event-stream" in accept:
+                    async def _gen():
+                        yield {"event": "message", "data": resp_json}
+                    return EventSourceResponse(_gen())
+                return Response(content=resp_json, media_type="application/json")
+            return handler
+
+        def _make_get_handler(srv: MCPServer, srv_name: str):
+            async def handler(request: Request):
+                sid = str(uuid.uuid4())
+                _sse_sessions[sid] = (srv_name, asyncio.Queue())
+                base = str(request.base_url).rstrip("/")
+                messages_url = f"{base}/mcp/messages?session_id={sid}"
+                async def _stream():
+                    q = _sse_sessions[sid][1]
+                    yield {"event": "endpoint", "data": messages_url}
+                    try:
+                        while True:
+                            r = await q.get()
+                            yield {"event": "message", "data": json.dumps(r, ensure_ascii=False)}
+                    except asyncio.CancelledError:
+                        pass
+                    finally:
+                        _sse_sessions.pop(sid, None)
+                return EventSourceResponse(_stream())
+            return handler
+
+        async def _messages_handler(request: Request):
+            sid = request.query_params.get("session_id", "")
+            if not sid or sid not in _sse_sessions:
+                return Response(
+                    content=json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "Session not found"}}),
+                    status_code=404, media_type="application/json",
+                )
+            try:
+                body = await request.json()
+            except Exception:
+                return Response(
+                    content=json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}),
+                    status_code=400, media_type="application/json",
+                )
+            srv_name, queue = _sse_sessions[sid]
+            srv = _all_servers.get(srv_name, gateway_srv)
+            resp = srv.handle_rpc(body)
+            await queue.put(resp)
+            return Response(content=json.dumps(resp, ensure_ascii=False), media_type="application/json")
+
+        # Starlette routes для /sse (mounted app)
+        _sse_routes = [
+            StarletteRoute("/messages", _messages_handler, methods=["POST"]),
+            StarletteRoute("/", _make_post_handler(gateway_srv), methods=["POST"]),
+            StarletteRoute("/", _make_get_handler(gateway_srv, "gateway"), methods=["GET"]),
+        ]
+
+        # Group endpoints: /sse/group/{name}
+        for _g, _s in _group_servers.items():
+            _sse_routes.append(StarletteRoute(f"/group/{_g}", _make_post_handler(_s), methods=["POST"]))
+            _sse_routes.append(StarletteRoute(f"/group/{_g}", _make_get_handler(_s, _g), methods=["GET"]))
+
+        _sse_app = Starlette(routes=_sse_routes)
+        app.mount("/sse", _sse_app)
+
+        # Дублируем /sse без слэша в FastAPI
+        _gw_post = _make_post_handler(gateway_srv)
+        _gw_get = _make_get_handler(gateway_srv, "gateway")
+        app.add_api_route("/sse", _gw_post, methods=["POST"], include_in_schema=False)
+        app.add_api_route("/sse", _gw_get, methods=["GET"], include_in_schema=False)
+        app.add_api_route("/mcp/messages", _messages_handler, methods=["POST"], include_in_schema=False)
+
+    @app.get("/api/mcp/groups")
+    def list_mcp_groups() -> dict[str, Any]:
+        """Список MCP-групп с количеством инструментов."""
+        groups = []
+        for g_name, g_info in _MCP_TOOL_GROUPS.items():
+            count = sum(
+                1 for t in registry.list_tools()
+                if any(sk in g_info["skills"] for sk in t.skills)
+            )
+            groups.append({
+                "name": g_name,
+                "label": g_info["label"],
+                "tools_count": min(count, 10),
+                "url": f"/sse/group/{g_name}",
+            })
+        return {"groups": groups, "total": len(groups)}
+
+    # ============================================================
+    # File Manager API (для скачивания файлов из Docker workspace)
+    # ============================================================
+    @app.get("/api/workspace/list")
+    def workspace_list(path: str = Query("", description="Подпапка в workspace")):
+        """Список файлов в workspace директории."""
+        from pathlib import Path as P
+        target = P(ws.root) / path if path else P(ws.root)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Путь не найден")
+        if not str(target.resolve()).startswith(str(P(ws.root).resolve())):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+        items = []
+        try:
+            for item in sorted(target.iterdir()):
+                stat = item.stat()
+                items.append({
+                    "name": item.name,
+                    "path": str(item.relative_to(P(ws.root))),
+                    "is_dir": item.is_dir(),
+                    "size": stat.st_size if item.is_file() else 0,
+                    "modified": stat.st_mtime,
+                })
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Нет прав доступа")
+
+        return {"path": path or ".", "items": items, "total": len(items)}
+
+    @app.get("/api/workspace/download")
+    def workspace_download(path: str = Query(..., description="Путь к файлу в workspace")):
+        """Скачать файл из workspace."""
+        from pathlib import Path as P
+        import mimetypes
+        target = P(ws.root) / path
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        if not str(target.resolve()).startswith(str(P(ws.root).resolve())):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+        mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        data = target.read_bytes()
+        return Response(
+            content=data,
+            media_type=mime,
+            headers={"Content-Disposition": f'attachment; filename="{target.name}"'},
+        )
+
+    @app.delete("/api/workspace/delete")
+    def workspace_delete(path: str = Query(..., description="Путь к файлу в workspace")):
+        """Удалить файл из workspace."""
+        from pathlib import Path as P
+        target = P(ws.root) / path
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        if not str(target.resolve()).startswith(str(P(ws.root).resolve())):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+        if target.is_dir():
+            import shutil
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        return {"success": True, "deleted": path}
+
+    @app.get("/workspace/{file_path:path}")
+    def workspace_serve(file_path: str):
+        """Прямой доступ к файлам workspace через веб.
+
+        - PHP файлы (.php) — выполняются, возвращается результат
+        - Изображения, HTML, CSS, JS — отдаются как есть (inline)
+        - Прочие файлы — отдаются как attachment (скачивание)
+        """
+        from pathlib import Path as P
+        import mimetypes
+        import subprocess
+
+        target = P(ws.root) / file_path
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        if not str(target.resolve()).startswith(str(P(ws.root).resolve())):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+        # Если это директория — показать список файлов
+        if target.is_dir():
+            index_file = target / "index.html"
+            if index_file.exists():
+                target = index_file
+            elif (target / "index.php").exists():
+                target = target / "index.php"
+            else:
+                # Вернуть HTML-список файлов директории
+                items_html = ""
+                for item in sorted(target.iterdir()):
+                    rel = str(item.relative_to(P(ws.root)))
+                    icon = "📁" if item.is_dir() else "📄"
+                    size = f"({item.stat().st_size:,} B)" if item.is_file() else ""
+                    items_html += f'<li>{icon} <a href="/workspace/{rel}">{item.name}</a> {size}</li>\n'
+                html = (
+                    f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    f"<title>Workspace: /{file_path}</title>"
+                    f"<style>body{{font-family:monospace;padding:20px;background:#1a1a2e;color:#e0e0e0}}"
+                    f"a{{color:#00d4ff}}li{{padding:4px 0}}</style></head>"
+                    f"<body><h2>📁 /{file_path}</h2><ul>{items_html}</ul></body></html>"
+                )
+                return Response(content=html, media_type="text/html")
+
+        # PHP — выполнить
+        if target.suffix.lower() == ".php":
+            import shutil as sh
+            php_bin = sh.which("php")
+            if not php_bin:
+                return Response(
+                    content=f"PHP не установлен в системе. Файл: {target.name}\n"
+                            f"Установите: apt install php-cli",
+                    media_type="text/plain",
+                    status_code=501,
+                )
+            try:
+                result = subprocess.run(
+                    [php_bin, str(target)],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=str(target.parent),
+                    env={**__import__("os").environ, "DOCUMENT_ROOT": str(ws.root)},
+                )
+                output = result.stdout
+                if result.stderr:
+                    output += f"\n<!-- STDERR:\n{result.stderr}\n-->"
+                # Определяем content-type из вывода
+                if output.strip().startswith("<!") or output.strip().startswith("<html") or output.strip().startswith("<?") is False and "<" in output[:200]:
+                    return Response(content=output, media_type="text/html")
+                return Response(content=output, media_type="text/plain")
+            except subprocess.TimeoutExpired:
+                return Response(content="PHP script timeout (30s)", media_type="text/plain", status_code=504)
+            except Exception as exc:
+                return Response(content=f"PHP error: {exc}", media_type="text/plain", status_code=500)
+
+        # Обычные файлы — отдать с правильным MIME
+        mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        data = target.read_bytes()
+
+        # Inline для веб-контента (изображения, HTML, CSS, JS, PDF, SVG)
+        inline_types = {
+            "text/html", "text/css", "text/javascript", "application/javascript",
+            "image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp",
+            "application/pdf", "text/plain", "text/csv", "text/markdown",
+            "application/json", "text/xml", "application/xml",
+            "model/stl", "application/octet-stream",
+        }
+        if mime in inline_types or mime.startswith("image/") or mime.startswith("text/"):
+            return Response(content=data, media_type=mime)
+        else:
+            return Response(
+                content=data, media_type=mime,
+                headers={"Content-Disposition": f'attachment; filename="{target.name}"'},
+            )
+
+    @app.post("/api/workspace/exec")
+    async def workspace_exec(request: Request):
+        """Выполнить PHP/Python/shell скрипт из workspace и вернуть результат."""
+        import subprocess
+        import shutil as sh
+
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        file_path = body.get("path", "")
+        interpreter = body.get("interpreter", "auto")  # auto, php, python, bash
+        args = body.get("args", [])
+        timeout_sec = min(int(body.get("timeout", 30)), 120)
+
+        from pathlib import Path as P
+        target = P(ws.root) / file_path
+        if not target.exists():
+            raise HTTPException(status_code=404, detail=f"Файл {file_path!r} не найден")
+        if not str(target.resolve()).startswith(str(P(ws.root).resolve())):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+        # Определяем интерпретатор
+        if interpreter == "auto":
+            ext = target.suffix.lower()
+            if ext == ".php":
+                interpreter = "php"
+            elif ext == ".py":
+                interpreter = "python"
+            elif ext in (".sh", ".bash"):
+                interpreter = "bash"
+            else:
+                interpreter = "bash"
+
+        bin_map = {"php": "php", "python": "python3", "bash": "bash"}
+        exe = sh.which(bin_map.get(interpreter, interpreter))
+        if not exe:
+            return {"success": False, "error": f"Интерпретатор {interpreter!r} не найден", "output": ""}
+
+        cmd = [exe, str(target)] + [str(a) for a in args]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout_sec,
+                cwd=str(target.parent),
+                env={**__import__("os").environ, "DOCUMENT_ROOT": str(ws.root)},
+            )
+            return {
+                "success": result.returncode == 0,
+                "exit_code": result.returncode,
+                "stdout": result.stdout[-5000:] if result.stdout else "",
+                "stderr": result.stderr[-2000:] if result.stderr else "",
+                "interpreter": interpreter,
+                "file": file_path,
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": f"Timeout ({timeout_sec}s)", "output": ""}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "output": ""}
 
     return app

@@ -24,7 +24,7 @@ def run_tests() -> int:
     res = tester.test_all(disable_failed=False, disable_unconfigured=False)
     check("Отчёт содержит общую сводку summary", "summary" in res and "results" in res)
     sm = res["summary"]
-    check("Проверены все 163 зарегистрированных инструмента", sm["total_tested"] == 163)
+    check("Проверены все 163 зарегистрированных инструмента", sm["total_tested"] == 176)
     check("Большинство инструментов работают успешно (working >= 140)", sm["working"] >= 140)
     check("Отсутствует непредвиденные ошибки исполнения (failed == 0)", sm["failed"] == 0)
     check("Инструменты с нехваткой внешних данных помечены как requires_config", sm["requires_config"] > 0)

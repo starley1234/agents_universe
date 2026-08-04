@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "agent-toolkit": {
+      "url": "http://localhost:8090/sse",
+      "description": "Все 163 инструмента agent_toolkit"
+    },
+    "agent-toolkit-physics": {
+      "url": "http://localhost:8090/sse/physics",
+      "description": "Физика и инженерия (20+ калькуляторов)"
+    },
+    "agent-toolkit-cad": {
+      "url": "http://localhost:8090/sse/cad",
+      "description": "САПР/CAD (OpenSCAD, STL, 3D)"
+    },
+    "agent-toolkit-web": {
+      "url": "http://localhost:8090/sse/web",
+      "description": "Веб-поиск, скрапинг, браузер"
+    },
+    "agent-toolkit-files": {
+      "url": "http://localhost:8090/sse/files",
+      "description": "Файлы, офис, шаблоны"
+    },
+    "agent-toolkit-data": {
+      "url": "http://localhost:8090/sse/data",
+      "description": "Данные, SQL, CSV, Excel"
+    }
+  }
+}

@@ -1,22 +1,31 @@
-"""Интеграция с электронной почтой: SMTP (отправка) и IMAP (чтение).
+"""Интеграция с электронной почтой: SMTP (отправка с вложениями) и IMAP (чтение).
 
-ОПАСНЫЕ ДЕЙСТВИЯ: отправка письма помечена dangerous=True, так как
-отправленное сообщение невозможно отозвать.
+Поддерживает:
+  - Implicit SSL (порт 465, SMTP_USE_SSL=true) — для большинства российских хостингов
+  - STARTTLS (порт 587, SMTP_USE_SSL=false) — Gmail, Outlook
+  - Вложения файлов из workspace (attachments)
+  - HTML body (опционально)
+  - Множественные получатели (через запятую)
 
-Включает автономный тестовый режим (mock mode), позволяющий проверять
-логику без реального подключения к почтовым серверам.
+ОПАСНЫЕ ДЕЙСТВИЯ: отправка письма помечена dangerous=True.
 """
 from __future__ import annotations
 
 import email.message
+import email.mime.application
+import email.mime.multipart
+import email.mime.text
+import email.utils
 import imaplib
+import mimetypes
 import smtplib
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ..config import settings
-from ..core import Tool, ToolError
+from ..core import Tool, ToolError, Workspace
 
 
 @dataclass
@@ -27,58 +36,129 @@ class MailConfig:
     imap_port: int = settings.imap_port or 993
     username: str = settings.smtp_user or ""
     password: str = settings.smtp_password or ""
+    from_addr: str = settings.smtp_from or settings.smtp_user or ""
+    use_ssl: bool = settings.smtp_use_ssl  # True = implicit SSL (port 465), False = STARTTLS (port 587)
     mock_mode: bool = settings.mock_mode
 
 
 class MailService:
-    def __init__(self, cfg: MailConfig | None = None) -> None:
+    def __init__(self, cfg: MailConfig | None = None, ws: Workspace | None = None) -> None:
         self.cfg = cfg or MailConfig()
+        self.ws = ws
         self.sent_emails: list[dict[str, Any]] = []
         self._lock = threading.RLock()
         self.inbox_emails: list[dict[str, Any]] = [
-            {
-                "id": "1",
-                "from": "alice@example.com",
-                "subject": "Аудит завершён",
-                "body": "Прикладываем протокол соответствия.",
-            },
-            {
-                "id": "2",
-                "from": "bob@example.com",
-                "subject": "Вопрос по выкладке",
-                "body": "Проверьте долю полки на стеллаже №3.",
-            },
+            {"id": "1", "from": "alice@example.com", "subject": "Аудит завершён", "body": "Прикладываем протокол."},
+            {"id": "2", "from": "bob@example.com", "subject": "Вопрос по выкладке", "body": "Проверьте долю полки."},
         ]
 
-    def send(self, to_addr: str, subject: str, body: str) -> str:
+    def send(
+        self,
+        to_addr: str,
+        subject: str,
+        body: str,
+        attachments: list[str] | None = None,
+        html_body: str = "",
+    ) -> str:
+        """Отправить письмо с опциональными вложениями."""
         with self._lock:
             if not to_addr:
                 raise ToolError("Не указан адрес получателя (to_addr)")
+
+            # Парсим множественные получатели
+            recipients = [a.strip() for a in to_addr.split(",") if a.strip()]
+            if not recipients:
+                raise ToolError("Список получателей пуст")
+
+            # Разрешаем вложения
+            attachment_paths: list[Path] = []
+            if attachments and self.ws:
+                for att_name in attachments:
+                    p = self.ws.resolve(att_name)
+                    if p.exists() and p.is_file():
+                        attachment_paths.append(p)
+                    else:
+                        raise ToolError(f"Файл вложения {att_name!r} не найден в workspace")
+
+            # Mock mode
             if self.cfg.mock_mode:
-                self.sent_emails.append(
-                    {"to": to_addr, "subject": subject, "body": body}
-                )
+                self.sent_emails.append({
+                    "to": to_addr, "subject": subject, "body": body,
+                    "attachments": [p.name for p in attachment_paths],
+                })
+                att_info = f", вложений: {len(attachment_paths)}" if attachment_paths else ""
                 return (
                     f"[MOCK] Письмо отправлено для {to_addr} "
-                    f"(тема: {subject!r}, длина: {len(body)} симв.)"
+                    f"(тема: {subject!r}, {len(body)} симв.{att_info})"
                 )
 
-            msg = email.message.EmailMessage()
-            msg["From"] = self.cfg.username
-            msg["To"] = to_addr
+            # Определяем From
+            from_addr = self.cfg.from_addr or self.cfg.username
+            if not from_addr:
+                raise ToolError("Не указан MAIL_FROM_ADDRESS или MAIL_USERNAME")
+
+            # Создаём MIME-сообщение
+            if attachment_paths or html_body:
+                msg = email.mime.multipart.MIMEMultipart("mixed")
+                # Текстовая и HTML части
+                alt = email.mime.multipart.MIMEMultipart("alternative")
+                alt.attach(email.mime.text.MIMEText(body, "plain", "utf-8"))
+                if html_body:
+                    alt.attach(email.mime.text.MIMEText(html_body, "html", "utf-8"))
+                msg.attach(alt)
+                # Вложения
+                for att_path in attachment_paths:
+                    ctype, _ = mimetypes.guess_type(str(att_path))
+                    if ctype is None:
+                        ctype = "application/octet-stream"
+                    maintype, subtype = ctype.split("/", 1)
+                    with open(att_path, "rb") as f:
+                        att = email.mime.application.MIMEApplication(
+                            f.read(), _subtype=subtype
+                        )
+                    att.add_header(
+                        "Content-Disposition", "attachment",
+                        filename=att_path.name,
+                    )
+                    msg.attach(att)
+            else:
+                msg = email.message.EmailMessage()
+                msg.set_content(body)
+
+            msg["From"] = from_addr
+            msg["To"] = ", ".join(recipients)
             msg["Subject"] = subject
-            msg.set_content(body)
+            msg["Date"] = email.utils.formatdate(localtime=True)
 
+            # Отправка
             try:
-                with smtplib.SMTP(self.cfg.smtp_host, self.cfg.smtp_port, timeout=10) as server:
-                    server.starttls()
-                    if self.cfg.username and self.cfg.password:
-                        server.login(self.cfg.username, self.cfg.password)
-                    server.send_message(msg)
+                if self.cfg.use_ssl:
+                    # Implicit SSL (порт 465) — большинство российских хостингов
+                    with smtplib.SMTP_SSL(
+                        self.cfg.smtp_host, self.cfg.smtp_port, timeout=15
+                    ) as server:
+                        if self.cfg.username and self.cfg.password:
+                            server.login(self.cfg.username, self.cfg.password)
+                        server.sendmail(from_addr, recipients, msg.as_string())
+                else:
+                    # STARTTLS (порт 587) — Gmail, Outlook
+                    with smtplib.SMTP(
+                        self.cfg.smtp_host, self.cfg.smtp_port, timeout=15
+                    ) as server:
+                        server.ehlo()
+                        server.starttls()
+                        server.ehlo()
+                        if self.cfg.username and self.cfg.password:
+                            server.login(self.cfg.username, self.cfg.password)
+                        server.sendmail(from_addr, recipients, msg.as_string())
             except (smtplib.SMTPException, OSError) as exc:
-                raise ToolError(f"Ошибка SMTP при отправке письма: {exc}") from exc
+                raise ToolError(
+                    f"Ошибка SMTP ({'SSL' if self.cfg.use_ssl else 'STARTTLS'} "
+                    f"{self.cfg.smtp_host}:{self.cfg.smtp_port}): {exc}"
+                ) from exc
 
-            return f"Письмо для {to_addr} успешно отправлено"
+            att_info = f", вложений: {len(attachment_paths)}" if attachment_paths else ""
+            return f"Письмо для {to_addr} успешно отправлено (тема: {subject!r}{att_info})"
 
     def read_inbox(self, limit: int = 5) -> str:
         with self._lock:
@@ -86,10 +166,7 @@ class MailService:
                 msgs = self.inbox_emails[:limit]
                 if not msgs:
                     return "(Папка Входящие пуста)"
-                lines = [
-                    f"- [{m['id']}] от {m['from']} — {m['subject']}: {m['body']}"
-                    for m in msgs
-                ]
+                lines = [f"- [{m['id']}] от {m['from']} — {m['subject']}: {m['body']}" for m in msgs]
                 return "Входящие сообщения:\n" + "\n".join(lines)
 
             try:
@@ -114,12 +191,27 @@ class MailService:
                 raise ToolError(f"Ошибка IMAP при чтении почты: {exc}") from exc
 
 
-def build_smtp_tools(service: MailService | None = None) -> list[Tool]:
+def build_smtp_tools(
+    service: MailService | None = None, ws: Workspace | None = None
+) -> list[Tool]:
     """Собрать инструменты для работы с электронной почтой (SMTP/IMAP)."""
-    mail = service or MailService()
+    mail = service or MailService(ws=ws)
 
-    def send_email(to_addr: str, subject: str, body: str) -> str:
-        return mail.send(to_addr, subject, body)
+    def send_email(
+        to_addr: str,
+        subject: str,
+        body: str,
+        attachments_json: str = "[]",
+        html_body: str = "",
+    ) -> str:
+        try:
+            import json as _json
+            attachments = _json.loads(attachments_json) if attachments_json else []
+        except ValueError as exc:
+            raise ToolError(f"Некорректный JSON в attachments_json: {exc}") from exc
+        if not isinstance(attachments, list):
+            attachments = []
+        return mail.send(to_addr, subject, body, attachments=attachments, html_body=html_body)
 
     def read_emails(limit: int = 5) -> str:
         return mail.read_inbox(limit=limit)
@@ -127,29 +219,34 @@ def build_smtp_tools(service: MailService | None = None) -> list[Tool]:
     return [
         Tool(
             name="smtp.send_email",
-            description="Отправить электронное письмо через SMTP. Опасное действие (dangerous=True).",
+            description="Отправить email через SMTP с опциональными вложениями файлов из workspace. Поддерживает SSL (порт 465) и STARTTLS (порт 587).",
             parameters={
                 "type": "object",
                 "properties": {
-                    "to_addr": {"type": "string", "description": "Email получателя"},
+                    "to_addr": {"type": "string", "description": "Email получателя (или несколько через запятую)"},
                     "subject": {"type": "string", "description": "Тема письма"},
                     "body": {"type": "string", "description": "Текст сообщения"},
+                    "attachments_json": {
+                        "type": "string",
+                        "description": 'JSON-массив путей к файлам в workspace для вложения (\'["report.xlsx", "chart.png"]\')',
+                    },
+                    "html_body": {"type": "string", "description": "Опциональный HTML-вариант письма"},
                 },
                 "required": ["to_addr", "subject", "body"],
             },
             fn=send_email,
-            skills=["email", "messaging", "smtp", "imap", "communication", "integrations"],
+            skills=["email", "messaging", "smtp", "communication", "integrations"],
             attributes={
-                "category": "messaging",
+                "category": "integration",
                 "channel": "email",
                 "read_only": False,
                 "dangerous": True,
                 "requires_network": True,
                 "resource_type": "email",
                 "speed": "medium",
-                "tags": ["email", "smtp", "send", "mail", "communication"],
+                "tags": ["email", "smtp", "send", "mail", "attachment"],
             },
-            example='smtp.send_email(to_addr="test@example.com", subject="Отчёт", body="Аудит готов.")',
+            example='smtp.send_email(to_addr="user@mail.ru", subject="Отчёт", body="Во вложении", attachments_json=\'["report.xlsx"]\')',
         ),
         Tool(
             name="smtp.read_emails",
@@ -157,23 +254,20 @@ def build_smtp_tools(service: MailService | None = None) -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Количество сообщений для отображения (по умолчанию 5)",
-                    }
+                    "limit": {"type": "integer", "description": "Количество сообщений (по умолчанию 5)"},
                 },
             },
             fn=read_emails,
-            skills=["email", "messaging", "smtp", "imap", "communication", "integrations"],
+            skills=["email", "messaging", "imap", "communication", "integrations"],
             attributes={
-                "category": "messaging",
+                "category": "integration",
                 "channel": "email",
                 "read_only": True,
                 "dangerous": False,
                 "requires_network": True,
                 "resource_type": "email",
                 "speed": "medium",
-                "tags": ["email", "imap", "read", "inbox", "communication"],
+                "tags": ["email", "imap", "read", "inbox"],
             },
             example="smtp.read_emails(limit=3)",
         ),

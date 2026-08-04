@@ -31,7 +31,7 @@ def run_tests() -> int:
 
         section("2. Локальные файловые инструменты (files.*)")
         tools = {t.name: t for t in build_file_tools(ws)}
-        check("все инструменты зарегистрированы", len(tools) == 7)
+        check("все инструменты зарегистрированы", len(tools) == 10)
 
         # write_file
         res_write = tools["files.write_file"].execute(

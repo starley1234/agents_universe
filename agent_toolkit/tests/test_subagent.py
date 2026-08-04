@@ -14,7 +14,7 @@ from tests.harness import check, section, summary
 def run_tests() -> int:
     section("1. Многоагентная оркестрация, субагенты и MapReduce (agent.*)")
     tools = {t.name: t for t in build_subagent_tools()}
-    check("зарегистрировано 3 инструмента agent", len(tools) == 3)
+    check("зарегистрировано 4 инструмента agent", len(tools) == 4)
 
     res_list = tools["agent.list_agents"].execute()
     check("agent.list_agents возвращает список (researcher, coder, auditor)", "researcher" in res_list and "auditor" in res_list)

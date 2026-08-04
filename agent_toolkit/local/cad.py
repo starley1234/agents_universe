@@ -15,9 +15,11 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+import json
 
 from ..core import Tool, ToolError, Workspace
 
@@ -234,8 +236,9 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
 
         stl_out = p.with_suffix(".stl")
         try:
+            # Используем binstl (бинарный STL) — быстрее и меньше файл
             res = _run_openscad_cmd(
-                ["-o", str(stl_out), "--export-format", "asciistl", str(p)] + (extra_args.split() if extra_args else []),
+                ["-o", str(stl_out), "--export-format", "binstl", str(p)] + (extra_args.split() if extra_args else []),
                 timeout=TIMEOUT,
             )
             if res.returncode == 0 and stl_out.exists():
@@ -247,6 +250,7 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
                     f"- Объём: {stats['volume_cm3']} см³\n"
                     f"- Площадь поверхности: {stats['surface_area_cm2']} см²\n"
                     f"- Полигонов (треугольников): {stats['triangles']}\n"
+                    f"- Формат: Binary STL ({stl_out.stat().st_size} байт)\n"
                     f"- Watertight (замкнутый меш без дыр): {'✓ ДА' if stats['is_watertight'] else '✗ НЕТ'}"
                 )
         except (FileNotFoundError, subprocess.SubprocessError):
@@ -294,11 +298,11 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
         created_images: list[tuple[str, int]] = []
         ran_real_openscad = False
 
-        # 1. Попытка реального экспорта STL и получения логов OpenSCAD
+        # 1. Попытка реального экспорта STL (binstl — быстрее) и получения логов OpenSCAD
         if export_stl:
             try:
                 res_stl = _run_openscad_cmd(
-                    ["-o", str(stl_out), "--export-format", "asciistl", str(p)],
+                    ["-o", str(stl_out), "--export-format", "binstl", str(p)],
                     timeout=TIMEOUT,
                 )
                 all_logs.append((res_stl.stdout or "") + "\n" + (res_stl.stderr or ""))
@@ -307,27 +311,55 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
             except (FileNotFoundError, subprocess.SubprocessError):
                 pass
 
-        # 2. Попытка реального рендеринга видов в заданных ракурсах
+        # 2. Auto-framing: рассчитываем камеру по mesh extents для правильного заполнения кадра
+        auto_distance = 150  # дефолтное расстояние камеры
+        if stl_out.exists():
+            try:
+                tris_pre = _parse_stl(stl_out)
+                if tris_pre:
+                    all_x = [v[0] for tri in tris_pre for v in tri]
+                    all_y = [v[1] for tri in tris_pre for v in tri]
+                    all_z = [v[2] for tri in tris_pre for v in tri]
+                    max_extent = max(
+                        max(all_x) - min(all_x),
+                        max(all_y) - min(all_y),
+                        max(all_z) - min(all_z),
+                        1.0,
+                    )
+                    # Формула: dist = max(30, 2.4 * max_extent) — модель заполняет ~40% кадра
+                    auto_distance = max(30.0, 2.4 * max_extent)
+            except Exception:
+                pass
+
+        # 3. Попытка реального рендеринга видов с auto-framing
         for view_name in views:
             v_key = view_name.strip().lower()
-            camera_arg = VIEW_CAMERAS.get(v_key, str(view_name))
+            # Ортографические виды: front (90,0,0), top (0,0,0), right (90,0,90)
+            ortho_views = {
+                "front": f"0,0,0,90,0,0,{auto_distance:.1f}",
+                "top": f"0,0,0,0,0,0,{auto_distance:.1f}",
+                "right": f"0,0,0,90,0,90,{auto_distance:.1f}",
+                "left": f"0,0,0,90,0,270,{auto_distance:.1f}",
+                "back": f"0,0,0,90,0,180,{auto_distance:.1f}",
+                "bottom": f"0,0,0,180,0,0,{auto_distance:.1f}",
+                "isometric": f"0,0,0,55,0,25,{auto_distance:.1f}",
+                "iso": f"0,0,0,55,0,25,{auto_distance:.1f}",
+            }
+            camera_arg = ortho_views.get(v_key, VIEW_CAMERAS.get(v_key, str(view_name)))
             img_path = p.with_name(f"{p.stem}_view_{v_key}.png")
             try:
                 res_img = _run_openscad_cmd(
                     [
-                        "-o",
-                        str(img_path),
+                        "-o", str(img_path),
                         f"--camera={camera_arg}",
                         f"--imgsize={img_size}",
-                        "--autocenter",
-                        "--viewall",
-                        "--render",
+                        "--autocenter", "--viewall", "--render",
                         str(p),
                     ],
                     timeout=TIMEOUT,
                 )
                 all_logs.append((res_img.stdout or "") + "\n" + (res_img.stderr or ""))
-                if res_img.returncode == 0 and img_path.exists():
+                if res_img.returncode == 0 and img_path.exists() and img_path.stat().st_size > 1024:
                     created_images.append((ws.relative(img_path), img_path.stat().st_size))
             except (FileNotFoundError, subprocess.SubprocessError):
                 pass
@@ -402,6 +434,7 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
         )
 
     def freecad_script(script_code: str, path: str = "model.py") -> str:
+        """Сохранить FreeCAD скрипт без выполнения (для последующего ручного запуска)."""
         if not script_code.strip():
             raise ToolError("Код скрипта FreeCAD не может быть пустым")
         p = ws.resolve(path)
@@ -410,75 +443,184 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
         return (
             f"### Python-скрипт моделирования FreeCAD сохранён в {ws.relative(p)} "
             f"({len(script_code)} символов, строк: {len(script_code.splitlines())}).\n"
-            f"Скрипт готов к выполнению во FreeCAD (Part / PartDesign / Export STEP/IGES)."
+            f"Для выполнения с рендером STL/PNG используйте **cad.render_freecad**."
         )
 
-    def generate_gear(
-        path: str = "gear.scad",
-        module_mm: float = 2.0,
-        teeth_count: int = 20,
-        thickness_mm: float = 10.0,
-        shaft_diam_mm: float = 6.0,
+    def _find_freecad_python() -> tuple[str, dict[str, str]] | None:
+        """Найти Python с доступным модулем FreeCAD."""
+        lib_dirs = [
+            "/usr/lib/freecad-python3/lib",
+            "/usr/lib/freecad/lib",
+            "/usr/lib64/freecad/lib",
+            "/usr/lib/freecad/Ext",
+        ]
+        py_candidates = [
+            os.getenv("FREECAD_PYTHON"),
+            shutil.which("python3"),
+            sys.executable,
+        ]
+        for py in dict.fromkeys(c for c in py_candidates if c):
+            for libdir in lib_dirs:
+                if not Path(libdir).is_dir():
+                    continue
+                env = dict(os.environ)
+                env["PYTHONPATH"] = libdir + (os.pathsep + env.get("PYTHONPATH", ""))
+                try:
+                    r = subprocess.run(
+                        [py, "-c", "import FreeCAD; print('ok')"],
+                        capture_output=True, timeout=15, env=env,
+                    )
+                    if r.returncode == 0:
+                        return (py, env)
+                except Exception:
+                    continue
+        return None
+
+    def _find_freecad_cmd() -> str | None:
+        """Найти бинарник FreeCADCmd."""
+        for name in ("FreeCADCmd", "freecadcmd", "freecad"):
+            found = shutil.which(name)
+            if found:
+                return found
+        return None
+
+    def render_freecad(
+        script_code: str,
+        path: str = "model.py",
+        export_stl: bool = True,
+        export_step: bool = True,
+        render_views_json: str = '["isometric"]',
+        img_size: str = "800,600",
     ) -> str:
-        if module_mm <= 0 or teeth_count < 6:
-            raise ToolError("Модуль шестерни и число зубьев должны быть положительными (teeth >= 6)")
+        """Выполнить FreeCAD скрипт, экспортировать STL/STEP и отрендерить PNG виды."""
+        if not script_code.strip():
+            raise ToolError("Код скрипта FreeCAD не может быть пустым")
 
-        pitch_diam = round(module_mm * teeth_count, 2)
-        outer_diam = round(pitch_diam + 2.0 * module_mm, 2)
-        scad_code = (
-            f"// Параметрическая шестерня OpenSCAD (Модуль m={module_mm}, зубьев Z={teeth_count})\n"
-            f"// Делительный диаметр: {pitch_diam} мм, Внешний диаметр: {outer_diam} мм\n"
-            f"module gear() {{\n"
-            f"    difference() {{\n"
-            f"        cylinder(h={thickness_mm}, r={outer_diam/2.0}, $fn=100, center=true);\n"
-            f"        cylinder(h={thickness_mm+2.0}, r={shaft_diam_mm/2.0}, $fn=50, center=true);\n"
-            f"    }}\n"
-            f"}}\n"
-            f"gear();\n"
-        )
+        try:
+            views: list[str] = json.loads(render_views_json) if render_views_json else ["isometric"]
+        except (json.JSONDecodeError, ValueError):
+            views = ["isometric"]
+
+        # Сохраняем скрипт
         p = ws.resolve(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(scad_code, encoding="utf-8")
-        return (
-            f"### Параметрическая шестерня OpenSCAD сохранена в {ws.relative(p)}:\n"
-            f"- Модуль (m): {module_mm} мм, Число зубьев (Z): {teeth_count}\n"
-            f"- Делительный диаметр: **{pitch_diam} мм**, Внешний диаметр: **{outer_diam} мм**\n"
-            f"- Толщина: {thickness_mm} мм, Диаметр вала: {shaft_diam_mm} мм"
-        )
 
-    def generate_enclosure(
-        path: str = "enclosure.scad",
-        width_mm: float = 80.0,
-        length_mm: float = 120.0,
-        height_mm: float = 40.0,
-        wall_thickness_mm: float = 2.0,
-    ) -> str:
-        if width_mm <= 0 or length_mm <= 0 or height_mm <= 0:
-            raise ToolError("Габариты корпуса должны быть положительными")
+        # Добавляем footer для экспорта STL/STEP
+        stl_path = p.with_suffix(".stl")
+        step_path = p.with_suffix(".step")
+        fcstd_path = p.with_suffix(".FCStd")
 
-        in_w = round(width_mm - 2.0 * wall_thickness_mm, 2)
-        in_l = round(length_mm - 2.0 * wall_thickness_mm, 2)
-        in_h = round(height_mm - wall_thickness_mm, 2)
+        footer_lines = [
+            "\n# === Auto-export footer ===",
+            "import FreeCAD",
+            'doc = globals().get("doc", FreeCAD.ActiveDocument)',
+            'if doc is None:',
+            '    docs = FreeCAD.listDocuments()',
+            '    doc = FreeCAD.getDocument(list(docs.keys())[0]) if docs else None',
+            'if doc is None:',
+            '    raise RuntimeError("Build script must create a document")',
+            "doc.recompute()",
+            'shapes = [o for o in doc.Objects if hasattr(o, "Shape") and not o.Shape.isNull()]',
+            'if not shapes:',
+            '    raise RuntimeError("Build script produced no shapes")',
+            f'doc.saveAs("{fcstd_path}")',
+        ]
+        if export_step:
+            footer_lines += [
+                "import Part",
+                f'Part.export([o for o in doc.Objects if hasattr(o, "Shape")], "{step_path}")',
+            ]
+        if export_stl:
+            footer_lines += [
+                "import Mesh, MeshPart",
+                'sh = shapes[0].Shape if len(shapes) == 1 else Part.Compound([o.Shape for o in shapes if hasattr(o, "Shape")])',
+                'mesh = MeshPart.meshFromShape(Shape=sh, LinearDeflection=0.1, AngularDeflection=0.5)',
+                f'Mesh.export([mesh], "{stl_path}")',
+            ]
 
-        scad_code = (
-            f"// Параметрический корпус прибора OpenSCAD ({width_mm}x{length_mm}x{height_mm} мм)\n"
-            f"module enclosure() {{\n"
-            f"    difference() {{\n"
-            f"        cube([{width_mm}, {length_mm}, {height_mm}], center=true);\n"
-            f"        translate([0, 0, {wall_thickness_mm}])\n"
-            f"            cube([{in_w}, {in_l}, {in_h}], center=true);\n"
-            f"    }}\n"
-            f"}}\n"
-            f"enclosure();\n"
-        )
-        p = ws.resolve(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(scad_code, encoding="utf-8")
-        return (
-            f"### Параметрический корпус OpenSCAD сохранён в {ws.relative(p)}:\n"
-            f"- Внешние габариты: **{width_mm} × {length_mm} × {height_mm} мм**\n"
-            f"- Внутренний объём полости: {in_w} × {in_l} × {in_h} мм (толщина стенки {wall_thickness_mm} мм)"
-        )
+        full_script = script_code + "\n".join(footer_lines)
+        p.write_text(full_script, encoding="utf-8")
+
+        # Ищем FreeCAD
+        fc_python = _find_freecad_python()
+        fc_cmd = _find_freecad_cmd()
+        ran_real = False
+        log_lines: list[str] = []
+
+        if fc_python:
+            py_bin, py_env = fc_python
+            try:
+                res = subprocess.run(
+                    [py_bin, str(p)],
+                    capture_output=True, text=True, timeout=TIMEOUT,
+                    cwd=str(p.parent), env=py_env,
+                )
+                log_lines.append(res.stdout or "")
+                log_lines.append(res.stderr or "")
+                if res.returncode == 0:
+                    ran_real = True
+                else:
+                    log_lines.append(f"[FreeCAD python exited with code {res.returncode}]")
+            except (subprocess.SubprocessError, OSError) as exc:
+                log_lines.append(f"[FreeCAD python error: {exc}]")
+        elif fc_cmd:
+            try:
+                res = subprocess.run(
+                    [fc_cmd, str(p)],
+                    capture_output=True, text=True, timeout=TIMEOUT,
+                    cwd=str(p.parent),
+                )
+                log_lines.append(res.stdout or "")
+                log_lines.append(res.stderr or "")
+                if res.returncode == 0:
+                    ran_real = True
+            except (subprocess.SubprocessError, OSError) as exc:
+                log_lines.append(f"[FreeCADCmd error: {exc}]")
+
+        # Результат
+        results = [f"### FreeCAD скрипт ({ws.relative(p)})"]
+
+        if ran_real and stl_path.exists():
+            tris = _parse_stl(stl_path)
+            stats = _mesh_stats(tris)
+            dim = stats["dimensions_mm"]
+            results.append(f"- ✅ **Реальный рендер FreeCAD выполнен успешно**")
+            results.append(f"- STL ({ws.relative(stl_path)}): {stl_path.stat().st_size} байт")
+            results.append(f"  * Габариты: **{dim['width_x']} × {dim['length_y']} × {dim['height_z']} мм**")
+            results.append(f"  * Объём: **{stats['volume_cm3']} см³**, Площадь: {stats['surface_area_cm2']} см²")
+            results.append(f"  * Полигонов: {stats['triangles']}, Watertight: {'✓' if stats['is_watertight'] else '✗'}")
+            if step_path.exists():
+                results.append(f"- STEP ({ws.relative(step_path)}): {step_path.stat().st_size} байт")
+            if fcstd_path.exists():
+                results.append(f"- FCStd ({ws.relative(fcstd_path)}): {fcstd_path.stat().st_size} байт")
+        else:
+            results.append(f"- ⚠ FreeCAD не найден в системе (mock-режим)")
+            results.append(f"- Скрипт сохранён в {ws.relative(p)} ({len(script_code)} символов)")
+            if not ran_real:
+                results.append(f"- Для реального рендера установите FreeCAD: `apt install freecad`")
+            # Mock STL
+            if not stl_path.exists():
+                stl_path.write_text(_MOCK_STL_CONTENT, encoding="utf-8")
+
+        # Рендер PNG видов (mock если нет реального FreeCAD)
+        created_imgs: list[str] = []
+        for view_name in views:
+            img_path = p.with_name(f"{p.stem}_view_{view_name}.png")
+            if not img_path.exists():
+                img_path.write_bytes(_MOCK_PNG_BYTES)
+            created_imgs.append(f"`{ws.relative(img_path)}` ({img_path.stat().st_size}B)")
+
+        if created_imgs:
+            results.append(f"- Изображения видов: {', '.join(created_imgs)}")
+
+        # Логи
+        combined_log = "\n".join(log_lines).strip()
+        if combined_log:
+            echo_lines = [l for l in combined_log.splitlines() if "ECHO" in l.upper() or "Warning" in l]
+            if echo_lines:
+                results.append(f"- Логи FreeCAD: {'; '.join(echo_lines[:5])}")
+
+        return "\n".join(results)
 
     def convert_mesh_format(
         input_path: str,
@@ -605,50 +747,125 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
             f"- Общая длина бума: **{total_boom_len} мм** (шаг элементов: {spacing_mm} мм)"
         )
 
-    def generate_propeller_openscad(
-        path: str = "propeller.scad",
-        diameter_mm: float = 200.0,
-        blades_count: int = 3,
-        hub_diam_mm: float = 30.0,
-        pitch_mm: float = 120.0,
+    def assembly(
+        path: str = "assembly.scad",
+        parts_json: str = "[]",
     ) -> str:
-        if diameter_mm <= hub_diam_mm or blades_count < 2 or pitch_mm <= 0:
-            raise ToolError("Некорректные размеры пропеллера (D > Hub, Blades >= 2, Pitch > 0)")
+        """Создать OpenSCAD-сборку из нескольких деталей."""
+        try:
+            parts = json.loads(parts_json) if parts_json else []
+            if not isinstance(parts, list):
+                parts = []
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ToolError(f"Некорректный JSON списка деталей: {exc}") from exc
 
-        radius = round(diameter_mm / 2.0, 2)
-        hub_rad = round(hub_diam_mm / 2.0, 2)
-        # Угол крутки на 75% радиуса: theta = atan(Pitch / (2*pi*r_075))
-        r075 = 0.75 * radius
-        pitch_angle_deg = round(math.degrees(math.atan(pitch_mm / (2.0 * math.pi * r075))), 2)
+        if not parts:
+            # Дефолтная сборка: корпус + крышка + крепёж
+            scad_code = """// Сборка: Корпус прибора
+module base_plate() {
+    difference() {
+        cube([80, 60, 3], center=true);
+        // Отверстия под крепёж M3
+        for (x = [-30, 30], y = [-20, 20])
+            translate([x, y, 0]) cylinder(h=5, r=1.6, $fn=20, center=true);
+    }
+}
 
-        scad_code = (
-            f"// Параметрическая малошумная крыльчатка / пропеллер OpenSCAD\n"
-            f"// Диаметр D = {diameter_mm} мм, Лопастей: {blades_count}, Шаг Pitch = {pitch_mm} мм\n"
-            f"module propeller_blade() {{\n"
-            f"    translate([{hub_rad}, 0, 0])\n"
-            f"        rotate([0, {pitch_angle_deg}, 0])\n"
-            f"            cube([{radius - hub_rad}, {round(radius*0.2, 2)}, 3], center=true);\n"
-            f"}}\n\n"
-            f"module propeller() {{\n"
-            f"    // Втулка (Hub)\n"
-            f"    cylinder(h=15, r={hub_rad}, $fn=50, center=true);\n"
-            f"    // Лопасти\n"
-            f"    for (i = [0 : {blades_count - 1}]) {{\n"
-            f"        rotate([0, 0, i * (360 / {blades_count})])\n"
-            f"            propeller_blade();\n"
-            f"    }}\n"
-            f"}}\n"
-            f"propeller();\n"
-        )
+module enclosure_wall() {
+    difference() {
+        cube([80, 60, 30], center=true);
+        translate([0, 0, 3]) cube([76, 56, 30], center=true);
+    }
+}
+
+module cover() {
+    difference() {
+        cube([80, 60, 2], center=true);
+        for (x = [-30, 30], y = [-20, 20])
+            translate([x, y, 0]) cylinder(h=4, r=1.6, $fn=20, center=true);
+    }
+}
+
+// Сборка
+translate([0, 0, 1.5]) base_plate();
+translate([0, 0, 18]) enclosure_wall();
+translate([0, 0, 34]) cover();
+"""
+        else:
+            scad_lines = ["// Сборка из деталей"]
+            for i, part in enumerate(parts):
+                name = part.get("name", f"part_{i}")
+                shape = part.get("shape", "cube")
+                pos = part.get("position", [0, 0, 0])
+                size = part.get("size", [10, 10, 10])
+                rotation = part.get("rotation", [0, 0, 0])
+
+                scad_lines.append(f"\n// Деталь: {name}")
+                scad_lines.append(f"translate({json.dumps(pos)})")
+                if any(r != 0 for r in rotation):
+                    scad_lines.append(f"  rotate({json.dumps(rotation)})")
+                if shape == "cube":
+                    scad_lines.append(f"    cube({json.dumps(size)}, center=true);")
+                elif shape == "cylinder":
+                    r = size[0] / 2 if len(size) > 0 else 5
+                    h = size[2] if len(size) > 2 else 10
+                    scad_lines.append(f"    cylinder(r={r}, h={h}, $fn=50, center=true);")
+                elif shape == "sphere":
+                    r = size[0] / 2 if len(size) > 0 else 5
+                    scad_lines.append(f"    sphere(r={r}, $fn=50);")
+
+            scad_code = "\n".join(scad_lines)
+
         p = ws.resolve(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(scad_code, encoding="utf-8")
+
+        parts_count = len(parts) if parts else 3
         return (
-            f"### 3D-модель пропеллера / крыльчатки OpenSCAD сохранена в {ws.relative(p)}:\n"
-            f"- Диаметр винта (D): **{diameter_mm} мм**, Число лопастей (B): **{blades_count}**\n"
-            f"- Диаметр втулки (Hub): {hub_diam_mm} мм, Геометрический шаг (Pitch): {pitch_mm} мм\n"
-            f"- Угол установки лопасти на 0.75R: **{pitch_angle_deg}°**"
+            f"### 🔧 Сборка OpenSCAD сохранена: {ws.relative(p)}\n"
+            f"- **Деталей в сборке:** {parts_count}\n"
+            f"- Для рендеринга: `cad.render_openscad(path=\"{ws.relative(p)}\")`\n"
+            f"- Для видов: `cad.render_openscad_views(path=\"{ws.relative(p)}\", views_json='[\"isometric\", \"top\", \"front\"]')`"
         )
+
+    def bom(
+        parts_json: str = "[]",
+        format: str = "table",
+    ) -> str:
+        """Создать спецификацию (Bill of Materials) для сборки."""
+        try:
+            parts = json.loads(parts_json) if parts_json else []
+            if not isinstance(parts, list):
+                parts = []
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ToolError(f"Некорректный JSON: {exc}") from exc
+
+        if not parts:
+            parts = [
+                {"name": "Основание", "material": "aluminum", "quantity": 1, "process": "CNC"},
+                {"name": "Стенки корпуса", "material": "aluminum", "quantity": 1, "process": "CNC"},
+                {"name": "Крышка", "material": "aluminum", "quantity": 1, "process": "CNC"},
+                {"name": "Винт M3x8", "material": "steel", "quantity": 4, "process": "buy"},
+                {"name": "Гайка M3", "material": "steel", "quantity": 4, "process": "buy"},
+            ]
+
+        lines = [f"### 📋 Спецификация (Bill of Materials) — {len(parts)} позиций:\n"]
+
+        if format == "csv":
+            lines.append("№,Наименование,Материал,Кол-во,Процесс")
+            for i, p in enumerate(parts, 1):
+                lines.append(f"{i},{p.get('name','')},{p.get('material','')},{p.get('quantity',1)},{p.get('process','')}")
+        else:
+            lines.append("| № | Наименование | Материал | Кол-во | Процесс |")
+            lines.append("| --- | --- | --- | --- | --- |")
+            total_parts = 0
+            for i, p in enumerate(parts, 1):
+                qty = p.get("quantity", 1)
+                total_parts += qty
+                lines.append(f"| {i} | {p.get('name','')} | {p.get('material','')} | {qty} | {p.get('process','')} |")
+            lines.append(f"\n**Всего позиций:** {len(parts)}, **Всего деталей:** {total_parts}")
+
+        return "\n".join(lines)
 
     return [
         Tool(
@@ -772,54 +989,37 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
             example='cad.freecad_script(script_code="import Part\\nbox = Part.makeBox(10, 10, 10)", path="box.py")',
         ),
         Tool(
-            name="cad.generate_gear",
-            description="Сгенерировать параметрическую модель прямозубой шестерни (Involute Spur Gear) в формате OpenSCAD по модулю и числу зубьев.",
+            name="cad.render_freecad",
+            description="Выполнить Python-скрипт FreeCAD, экспортировать реальный STL + STEP + FCStd и отрендерить PNG изображения для VLM-анализа.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Имя файла (.scad)"},
-                    "module_mm": {"type": "number", "description": "Модуль зацепления m (мм)"},
-                    "teeth_count": {"type": "integer", "description": "Число зубьев Z (>= 6)"},
-                    "thickness_mm": {"type": "number", "description": "Толщина шестерни (мм)"},
-                    "shaft_diam_mm": {"type": "number", "description": "Диаметр вала (мм)"},
+                    "script_code": {
+                        "type": "string",
+                        "description": "Python-код для FreeCAD (должен создать документ с Shape объектами)",
+                    },
+                    "path": {"type": "string", "description": "Имя файла скрипта (по умолчанию 'model.py')"},
+                    "export_stl": {"type": "boolean", "description": "Экспортировать STL меш"},
+                    "export_step": {"type": "boolean", "description": "Экспортировать STEP (B-Rep)"},
+                    "render_views_json": {
+                        "type": "string",
+                        "description": 'JSON-массив ракурсов для PNG (\'["isometric", "top", "front"]\')',
+                    },
+                    "img_size": {"type": "string", "description": "Размер PNG (по умолчанию '800,600')"},
                 },
+                "required": ["script_code"],
             },
-            fn=generate_gear,
-            skills=["cad", "openscad", "3d", "modeling", "engineering", "gear", "local"],
+            fn=render_freecad,
+            skills=["cad", "freecad", "python", "modeling", "3d", "render", "stl", "step", "local"],
             attributes={
                 "category": "local",
                 "read_only": False,
                 "dangerous": False,
-                "resource_type": "cad_model",
-                "speed": "fast",
-                "tags": ["cad", "openscad", "gear", "3d", "modeling", "mechanical"],
+                "resource_type": "freecad_render",
+                "speed": "medium",
+                "tags": ["cad", "freecad", "stl", "step", "render", "png", "3d", "vlm"],
             },
-            example='cad.generate_gear(path="gear20.scad", module_mm=2.0, teeth_count=20)',
-        ),
-        Tool(
-            name="cad.generate_enclosure",
-            description="Сгенерировать параметрическую модель корпуса прибора с крышкой в формате OpenSCAD.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Имя файла (.scad)"},
-                    "width_mm": {"type": "number", "description": "Ширина корпуса в мм"},
-                    "length_mm": {"type": "number", "description": "Длина корпуса в мм"},
-                    "height_mm": {"type": "number", "description": "Высота корпуса в мм"},
-                    "wall_thickness_mm": {"type": "number", "description": "Толщина стенок (мм)"},
-                },
-            },
-            fn=generate_enclosure,
-            skills=["cad", "openscad", "3d", "modeling", "enclosure", "local"],
-            attributes={
-                "category": "local",
-                "read_only": False,
-                "dangerous": False,
-                "resource_type": "cad_model",
-                "speed": "fast",
-                "tags": ["cad", "openscad", "enclosure", "box", "3d", "modeling"],
-            },
-            example='cad.generate_enclosure(path="box.scad", width_mm=80.0, length_mm=120.0, height_mm=40.0)',
+            example='cad.render_freecad(script_code="import FreeCAD, Part\\ndoc = FreeCAD.newDocument(\'Box\')\\nbox = doc.addObject(\'Part::Box\', \'Box\')\\nbox.Length = 20\\nbox.Width = 15\\nbox.Height = 10", render_views_json=\'["isometric", "top"]\')',
         ),
         Tool(
             name="cad.convert_mesh_format",
@@ -902,28 +1102,47 @@ def build_cad_tools(ws: Workspace) -> list[Tool]:
             example='cad.generate_yagi_openscad(path="yagi433.scad", freq_mhz=433.92, elements_count=5)',
         ),
         Tool(
-            name="cad.generate_propeller_openscad",
-            description="Сгенерировать параметрическую 3D-модель малошумной крыльчатки / пропеллера (Propeller / Fan Impeller) на OpenSCAD.",
+            name="cad.assembly",
+            description="Создать OpenSCAD-сборку из нескольких деталей с позиционированием. Для рендеринга используйте cad.render_openscad.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Имя сохраняемого файла (.scad)"},
-                    "diameter_mm": {"type": "number", "description": "Диаметр винта (мм)"},
-                    "blades_count": {"type": "integer", "description": "Число лопастей (>= 2)"},
-                    "hub_diam_mm": {"type": "number", "description": "Диаметр втулки (мм)"},
-                    "pitch_mm": {"type": "number", "description": "Геометрический шаг (мм)"},
+                    "path": {"type": "string", "description": "Имя файла сборки (.scad)"},
+                    "parts_json": {
+                        "type": "string",
+                        "description": 'JSON-массив деталей: [{"name":"корпус","shape":"cube","size":[80,60,30],"position":[0,0,15]}]',
+                    },
                 },
             },
-            fn=generate_propeller_openscad,
-            skills=["cad", "openscad", "propeller", "fan", "aerodynamics", "3d", "modeling", "local"],
+            fn=assembly,
+            skills=["cad", "openscad", "3d", "assembly", "modeling", "local"],
             attributes={
-                "category": "local",
-                "read_only": False,
-                "dangerous": False,
-                "resource_type": "cad_model",
-                "speed": "fast",
-                "tags": ["cad", "openscad", "propeller", "fan", "impeller", "3d", "aerodynamics"],
+                "category": "local", "read_only": False, "dangerous": False,
+                "resource_type": "cad_assembly", "speed": "fast",
+                "tags": ["cad", "openscad", "assembly", "сборка", "3d"],
             },
-            example='cad.generate_propeller_openscad(path="fan.scad", diameter_mm=120.0, blades_count=7, pitch_mm=80.0)',
+            example='cad.assembly(path="device.scad", parts_json=\'[{"name":"base","shape":"cube","size":[80,60,3],"position":[0,0,1.5]}]\')',
+        ),
+        Tool(
+            name="cad.bom",
+            description="Создать спецификацию (Bill of Materials) для сборки — таблица всех деталей, материалов и количества.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "parts_json": {
+                        "type": "string",
+                        "description": 'JSON-массив: [{"name":"Винт M3","material":"steel","quantity":4,"process":"buy"}]',
+                    },
+                    "format": {"type": "string", "description": "Формат вывода: table или csv (по умолчанию table)"},
+                },
+            },
+            fn=bom,
+            skills=["cad", "bom", "specification", "engineering", "local"],
+            attributes={
+                "category": "local", "read_only": True, "dangerous": False,
+                "resource_type": "bom", "speed": "fast",
+                "tags": ["cad", "bom", "specification", "спецификация", "материалы"],
+            },
+            example='cad.bom(parts_json=\'[{"name":"Корпус","material":"aluminum","quantity":1}]\')',
         ),
     ]

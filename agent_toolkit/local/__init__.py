@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from .audit import build_audit_tools
 from .cad import build_cad_tools
+from .fea import build_fea_tools
+from .site_builder import build_site_tools
 from .code import build_code_tools
 from .crypto import build_crypto_tools
 from .data_tools import build_data_tools

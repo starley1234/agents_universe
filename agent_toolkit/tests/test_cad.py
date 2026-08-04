@@ -1,4 +1,4 @@
-"""Тесты инструментов САПР / CAD (cad.*): OpenSCAD, FreeCAD, шестерни, корпуса, антенны, пропеллеры и STL-анализ."""
+"""Тесты инструментов САПР / CAD (cad.*): OpenSCAD, FreeCAD, STL-анализ, конвертация, масса."""
 from __future__ import annotations
 
 import sys
@@ -15,7 +15,7 @@ from tests.harness import TempWorkspace, check, section, summary
 def run_tests() -> int:
     with TempWorkspace() as tmp:
         ws = Workspace(tmp.path("ws"))
-        section("1. Инструменты САПР / CAD (OpenSCAD, FreeCAD, антенны Яги, пропеллеры)")
+        section("1. Инструменты САПР / CAD (OpenSCAD, FreeCAD, STL, антенны Яги)")
         tools = {t.name: t for t in build_cad_tools(ws)}
         check("зарегистрировано 10 инструментов cad", len(tools) == 10)
 
@@ -33,17 +33,12 @@ def run_tests() -> int:
         check("freecad_script сохраняет скрипт моделирования", "сохранён в my_box.py" in res_fc)
         check("файл скрипта создан на диске", ws.exists("my_box.py"))
 
-        res_gear = tools["cad.generate_gear"].execute(
-            path="gear20.scad", module_mm=2.0, teeth_count=20
+        # render_freecad (новый инструмент)
+        res_render_fc = tools["cad.render_freecad"].execute(
+            script_code="import FreeCAD, Part\ndoc = FreeCAD.newDocument('T')\nbox = doc.addObject('Part::Box', 'B')\ndoc.recompute()",
+            path="test_fc.py",
         )
-        check("generate_gear генерирует прямозубую шестерню OpenSCAD", "Делительный диаметр: **40.0 мм**" in res_gear)
-        check("файл шестерни создан", ws.exists("gear20.scad"))
-
-        res_enc = tools["cad.generate_enclosure"].execute(
-            path="box.scad", width_mm=80.0, length_mm=120.0, height_mm=40.0
-        )
-        check("generate_enclosure генерирует корпус прибора", "Внешние габариты: **80.0 × 120.0 × 40.0 мм**" in res_enc)
-        check("файл корпуса создан", ws.exists("box.scad"))
+        check("render_freecad сохраняет скрипт и создаёт файлы", "test_fc.py" in res_render_fc)
 
         res_conv = tools["cad.convert_mesh_format"].execute(
             input_path="part.stl", output_path="part.obj", to_format="obj"
@@ -61,12 +56,6 @@ def run_tests() -> int:
         )
         check("generate_yagi_openscad строит 3D-модель антенны Яги-Уда", "антенны Яги-Уда OpenSCAD" in res_yagi and "433.92 МГц" in res_yagi)
         check("файл yagi433.scad создан", ws.exists("yagi433.scad"))
-
-        res_prop = tools["cad.generate_propeller_openscad"].execute(
-            path="fan.scad", diameter_mm=120.0, blades_count=5, pitch_mm=80.0
-        )
-        check("generate_propeller_openscad строит пропеллер / крыльчатку", "пропеллера / крыльчатки OpenSCAD" in res_prop and "120.0 мм" in res_prop)
-        check("файл fan.scad создан", ws.exists("fan.scad"))
 
         # Тест cad.render_openscad_views (STL, ракурсы и echo логи)
         p_scad = ws.resolve("echo_test.scad")

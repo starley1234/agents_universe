@@ -16,7 +16,7 @@ from tests.harness import check, section, summary
 def run_tests() -> int:
     section("1. Инструменты криптографии и подписей (crypto.*)")
     tools = {t.name: t for t in build_crypto_tools()}
-    check("зарегистрировано 3 инструмента crypto", len(tools) == 3)
+    check("зарегистрировано 4 инструмента crypto", len(tools) == 4)
 
     res_uuid = tools["crypto.generate_uuid"].execute()
     check("generate_uuid генерирует UUIDv4", "UUIDv4:" in res_uuid and "-" in res_uuid)

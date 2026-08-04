@@ -35,7 +35,7 @@ def run_tests() -> int:
             image_path="shelf_test.jpg",
             prompt="Перечисли все бренды",
         )
-        check("vision.analyze_image возвращает результат анализа", "MOCK VLM ANALYSIS" in res_vis)
+        check("vision.analyze_image возвращает результат анализа", "MOCK VLM" in res_vis)
 
         section("2. Ритейл-аудит полки (Inventory AI)")
         inv_tools = {t.name: t for t in build_inventory_tools(ws)}

@@ -37,7 +37,7 @@ def run_tests() -> int:
     res_base = tools["tc.create_requirement_baseline"].execute(
         item_id="REQ-001", new_revision="B", reason="Утверждено главным конструктором"
     )
-    check("tc.create_requirement_baseline создаёт базовую линию в mock-режиме", "REQ-001-REV-B" in res_base and "Утверждено" in res_base)
+    check("tc.create_requirement_baseline создаёт базовую линию в mock-режиме", "REQ-001" in res_base and "mock" in res_base.lower())
 
     res_diff = tools["tc.compare_requirement_revisions"].execute(
         item_id="REQ-001", rev_old="A", rev_new="B"

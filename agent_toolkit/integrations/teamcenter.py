@@ -59,10 +59,10 @@ class TeamcenterService:
         if not endpoint_url or endpoint_url.startswith("mock://"):
             self.session_cookie = "JSESSIONID=MOCK_TC_SESSION_12345"
             return (
-                f"### [MOCK TEAMCENTER LOGIN] Успешная авторизация в Teamcenter:\n"
+                f"⚠️ **MOCK-РЕЖИМ** — Teamcenter не настроен! Настройте TC_ENDPOINT_URL в .env\n"
+                f"### Авторизация (mock):\n"
                 f"- Пользователь: `{username}`\n"
-                f"- Кука сессии: `JSESSIONID=MOCK_TC_SESSION_12345`\n"
-                f"- Статус: 200 OK"
+                f"- Сессия: `JSESSIONID=MOCK_TC_SESSION_12345`"
             )
 
         url = f"{endpoint_url.rstrip('/')}/JsonRestServices/Core-2011-06-Session/login"
@@ -99,9 +99,10 @@ class TeamcenterService:
                 },
             )
             return (
-                f"### [MOCK TEAMCENTER ITEM] Требование `{req_item['item_id']}` (ревизия {req_item.get('revision')}):\n"
+                f"⚠️ **MOCK** (Teamcenter не настроен, TC_ENDPOINT_URL пуст)\n"
+                f"### Требование `{req_item['item_id']}` (ревизия {req_item.get('revision')}):\n"
                 f"- **Название:** {req_item.get('title')}\n"
-                f"- **Текст требования:** {req_item.get('body')}\n"
+                f"- **Текст:** {req_item.get('body')}\n"
                 f"- **Статус:** {req_item.get('status')}, **Ответственный:** {req_item.get('owner', 'Н/Д')}\n"
                 f"- **Категория АП:** {req_item.get('category', 'Н/Д')}"
             )
@@ -177,10 +178,11 @@ class TeamcenterService:
         if not endpoint_url or endpoint_url.startswith("mock://"):
             self.updated_items.setdefault(item_id, {})[property_name] = new_value
             return (
-                f"### [MOCK TEAMCENTER WRITE] Свойство требования `{item_id}` обновлено:\n"
-                f"- Свойство: `{property_name}` -> Новое значение: **{new_value!r}**\n"
-                f"- Обоснование изменения (audit_log): {reason!r}\n"
-                f"- Статус транзакции: ✓ УСПЕШНО (setProperties)"
+                f"⚠️ **MOCK** (Teamcenter не настроен)\n"
+                f"### Свойство `{item_id}` обновлено:\n"
+                f"- `{property_name}` → **{new_value!r}**\n"
+                f"- Причина: {reason!r}\n"
+                f"- Статус: ✓ OK (mock)"
             )
 
         url = f"{endpoint_url.rstrip('/')}/RestServices/Core-2007-01-DataManagement/setProperties"
@@ -235,12 +237,11 @@ class TeamcenterService:
         if endpoint_url.startswith("mock://") or not endpoint_url:
             req_item["revision"] = new_revision
             return (
-                f"### [MOCK TEAMCENTER BASELINE] Создание базовой линии (Baseline / Revision):\n"
-                f"- **ID Требования:** `{item_id}`\n"
-                f"- **Предыдущая ревизия:** `{old_rev}` -> **Новая ревизия:** `{new_revision}`\n"
-                f"- **Обоснование создания базовой линии:** `{reason}`\n"
-                f"- **ID Снимка (Baseline Ref):** `{item_id}-REV-{new_revision}-20260730`\n"
-                f"- **Статус:** Спецификация требований заморожена в ревизии {new_revision}."
+                f"⚠️ **MOCK** (Teamcenter не настроен)\n"
+                f"### Базовая линия (Baseline):\n"
+                f"- ID: `{item_id}`, Ревизия: `{old_rev}` → `{new_revision}`\n"
+                f"- Причина: `{reason}`\n"
+                f"- Статус: заморожена в ревизии {new_revision} (mock)"
             )
         return f"Базовая линия {item_id} (ревизия {new_revision}) успешно создана в Teamcenter"
 

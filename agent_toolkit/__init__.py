@@ -55,6 +55,8 @@ from .local import (
     build_crypto_tools,
     build_data_tools,
     build_file_tools,
+    build_fea_tools,
+    build_site_tools,
     build_hitl_tools,
     build_jobs_tools,
     build_memory_tools,
@@ -136,7 +138,7 @@ def build_default_registry(
             registry.add(t)
         for t in build_hitl_tools(ws):
             registry.add(t)
-        for t in build_subagent_tools(ws):
+        for t in build_subagent_tools(ws, registry_ref=registry):
             registry.add(t)
         for t in build_data_tools(ws):
             registry.add(t)
@@ -150,6 +152,10 @@ def build_default_registry(
             registry.add(t)
         for t in build_cad_tools(ws):
             registry.add(t)
+        for t in build_fea_tools(ws):
+            registry.add(t)
+        for t in build_site_tools(ws):
+            registry.add(t)
         for t in build_physics_tools():
             registry.add(t)
         for t in build_quota_tools(registry_ref=registry):
@@ -162,7 +168,7 @@ def build_default_registry(
             registry.add(t)
         for t in build_mcp_tools():
             registry.add(t)
-        for t in build_smtp_tools():
+        for t in build_smtp_tools(ws=ws):
             registry.add(t)
         for t in build_max_tools():
             registry.add(t)

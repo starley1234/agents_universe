@@ -15,7 +15,7 @@ from tests.harness import check, section, summary
 def run_tests() -> int:
     section("1. Веб-поиск и скачивание страниц (web.*)")
     web_tools = {t.name: t for t in build_web_tools()}
-    check("зарегистрировано 20 инструментов web", len(web_tools) == 20)
+    check("зарегистрировано 24 инструментов web", len(web_tools) == 24)
 
     # 1.1 Общий поиск и скачивание
     res_search = web_tools["web.search"].execute(query="авиационные правила")

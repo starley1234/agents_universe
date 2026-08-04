@@ -50,9 +50,16 @@ class VisionClient:
                 "photo_quality": "good",
             }
             return (
-                f"[MOCK VLM ANALYSIS] Анализ изображения {self.ws.relative(p)}\n"
-                f"Промпт: {prompt}\n"
-                f"Обнаруженная сцена JSON:\n{json.dumps(scene, ensure_ascii=False, indent=2)}"
+                f"⚠️ **ВНИМАНИЕ: MOCK-РЕЖИМ — Vision LLM не настроена!**\n"
+                f"Данные ниже — ИСКУССТВЕННАЯ ЗАГЛУШКА для тестирования, НЕ реальный анализ.\n"
+                f"Для реального VLM-анализа настройте:\n"
+                f"  1. VLM API ключ (OPENROUTER_API_KEY или LOCAL_LLM_URL)\n"
+                f"  2. Модель с поддержкой vision (gpt-4o, gemini-pro-vision, llava)\n"
+                f"  3. Установите AGENT_TOOLKIT_MOCK_MODE=false в .env\n\n"
+                f"---\n"
+                f"[MOCK VLM] Изображение: {self.ws.relative(p)}\n"
+                f"[MOCK VLM] Промпт: {prompt}\n"
+                f"[MOCK VLM] Фейковая сцена:\n{json.dumps(scene, ensure_ascii=False, indent=2)}"
             )
 
         # Здесь может быть вызов OpenAI / Anthropic Vision API при наличии ключа

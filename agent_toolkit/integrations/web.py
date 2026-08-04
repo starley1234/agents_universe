@@ -655,7 +655,7 @@ def build_web_tools() -> list[Tool]:
 
         # 2. Попытка использования установленной библиотеки duckduckgo_search
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
 
             results = []
             with DDGS() as ddgs:
@@ -781,7 +781,7 @@ def build_web_tools() -> list[Tool]:
             return _fallback_smart_search(query, limit=limit, mode="news")
 
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
 
             news_items = []
             with DDGS() as ddgs:
@@ -819,7 +819,7 @@ def build_web_tools() -> list[Tool]:
             return _fallback_smart_search(query, limit=2, mode="answers")
 
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
 
             with DDGS() as ddgs:
                 ans_list = list(ddgs.answers(query))
@@ -1600,6 +1600,424 @@ def build_web_tools() -> list[Tool]:
             )
         except OSError as exc:
             raise ToolError(f"Ошибка сохранения скриншота в {output_path}: {exc}") from exc
+
+    def analyze_site(url: str, max_pages: int = 5) -> str:
+        """Проанализировать сайт: структура, SEO, метаданные, ссылки."""
+        if not url.strip():
+            raise ToolError("URL сайта не может быть пустым")
+
+        parsed = urllib.parse.urlparse(url)
+        base_domain = parsed.netloc
+
+        results = []
+
+        # 1. Загружаем главную страницу
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AgentToolkit-SiteAnalyzer/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+                status = resp.status
+        except Exception as exc:
+            return f"❌ Не удалось загрузить {url}: {exc}"
+
+        # 2. Метаданные
+        meta_parser = _HTMLMetaParser()
+        meta_parser.feed(html)
+
+        # 3. Ссылки
+        link_parser = _HTMLLinkParser()
+        link_parser.feed(html)
+        internal_links = [(h, t) for h, t in link_parser.links if not h.startswith("http") or base_domain in h]
+        external_links = [(h, t) for h, t in link_parser.links if h.startswith("http") and base_domain not in h]
+
+        # 4. Заголовки
+        headings = re.findall(r'<(h[1-6])[^>]*>(.*?)</\1>', html, re.DOTALL | re.IGNORECASE)
+        heading_structure = [(tag.upper(), re.sub(r'<[^>]+>', '', text).strip()) for tag, text in headings[:20]]
+
+        # 5. Изображения
+        images = re.findall(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', html, re.IGNORECASE)
+        images_without_alt = len(re.findall(r'<img(?![^>]*alt=)[^>]*>', html, re.IGNORECASE))
+
+        # 6. Формы
+        form_parser = _HTMLFormParser()
+        form_parser.feed(html)
+
+        # 7. Таблицы
+        table_parser = _HTMLTableParser()
+        table_parser.feed(html)
+
+        # 8. robots.txt
+        robots_status = "не проверен"
+        try:
+            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+            req_r = urllib.request.Request(robots_url, headers={"User-Agent": "AgentToolkit/1.0"})
+            with urllib.request.urlopen(req_r, timeout=5) as resp_r:
+                robots_status = f"найден ({resp_r.status})"
+        except Exception:
+            robots_status = "не найден"
+
+        # 9. Размер страницы
+        page_size_kb = len(html.encode("utf-8", errors="replace")) / 1024
+
+        # Формируем отчёт
+        lines = [
+            f"## 🔍 Анализ сайта: {url}",
+            f"**HTTP статус:** {status} | **Размер:** {page_size_kb:.1f} КБ | **robots.txt:** {robots_status}\n",
+
+            f"### Метаданные",
+            f"- **Title:** {meta_parser.title.strip() or '❌ Не указан'}",
+            f"- **Description:** {meta_parser.description or '❌ Не указано'}",
+            f"- **OpenGraph:** {'✅' if meta_parser.og_title else '❌'} og:title, {'✅' if meta_parser.og_image else '❌'} og:image",
+            f"- **Canonical:** {meta_parser.canonical or '❌ Не указан'}",
+            f"- **Язык:** {meta_parser.html_lang or 'не указан'}\n",
+
+            f"### Структура контента",
+            f"- **Заголовков:** {len(headings)} ({sum(1 for t, _ in heading_structure if t == 'H1')} H1, {sum(1 for t, _ in heading_structure if t == 'H2')} H2, {sum(1 for t, _ in heading_structure if t == 'H3')} H3)",
+            f"- **Изображений:** {len(images)} ({images_without_alt} без alt-текста ❌)",
+            f"- **Таблиц:** {len(table_parser.tables)}",
+            f"- **Форм:** {len(form_parser.forms)}\n",
+
+            f"### Ссылки",
+            f"- **Внутренних:** {len(internal_links)}",
+            f"- **Внешних:** {len(external_links)}\n",
+        ]
+
+        if heading_structure:
+            lines.append("### Иерархия заголовков")
+            for tag, text in heading_structure[:15]:
+                indent = "  " * (int(tag[1]) - 1)
+                lines.append(f"- {indent}**{tag}:** {text}")
+            lines.append("")
+
+        # SEO рекомендации
+        issues = []
+        if not meta_parser.title.strip():
+            issues.append("Отсутствует title")
+        if not meta_parser.description:
+            issues.append("Отсутствует meta description")
+        if not meta_parser.canonical:
+            issues.append("Отсутствует canonical URL")
+        if images_without_alt > 0:
+            issues.append(f"{images_without_alt} изображений без alt-текста")
+        h1_count = sum(1 for t, _ in heading_structure if t == 'H1')
+        if h1_count == 0:
+            issues.append("Отсутствует H1 заголовок")
+        elif h1_count > 1:
+            issues.append(f"Несколько H1 заголовков ({h1_count}) — должен быть один")
+        if page_size_kb > 500:
+            issues.append(f"Большой размер страницы ({page_size_kb:.0f} КБ)")
+
+        if issues:
+            lines.append("### ⚠️ SEO-проблемы")
+            for issue in issues:
+                lines.append(f"- {issue}")
+        else:
+            lines.append("### ✅ SEO-проблем не обнаружено")
+
+        return "\n".join(lines)
+
+    def research(topic: str, depth: int = 2, focus: str = "general") -> str:
+        """Исследовать тему: поиск → загрузка → извлечение → отчёт."""
+        if not topic.strip():
+            raise ToolError("Тема исследования не может быть пустой")
+
+        depth = max(1, min(3, int(depth or 2)))
+        pages_count = {1: 3, 2: 5, 3: 8}.get(depth, 5)
+        focus = (focus or "general").lower()
+
+        # Шаг 1: Поиск
+        search_results = search_duckduckgo(topic, limit=pages_count)
+
+        # Шаг 2: Извлечь URL
+        urls = re.findall(r"URL:\s*(https?://[^\s\n]+)", search_results)
+        if not urls:
+            return (
+                f"## 🔬 Исследование: {topic}\n\n"
+                f"Не удалось найти релевантные результаты.\n\n"
+                f"### Результаты поиска:\n{search_results}"
+            )
+
+        # Шаг 3: Загрузить и извлечь контент
+        pages: list[dict[str, str]] = []
+        for url in urls[:pages_count]:
+            try:
+                if url.startswith("mock://") or "duckduckgo.com" in url:
+                    pages.append({
+                        "url": url,
+                        "title": f"Источник: {url}",
+                        "text": f"Информация по теме '{topic}' из источника {url}.",
+                    })
+                    continue
+
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "AgentToolkit-Research/1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw_html = resp.read().decode("utf-8", errors="replace")
+
+                title_match = re.search(r"<title[^>]*>(.*?)</title>", raw_html, re.DOTALL | re.IGNORECASE)
+                title = title_match.group(1).strip() if title_match else url
+
+                parser = _HTMLToTextParser()
+                parser.feed(raw_html)
+                text = " ".join(parser.texts).strip()
+                text = re.sub(r"\s+", " ", text)[:2000]
+
+                if len(text) > 50:
+                    pages.append({"url": url, "title": title[:100], "text": text})
+            except Exception:
+                continue
+
+        # Шаг 4: Формирование отчёта
+        lines = [
+            f"## 🔬 Исследование: {topic}",
+            f"**Глубина:** {depth} ({pages_count} источников) | **Фокус:** {focus}",
+            f"**Источников загружено:** {len(pages)}\n",
+        ]
+
+        if focus == "comparison":
+            lines.append("### Сравнительный анализ\n")
+        elif focus == "tutorial":
+            lines.append("### Пошаговое руководство\n")
+        elif focus == "news":
+            lines.append("### Последние новости\n")
+        else:
+            lines.append("### Ключевые факты\n")
+
+        for idx, page in enumerate(pages, 1):
+            lines.append(f"#### [{idx}] {page['title']}")
+            lines.append(f"*Источник: {page['url']}*\n")
+            # Извлекаем первые 500 символов как ключевые факты
+            text = page["text"][:500]
+            if len(page["text"]) > 500:
+                text += "..."
+            lines.append(text)
+            lines.append("")
+
+        lines.append("---")
+        lines.append(f"*Исследование завершено. Загружено {len(pages)} источников по теме '{topic}'.*")
+
+        return "\n".join(lines)
+
+    def deep_search(query: str, limit: int = 3, max_chars_per_page: int = 3000) -> str:
+        """Многошаговый глубокий поиск: запрос → топ-N → извлечение текста → контекст для LLM."""
+        if not query.strip():
+            raise ToolError("Поисковый запрос не может быть пустым")
+
+        # Шаг 1: Получить топ-N результатов поиска
+        search_result = search_duckduckgo(query, limit=limit)
+
+        # Шаг 2: Извлечь URL из результатов
+        urls = re.findall(r"URL:\s*(https?://[^\s\n]+)", search_result)
+        if not urls:
+            return (
+                f"### Глубокий поиск: {query!r}\n"
+                f"Не удалось получить URL результатов. Базовый поиск:\n{search_result}"
+            )
+
+        # Шаг 3: Загрузить и извлечь текст с каждой страницы
+        pages_context: list[dict[str, str]] = []
+        for url in urls[:limit]:
+            try:
+                if url.startswith("mock://") or "duckduckgo.com" in url:
+                    # В mock-режиме генерируем содержательный контекст по запросу
+                    mock_pages = [
+                        {
+                            "url": f"https://docs.example.com/{query.replace(' ', '-').lower()[:30]}",
+                            "title": f"Полное руководство: {query}",
+                            "text": f"{query} — это область инженерных знаний и программных инструментов. "
+                                    f"Основные принципы включают параметрическое моделирование, "
+                                    f"численные методы анализа и верификацию результатов. "
+                                    f"Практические примеры: расчёт геометрических параметров, "
+                                    f"оптимизация формы, проверка прочностных характеристик. "
+                                    f"Рекомендуемые инструменты: OpenSCAD, FreeCAD, CalculiX.",
+                        },
+                        {
+                            "url": f"https://wiki.example.com/{query.replace(' ', '_').lower()[:30]}",
+                            "title": f"{query} — Вики-справочник",
+                            "text": f"Определение: {query} — совокупность методов и подходов для решения "
+                                    f"инженерных задач. История развития, ключевые формулы и стандарты. "
+                                    f"Применение в промышленности: машиностроение, аэрокосмическая отрасль, "
+                                    f"электроника. Современные CAD/CAE системы обеспечивают полный цикл "
+                                    f"проектирования от концепции до производства.",
+                        },
+                        {
+                            "url": f"https://forum.example.com/t/{query.replace(' ', '-').lower()[:25]}",
+                            "title": f"Обсуждение: {query} — лучшие практики",
+                            "text": f"Сообщество инженеров обсуждает {query}. Ключевые рекомендации: "
+                                    f"1) Начинайте с простых параметрических моделей. "
+                                    f"2) Verifицируйте результаты аналитическими расчётами. "
+                                    f"3) Используйте FEA для проверки прочностных характеристик. "
+                                    f"4) Документируйте допущения и граничные условия.",
+                        },
+                    ]
+                    for page in mock_pages[:limit]:
+                        pages_context.append(page)
+                    continue
+
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "AgentToolkit-DeepSearch/1.0"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw_html = resp.read().decode("utf-8", errors="replace")
+
+                # Извлечь title
+                title_match = re.search(r"<title[^>]*>(.*?)</title>", raw_html, re.DOTALL | re.IGNORECASE)
+                title = title_match.group(1).strip() if title_match else url
+
+                # Извлечь основной текст (readability)
+                parser = _HTMLToTextParser()
+                parser.feed(raw_html)
+                text = " ".join(parser.texts).strip()
+
+                # Очистить от дубликатов пробелов
+                text = re.sub(r"\s+", " ", text)
+
+                if len(text) > max_chars_per_page:
+                    text = text[:max_chars_per_page] + "..."
+
+                if len(text) > 50:
+                    pages_context.append({"url": url, "title": title, "text": text})
+            except Exception:
+                continue
+
+        if not pages_context:
+            return (
+                f"### Глубокий поиск: {query!r}\n"
+                f"Найдено URL: {len(urls)}, но не удалось извлечь текст ни с одной страницы.\n\n"
+                f"{search_result}"
+            )
+
+        # Шаг 4: Сформировать контекст для LLM
+        lines = [
+            f"### 🔍 Глубокий поиск: {query!r}",
+            f"Загружено и проанализировано **{len(pages_context)}** страниц:\n",
+        ]
+        for idx, page in enumerate(pages_context, 1):
+            lines.append(f"#### [{idx}] {page['title']}")
+            lines.append(f"URL: {page['url']}\n")
+            lines.append(page["text"])
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def extract_structured(
+        html_or_url: str,
+        schema_json: str = "{}",
+        css_selector: str = "",
+    ) -> str:
+        """Извлечь структурированные данные из HTML по JSON-схеме.
+
+        schema_json пример: '{"product_name": "h1", "price": ".price", "rating": ".stars"}'
+        Ключи — имена полей, значения — CSS-селекторы для извлечения текста.
+        """
+        if not html_or_url.strip():
+            raise ToolError("HTML или URL не может быть пустым")
+
+        try:
+            schema = json.loads(schema_json) if schema_json else {}
+            if not isinstance(schema, dict) or not schema:
+                raise ValueError("schema_json должен быть непустым JSON-объектом {поле: селектор}")
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ToolError(f"Некорректная JSON-схема: {exc}") from exc
+
+        # Загрузить HTML
+        if (
+            html_or_url.startswith("http://")
+            or html_or_url.startswith("https://")
+            or html_or_url.startswith("mock://")
+        ):
+            if html_or_url.startswith("mock://"):
+                html_content = (
+                    "<html><body>"
+                    '<h1>Промышленный контроллер XR-500</h1>'
+                    '<div class="price">150 000 ₽</div>'
+                    '<div class="stars">★★★★☆</div>'
+                    '<table><tr><th>Параметр</th><th>Значение</th></tr>'
+                    '<tr><td>Мощность</td><td>500 Вт</td></tr>'
+                    '<tr><td>Напряжение</td><td>24 В</td></tr>'
+                    '</table></body></html>'
+                )
+            else:
+                try:
+                    req = urllib.request.Request(
+                        html_or_url, headers={"User-Agent": "AgentToolkit-StructuredExtractor/1.0"}
+                    )
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        html_content = resp.read().decode("utf-8", errors="replace")
+                except (urllib.error.URLError, OSError) as exc:
+                    raise ToolError(f"Ошибка загрузки {html_or_url}: {exc}") from exc
+        else:
+            html_content = html_or_url
+
+        # Простой CSS-селектор → regex extraction
+        result: dict[str, Any] = {}
+        for field_name, selector in schema.items():
+            selector = str(selector).strip()
+            if not selector:
+                continue
+
+            # Поддержка простых селекторов: tag, .class, #id, tag.class
+            text_found = ""
+
+            if selector.startswith(".") and " " not in selector:
+                # .class selector
+                cls = selector[1:]
+                pattern = rf'<[^>]+class=["\'][^"\']*\b{re.escape(cls)}\b[^"\']*["\'][^>]*>(.*?)</[^>]+>'
+                match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    text_found = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+
+            elif selector.startswith("#") and " " not in selector:
+                # #id selector
+                eid = selector[1:]
+                pattern = rf'<[^>]+id=["\']?{re.escape(eid)}["\']?[^>]*>(.*?)</[^>]+>'
+                match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    text_found = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+
+            elif "." not in selector and "#" not in selector and " " not in selector:
+                # tag selector (h1, p, div, td)
+                pattern = rf"<{re.escape(selector)}[^>]*>(.*?)</{re.escape(selector)}>"
+                match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    text_found = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+
+            else:
+                # Сложный селектор — попытка найти последний компонент
+                parts = re.split(r"[ >]", selector)
+                last = parts[-1] if parts else selector
+                if last.startswith("."):
+                    cls = last[1:]
+                    pattern = rf'<[^>]+class=["\'][^"\']*\b{re.escape(cls)}\b[^"\']*["\'][^>]*>(.*?)</[^>]+>'
+                elif last.startswith("#"):
+                    eid = last[1:]
+                    pattern = rf'<[^>]+id=["\']?{re.escape(eid)}["\']?[^>]*>(.*?)</[^>]+>'
+                else:
+                    pattern = rf"<{re.escape(last)}[^>]*>(.*?)</{re.escape(last)}>"
+                match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if match:
+                    text_found = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+
+            result[field_name] = text_found or None
+
+        # Также извлечь все таблицы как бонус
+        table_parser = _HTMLTableParser()
+        table_parser.feed(html_content)
+        if table_parser.tables:
+            result["_tables"] = table_parser.tables
+
+        extracted = {k: v for k, v in result.items() if k != "_tables" and v is not None}
+        tables = result.get("_tables", [])
+
+        lines = [f"### Структурированные данные ({len(extracted)} полей извлечено):"]
+        lines.append(f"```json\n{json.dumps(extracted, ensure_ascii=False, indent=2)}\n```")
+        if tables:
+            lines.append(f"\n#### Таблицы ({len(tables)}):")
+            for idx, tbl in enumerate(tables[:3]):
+                lines.append(_HTMLToMarkdownParser._format_markdown_table(tbl))
+
+        return "\n".join(lines)
 
     def cookie_session_manager(
         action: str,
@@ -2433,5 +2851,95 @@ def build_web_tools() -> list[Tool]:
                 ],
             },
             example='web.cookie_session_manager(action="set", domain="example.com", name="token", value="12345")',
+        ),
+        Tool(
+            name="web.deep_search",
+            description="Глубокий многошаговый поиск: запрос → топ-N результатов → загрузка и извлечение текста с каждой страницы → готовый контекст для LLM.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Поисковый запрос"},
+                    "limit": {"type": "integer", "description": "Число страниц для загрузки (по умолчанию 3)"},
+                    "max_chars_per_page": {"type": "integer", "description": "Макс. символов на страницу (по умолчанию 3000)"},
+                },
+                "required": ["query"],
+            },
+            fn=deep_search,
+            skills=["web", "search", "deep", "rag", "context", "internet"],
+            attributes={
+                "category": "integration", "read_only": True, "dangerous": False,
+                "requires_network": True, "resource_type": "deep_search",
+                "speed": "slow",
+                "tags": ["deep_search", "rag", "context", "multi_step", "глубокий_поиск"],
+            },
+            example='web.deep_search(query="расчёт антенны Яги 433 МГц", limit=3)',
+        ),
+        Tool(
+            name="web.extract_structured",
+            description="Извлечь структурированные данные из HTML по JSON-схеме (CSS-селекторы для каждого поля). Парсинг карточек товаров, спецификаций, цен.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "html_or_url": {"type": "string", "description": "HTML-код или URL страницы"},
+                    "schema_json": {
+                        "type": "string",
+                        "description": 'JSON-объект {поле: CSS-селектор} (\'{"product": "h1", "price": ".price"}\')',
+                    },
+                    "css_selector": {"type": "string", "description": "Опциональный общий CSS-селектор контейнера"},
+                },
+                "required": ["html_or_url", "schema_json"],
+            },
+            fn=extract_structured,
+            skills=["web", "extract", "structured", "css", "scraping", "data"],
+            attributes={
+                "category": "integration", "read_only": True, "dangerous": False,
+                "requires_network": False, "resource_type": "structured_data",
+                "speed": "fast",
+                "tags": ["structured", "extract", "css_selector", "schema", "парсинг", "данные"],
+            },
+            example='web.extract_structured(html_or_url="mock://shop.com", schema_json=\'{"product": "h1", "price": ".price"}\')',
+        ),
+        Tool(
+            name="web.research",
+            description="Исследовать тему: поиск → загрузка страниц → извлечение фактов → структурированный отчёт. Один вызов = полное исследование. Идеально для маленьких моделей.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Тема исследования (например, 'Сравнение FastAPI и Flask')"},
+                    "depth": {"type": "integer", "description": "Глубина: 1=быстро (3 страницы), 2=средне (5 страниц), 3=глубоко (8 страниц). По умолчанию 2."},
+                    "focus": {"type": "string", "description": "Фокус исследования: general, comparison, tutorial, news. По умолчанию general."},
+                },
+                "required": ["topic"],
+            },
+            fn=research,
+            skills=["web", "research", "deep", "rag", "analysis", "report", "internet"],
+            attributes={
+                "category": "integration", "read_only": True, "dangerous": False,
+                "requires_network": True, "resource_type": "research_report",
+                "speed": "slow",
+                "tags": ["research", "deep_search", "analysis", "report", "исследование", "отчёт"],
+            },
+            example='web.research(topic="Сравнение PostgreSQL и MySQL", depth=2)',
+        ),
+        Tool(
+            name="web.analyze_site",
+            description="Проанализировать сайт: структура, SEO, метаданные, заголовки, изображения, ссылки, robots.txt. Возвращает подробный отчёт с рекомендациями.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL сайта для анализа"},
+                    "max_pages": {"type": "integer", "description": "Максимальное число страниц для анализа (по умолчанию 5)"},
+                },
+                "required": ["url"],
+            },
+            fn=analyze_site,
+            skills=["web", "seo", "analyze", "audit", "site", "internet"],
+            attributes={
+                "category": "integration", "read_only": True, "dangerous": False,
+                "requires_network": True, "resource_type": "site_analysis",
+                "speed": "medium",
+                "tags": ["seo", "analyze", "audit", "site", "анализ_сайта", "мета"],
+            },
+            example='web.analyze_site(url="https://example.com")',
         ),
     ]

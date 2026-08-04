@@ -94,6 +94,22 @@ class ProductionTester:
             test_txt = self.ws.resolve("diag_test.txt")
             if not test_txt.exists():
                 test_txt.write_text("Тестовый файл диагностики на боевом сервере\nСтрока 2\n", encoding="utf-8")
+            # Создаём тестовый PNG файл (1x1 пиксель)
+            test_png = self.ws.resolve("diag_img.png")
+            if not test_png.exists():
+                import struct, zlib
+                def _make_png():
+                    sig = b'\x89PNG\r\n\x1a\n'
+                    ihdr_data = struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0)
+                    ihdr_crc = struct.pack('>I', zlib.crc32(b'IHDR' + ihdr_data) & 0xffffffff)
+                    ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data + ihdr_crc
+                    raw = zlib.compress(b'\x00\xff\x00\x00')
+                    idat_crc = struct.pack('>I', zlib.crc32(b'IDAT' + raw) & 0xffffffff)
+                    idat = struct.pack('>I', len(raw)) + b'IDAT' + raw + idat_crc
+                    iend_crc = struct.pack('>I', zlib.crc32(b'IEND') & 0xffffffff)
+                    iend = struct.pack('>I', 0) + b'IEND' + iend_crc
+                    return sig + ihdr + idat + iend
+                test_png.write_bytes(_make_png())
 
             test_scad = self.ws.resolve("diag_cube.scad")
             if not test_scad.exists():
@@ -149,7 +165,7 @@ class ProductionTester:
             "files.file_info": {"path": "diag_test.txt"},
             "files.find_files": {"pattern": "*.txt"},
             "files.remove_file": {"path": "diag_test.txt"},
-            "files.create_archive": {"output_path": "diag.zip", "files": ["diag_test.txt"]},
+            "files.create_archive": {"archive_path": "diag.zip", "files_json": "[\"*.txt\"]"},
             "files.extract_archive": {"archive_path": "diag.zip", "target_dir": "diag_ext"},
             "files.sync_directories": {"source_dir": "diag_ext", "target_dir": "diag_sync"},
             "files.compare_files": {"path1": "diag_test.txt", "path2": "diag_test.txt"},
@@ -230,6 +246,15 @@ class ProductionTester:
             "data.convert_format": {"data_str": '{"a": 1}', "from_fmt": "json", "to_fmt": "yaml"},
             "data.aggregate_table": {"rows_json": '[{"cat": "A", "val": 10}, {"cat": "A", "val": 20}]', "group_by": "cat", "agg_col": "val", "agg_func": "sum"},
             "crypto.generate_uuid": {},
+            "crypto.create_signature": {"text": "production test document", "secret_key": "test-key"},
+            "web.deep_search": {"query": "openscad cad modeling", "limit": 2},
+            "web.extract_structured": {"html_or_url": "mock://example.com", "schema_json": '{"title": "h1", "price": ".price"}'},
+            "cad.fea_static": {"stl_path": "diag_fea.stl", "material": "aluminum", "force_n_json": "[0, 0, -100]"},
+            "site.create": {"topic": "Test Site", "site_name": "DiagSite"},
+            "text.regex_replace": {"path": "diag_test.txt", "pattern": "Тестовый", "replacement": "Обновлённый"},
+            "code.apply_patch": {"path": "diag_test.txt", "patch_content": "--- a/diag_test.txt\n+++ b/diag_test.txt\n@@ -1,2 +1,2 @@\n-Тестовый файл диагностики на боевом сервере\n+Обновлённый файл диагностики на боевом сервере\n Строка 2\n"},
+            "image.resize": {"input_path": "diag_img.png", "output_path": "diag_img_resized.png", "max_dim": 100},
+            "image.get_metadata": {"path": "diag_img.png"},
             "crypto.hash_text": {"text": "production test", "algorithm": "sha256"},
             "crypto.generate_keypair": {},
             "crypto.encrypt_text": {"text": "secret data"},

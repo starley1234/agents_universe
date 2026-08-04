@@ -55,7 +55,8 @@ def build_erp_tools() -> list[Tool]:
             )
             selected = data[:top]
             lines = [
-                f"### [MOCK ERP OData] Сущность `{entity}` (найдено: {len(selected)}):"
+                f"⚠️ **MOCK-РЕЖИМ** — ERP/1С OData не настроен! Настройте ERP_ODATA_URL в .env",
+                f"### Сущность `{entity}` (найдено: {len(selected)}):"
             ]
             for it in selected:
                 lines.append(f"- {json.dumps(it, ensure_ascii=False)}")
@@ -99,12 +100,11 @@ def build_erp_tools() -> list[Tool]:
 
         if not endpoint_url or endpoint_url.startswith("mock://") or endpoint_url.startswith("test://"):
             return (
-                f"### [MOCK ERP OData] Создание и проведение документа `{entity}`:\n"
-                f"- **HTTP Статус:** 201 Created\n"
-                f"- **Новый Ref_Key:** `0f83d2e1-45a2-11ec-9a1b-00155d003201`\n"
-                f"- **Номер документа:** `000025`\n"
-                f"- **Отправленные данные:** `{json.dumps(doc_data, ensure_ascii=False)}`\n"
-                f"- **Статус:** Документ успешно создан и проведён в 1С:Предприятие."
+                f"⚠️ **MOCK-РЕЖИМ** — ERP/1С OData не настроен! Настройте ERP_ODATA_URL в .env\n"
+                f"### Создание документа `{entity}`:\n"
+                f"- HTTP Статус: 201 Created (mock)\n"
+                f"- Ref_Key: `0f83d2e1-45a2-11ec-9a1b-00155d003201`\n"
+                f"- Данные: `{json.dumps(doc_data, ensure_ascii=False)}`"
             )
 
         url = f"{endpoint_url.rstrip('/')}/odata/standard.odata/{entity}"

@@ -11,6 +11,131 @@ from __future__ import annotations
 
 def get_webui_html(title: str = "Agent Toolkit Explorer — Каталог, управление и аналитика") -> str:
     """Вернуть HTML-код визуального интерфейса каталога инструментов, управления и аналитики."""
+    # MCP Gateway и File Manager скрипты (отдельно, чтобы не конфликтовать с f-string)
+    mcp_filemanager_html = """
+    <!-- ===== MCP Gateway & Groups Panel ===== -->
+    <style>
+        .mcp-panel { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 20px; margin: 20px 0; }
+        .mcp-panel h2 { color: #00d4ff; margin-top: 0; }
+        .mcp-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 15px; }
+        .mcp-group-card { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 15px; transition: all 0.2s; cursor: pointer; }
+        .mcp-group-card:hover { border-color: #00d4ff; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,212,255,0.15); }
+        .mcp-group-card h3 { color: #e0e0e0; margin: 0 0 8px 0; font-size: 15px; }
+        .mcp-group-card .count { color: #00d4ff; font-size: 13px; }
+        .mcp-group-card .url { color: #666; font-size: 11px; word-break: break-all; margin-top: 8px; }
+        .mcp-group-card .copy-btn { background: #0f3460; color: #00d4ff; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-top: 6px; }
+        .mcp-group-card .copy-btn:hover { background: #1a4a8a; }
+        .gateway-info { background: #0a1628; border: 1px solid #1a4a8a; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
+        .gateway-info code { background: #16213e; color: #00d4ff; padding: 2px 6px; border-radius: 3px; }
+        .file-manager { background: #1a1a2e; border: 1px solid #333; border-radius: 8px; padding: 20px; margin: 20px 0; }
+        .file-manager h2 { color: #00d4ff; margin-top: 0; }
+        .file-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .file-table th { text-align: left; color: #888; padding: 8px; border-bottom: 1px solid #333; font-size: 13px; }
+        .file-table td { padding: 8px; border-bottom: 1px solid #222; font-size: 13px; color: #ccc; }
+        .file-table tr:hover { background: #16213e; }
+        .file-table .download-btn { background: #0f3460; color: #00d4ff; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 12px; }
+        .file-table .download-btn:hover { background: #1a4a8a; }
+        .file-table .delete-btn { background: #3d0000; color: #ff4444; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .file-table .delete-btn:hover { background: #5a0000; }
+        .breadcrumb { color: #888; margin-bottom: 10px; }
+        .breadcrumb a { color: #00d4ff; text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+    </style>
+
+    <div class="mcp-panel" id="mcp-panel">
+        <h2>🔌 MCP Gateway для LM Studio</h2>
+        <div class="gateway-info">
+            <strong>Gateway endpoint:</strong> <code>/sse</code> — только 3 инструмента-роутера:<br>
+            &nbsp;&nbsp;• <code>find_tools(query)</code> — поиск нужных инструментов<br>
+            &nbsp;&nbsp;• <code>call_tool(name, args)</code> — вызов инструмента<br>
+            &nbsp;&nbsp;• <code>list_groups()</code> — список групп<br><br>
+            <strong>mcp.json:</strong> <code>{"mcpServers": {"agent-toolkit": {"url": "http://localhost:8090/sse"}}}</code>
+        </div>
+        <h3 style="color: #ccc;">📦 Группы инструментов (по 10 шт.)</h3>
+        <div class="mcp-group-grid" id="mcp-groups"></div>
+    </div>
+
+    <div class="file-manager" id="file-manager">
+        <h2>📁 Файловый менеджер (Workspace)</h2>
+        <div class="breadcrumb" id="file-breadcrumb"><a href="#" onclick="loadFiles('')">/workspace</a></div>
+        <table class="file-table">
+            <thead><tr><th>Имя</th><th>Размер</th><th>Изменён</th><th>Действия</th></tr></thead>
+            <tbody id="file-list"><tr><td colspan="4" style="color:#666">Загрузка...</td></tr></tbody>
+        </table>
+    </div>
+
+    <script>
+    // MCP Groups
+    (function() {
+        fetch('/api/mcp/groups')
+            .then(r => r.json())
+            .then(data => {
+                const container = document.getElementById('mcp-groups');
+                if (!container || !data.groups) return;
+                container.innerHTML = '';
+                data.groups.forEach(g => {
+                    const url = window.location.origin + g.url;
+                    const card = document.createElement('div');
+                    card.className = 'mcp-group-card';
+                    card.innerHTML = '<h3>' + g.label + '</h3>' +
+                        '<div class="count">🔧 ' + g.tools_count + ' инструментов</div>' +
+                        '<div class="url">' + url + '</div>' +
+                        '<button class="copy-btn" onclick="navigator.clipboard.writeText(\\'' + url + '\\');this.textContent=\\'Скопировано!\\';setTimeout(()=>this.textContent=\\'Копировать URL\\',1500)">Копировать URL</button>';
+                    container.appendChild(card);
+                });
+            });
+    })();
+
+    // File Manager
+    let currentPath = '';
+    function loadFiles(path) {
+        currentPath = path;
+        fetch('/api/workspace/list?path=' + encodeURIComponent(path))
+            .then(r => r.json())
+            .then(data => {
+                const tbody = document.getElementById('file-list');
+                const bc = document.getElementById('file-breadcrumb');
+                bc.innerHTML = '<a href="#" onclick="loadFiles(\\'\\')">/workspace</a>';
+                if (path) {
+                    const parts = path.split('/');
+                    let acc = '';
+                    parts.forEach((p, i) => {
+                        acc += (acc ? '/' : '') + p;
+                        const a = acc;
+                        bc.innerHTML += ' / <a href="#" onclick="loadFiles(\\'' + a + '\\')">' + p + '</a>';
+                    });
+                }
+                if (!data.items || data.items.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="color:#666">Пусто</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.items.map(item => {
+                    const size = item.is_dir ? '—' : (item.size < 1024 ? item.size + ' B' : item.size < 1048576 ? (item.size/1024).toFixed(1) + ' KB' : (item.size/1048576).toFixed(1) + ' MB');
+                    const date = new Date(item.modified * 1000).toLocaleString();
+                    const icon = item.is_dir ? '📁' : '📄';
+                    const nameHtml = item.is_dir
+                        ? '<a href="#" onclick="loadFiles(\\'' + item.path + '\\')" style="color:#00d4ff;text-decoration:none">' + icon + ' ' + item.name + '</a>'
+                        : icon + ' ' + item.name;
+                    const actions = item.is_dir ? ''
+                        : '<a class="download-btn" href="/api/workspace/download?path=' + encodeURIComponent(item.path) + '">⬇ Скачать</a> ' +
+                          '<button class="delete-btn" onclick="deleteFile(\\'' + item.path + '\\')">🗑</button>';
+                    return '<tr><td>' + nameHtml + '</td><td>' + size + '</td><td>' + date + '</td><td>' + actions + '</td></tr>';
+                }).join('');
+            })
+            .catch(() => {
+                document.getElementById('file-list').innerHTML = '<tr><td colspan="4" style="color:red">Ошибка загрузки</td></tr>';
+            });
+    }
+    function deleteFile(path) {
+        if (!confirm('Удалить ' + path + '?')) return;
+        fetch('/api/workspace/delete?path=' + encodeURIComponent(path), {method: 'DELETE'})
+            .then(r => r.json())
+            .then(() => loadFiles(currentPath));
+    }
+    loadFiles('');
+    </script>
+"""
+
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1135,5 +1260,6 @@ def get_webui_html(title: str = "Agent Toolkit Explorer — Каталог, уп
         fetchCatalog();
         fetchArtifacts();
     </script>
+""" + mcp_filemanager_html + """
 </body>
 </html>"""

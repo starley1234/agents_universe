@@ -43,6 +43,22 @@ def build_crypto_tools() -> list[Tool]:
             f"✗ Подпись НЕДЕЙСТВИТЕЛЬНА (ожидалась: {expected[:12]}...)"
         )
 
+    def create_signature(text: str, secret_key: str = "default-secret") -> str:
+        """Создать цифровую подпись HMAC-SHA256 для текста."""
+        if not text:
+            raise ToolError("Текст для подписи не может быть пустым")
+
+        key_bytes = (secret_key or "default-secret").encode("utf-8")
+        sig = hmac.new(key_bytes, text.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        return (
+            f"### Цифровая подпись HMAC-SHA256 создана:\n"
+            f"- Текст: {text[:100]}{'...' if len(text) > 100 else ''}\n"
+            f"- Подпись: `{sig}`\n"
+            f"- Длина текста: {len(text)} символов\n"
+            f"- Для проверки используйте: crypto.verify_signature(text=..., signature_hex=\"{sig}\")"
+        )
+
     return [
         Tool(
             name="crypto.generate_uuid",
@@ -115,5 +131,28 @@ def build_crypto_tools() -> list[Tool]:
                 "tags": ["crypto", "signature", "verify", "hmac", "security"],
             },
             example='crypto.verify_signature(text="data", signature_hex="abc...")',
+        ),
+        Tool(
+            name="crypto.create_signature",
+            description="Создать цифровую подпись HMAC-SHA256 для текста или документа (для последующей проверки целостности).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Текст или содержимое документа для подписи"},
+                    "secret_key": {"type": "string", "description": "Секретный ключ подписи (по умолчанию 'default-secret')"},
+                },
+                "required": ["text"],
+            },
+            fn=create_signature,
+            skills=["crypto", "signature", "hmac", "security", "audit", "sign"],
+            attributes={
+                "category": "local",
+                "read_only": True,
+                "dangerous": False,
+                "resource_type": "crypto_sig",
+                "speed": "fast",
+                "tags": ["crypto", "signature", "create", "hmac", "security", "sign"],
+            },
+            example='crypto.create_signature(text="Важный документ от 2026-08-03", secret_key="my-secret")',
         ),
     ]

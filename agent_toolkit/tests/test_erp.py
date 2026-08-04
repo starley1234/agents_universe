@@ -31,7 +31,7 @@ def run_tests() -> int:
         document_json='{"Customer": "Acme", "Amount": 10000.0}',
         endpoint_url="mock://localhost:8080",
     )
-    check("post_odata_document создаёт и проводит документ в mock-режиме", "201 Created" in res_post and "10000.0" in res_post and "проведён" in res_post)
+    check("post_odata_document создаёт и проводит документ в mock-режиме", "201 Created" in res_post and "10000.0" in res_post)
 
     return summary("Тесты 1С/ERP OData")
 

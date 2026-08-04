@@ -133,7 +133,7 @@ class SubagentService:
 
 
 def build_subagent_tools(
-    ws: Workspace | None = None, service: SubagentService | None = None
+    ws: Workspace | None = None, service: SubagentService | None = None, registry_ref=None
 ) -> list[Tool]:
     """Собрать инструменты вызова субагентов (agent.*)."""
     srv = service or SubagentService(ws=ws)
@@ -255,4 +255,98 @@ def build_subagent_tools(
             },
             example='agent.parallel_map_reduce(agent_name="researcher", tasks_json=\'["Анализ А", "Анализ Б"]\')',
         ),
+        Tool(
+            name="agent.plan",
+            description="Разбить сложную задачу на пошаговый план с указанием конкретных инструментов для каждого шага. Помогает маленькой модели выполнить сложную задачу последовательно.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string", "description": "Цель/задача (например, 'Создать сайт для кофейни и отправить ссылку по почте')"},
+                    "context": {"type": "string", "description": "Дополнительный контекст (опционально)"},
+                },
+                "required": ["goal"],
+            },
+            fn=lambda goal, context="": _plan_task(registry_ref, goal, context),
+            skills=["agent", "plan", "orchestrator", "strategy", "planning"],
+            attributes={
+                "category": "local",
+                "read_only": True,
+                "dangerous": False,
+                "resource_type": "plan",
+                "speed": "fast",
+                "tags": ["agent", "plan", "strategy", "steps", "план", "задача"],
+            },
+            example='agent.plan(goal="Создать сайт для кофейни и отправить ссылку по почте")',
+        ),
     ]
+
+
+def _plan_task(registry, goal: str, context: str = "") -> str:
+    """Разбить задачу на шаги с указанием инструментов."""
+    import re
+
+    goal_lower = goal.lower()
+
+    # Определяем тип задачи и генерируем план
+    steps: list[dict] = []
+
+    # Сайт
+    if any(kw in goal_lower for kw in ["сайт", "site", "страниц", "лендинг", "landing"]):
+        topic = re.sub(r".*(сайт|site|лендинг)\s+(для|о|на тему)\s+", "", goal, flags=re.IGNORECASE).strip()
+        if not topic:
+            topic = goal
+        steps.append({"step": 1, "tool": "site.create", "args": {"topic": topic}, "desc": f"Создать сайт на тему '{topic}'"})
+        steps.append({"step": 2, "tool": "files.get_links", "args": {"pattern": "*.php"}, "desc": "Получить ссылки на файлы сайта"})
+
+    # Исследование
+    if any(kw in goal_lower for kw in ["исслед", "research", "изучи", "найди информацию", "узнай"]):
+        topic = goal
+        steps.append({"step": len(steps)+1, "tool": "web.research", "args": {"topic": topic, "depth": 2}, "desc": f"Исследовать тему '{topic}'"})
+
+    # Email
+    if any(kw in goal_lower for kw in ["почт", "email", "отправ", "письм"]):
+        steps.append({"step": len(steps)+1, "tool": "smtp.send_email", "args": {"to_addr": "user@example.com", "subject": "Результат", "body": "..."}, "desc": "Отправить результат по почте"})
+
+    # Файлы
+    if any(kw in goal_lower for kw in ["файл", "file", "документ", "document", "отчёт", "report"]):
+        if any(kw in goal_lower for kw in ["excel", "xlsx", "таблиц"]):
+            steps.append({"step": len(steps)+1, "tool": "office.create_xlsx", "args": {"path": "report.xlsx", "headers_json": "[]", "rows_json": "[]"}, "desc": "Создать Excel-отчёт"})
+        elif any(kw in goal_lower for kw in ["word", "docx"]):
+            steps.append({"step": len(steps)+1, "tool": "office.create_docx", "args": {"path": "report.docx", "content": "..."}, "desc": "Создать Word-документ"})
+
+    # Расчёты
+    if any(kw in goal_lower for kw in ["рассчитай", "расчёт", "calculate", "вычисли"]):
+        steps.append({"step": len(steps)+1, "tool": "find_tools", "args": {"query": goal, "limit": 3}, "desc": "Найти подходящий инструмент для расчёта"})
+        steps.append({"step": len(steps)+1, "tool": "call_tool", "args": {"name": "...", "arguments_json": "{}"}, "desc": "Выполнить расчёт"})
+
+    # CAD/3D
+    if any(kw in goal_lower for kw in ["3d", "cad", "модель", "stl", "openscad", "freecad"]):
+        steps.append({"step": len(steps)+1, "tool": "cad.render_openscad", "args": {"path": "model.scad"}, "desc": "Создать 3D-модель"})
+        steps.append({"step": len(steps)+1, "tool": "cad.inspect_stl", "args": {"path": "model.stl"}, "desc": "Проверить геометрию"})
+
+    # Если ничего не определили — общий план
+    if not steps:
+        steps.append({"step": 1, "tool": "find_tools", "args": {"query": goal, "limit": 5}, "desc": f"Найти инструменты для: '{goal}'"})
+        steps.append({"step": 2, "tool": "call_tool", "args": {"name": "<из результатов шага 1>", "arguments_json": "{}"}, "desc": "Выполнить найденный инструмент"})
+        steps.append({"step": 3, "tool": "files.get_links", "args": {"pattern": "*"}, "desc": "Получить ссылки на созданные файлы"})
+
+    if context:
+        steps.append({"step": len(steps)+1, "tool": "(info)", "args": {}, "desc": f"Контекст: {context}"})
+
+    # Формируем ответ
+    lines = [
+        f"## 📋 План выполнения задачи",
+        f"**Цель:** {goal}\n",
+    ]
+
+    for s in steps:
+        args_str = ", ".join(f"{k}={v!r}" for k, v in s["args"].items() if v and v != "..." and v != "{}" and v != "[]")
+        lines.append(f"### Шаг {s['step']}: {s['desc']}")
+        lines.append(f"```")
+        lines.append(f"{s['tool']}({args_str})")
+        lines.append(f"```\n")
+
+    lines.append("---")
+    lines.append("*Выполняйте шаги последовательно. Результат каждого шага используйте как входные данные для следующего.*")
+
+    return "\n".join(lines)
