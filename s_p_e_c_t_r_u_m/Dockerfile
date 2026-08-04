@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Код приложения
 COPY spectrum/ spectrum/
-COPY .env.example .env.example
+COPY README.md ./
 
 # Директория для данных
 RUN mkdir -p /app/knowledge_base /app/data
