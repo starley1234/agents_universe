@@ -1,0 +1,23 @@
+services:
+  cortex:
+    build: .
+    env_file: .env
+    ports:
+      - "8117:8117"
+    volumes:
+      - ./workspace:/app/workspace
+    depends_on:
+      - redis
+    environment:
+      CORTEX_EVENT_BUS: redis
+      REDIS_URL: redis://redis:6379/0
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8117
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - cortex_redis:/data
+
+volumes:
+  cortex_redis:

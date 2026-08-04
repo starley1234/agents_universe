@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cortex": {
+      "url": "http://localhost:8117/sse",
+      "description": "C.O.R.T.E.X. router: workflows, blackboard, event traces and agent_toolkit"
+    },
+    "agent-toolkit-through-cortex": {
+      "url": "http://localhost:8117/sse",
+      "description": "Use cortex.search_tools then cortex.call_tool"
+    }
+  }
+}
