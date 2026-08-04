@@ -9,7 +9,6 @@ ENV/
 .env
 .env.*
 !.env.example
-# Оставляем примеры, чтобы знать, какие ключи нужны.
 
 ## Байткод и кэши Python
 __pycache__/
@@ -73,3 +72,7 @@ agentic_workflow_os/workspace/
 saps/workdir/
 saps/*.docx
 saps/*.xlsx
+
+## Рантайм-артефакты s_p_e_c_t_r_u_m: векторная база ChromaDB, knowledge_base.
+s_p_e_c_t_r_u_m/data/
+s_p_e_c_t_r_u_m/knowledge_base/

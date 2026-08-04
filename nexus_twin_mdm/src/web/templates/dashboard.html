@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Header banner -->
+    <div class="bg-gradient-to-r from-slate-800 to-slate-800/60 border border-slate-700/80 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                <i class="fa-solid fa-building-shield text-blue-400"></i>
+                Холдинг: Управление Мастер-Данными и Сертификация АП-25
+            </h1>
+            <p class="text-sm text-slate-400 mt-1">
+                Единая шина НСИ, Time-Travel EAV атрибуты, спецификации EBOM/MBOM и неизменяемая цепочка бейслайнов с криптографическим SHA-256 контролем.
+            </p>
+        </div>
+        <div class="flex items-center space-x-3">
+            <a href="/ui/generator" class="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-sm font-medium transition-all flex items-center shadow-lg shadow-purple-600/20">
+                <i class="fa-solid fa-wand-magic-sparkles mr-2"></i>Синтез предприятия
+            </a>
+            <a href="/ui/duplicates" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center shadow-lg shadow-amber-600/20">
+                <i class="fa-solid fa-code-merge mr-2"></i>Слияние дубликатов
+            </a>
+            <a href="/ui/objects" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center shadow-lg shadow-blue-600/20">
+                <i class="fa-solid fa-plus mr-2"></i>Новый объект
+            </a>
+            <a href="/ui/agent" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium transition-colors flex items-center">
+                <i class="fa-solid fa-robot mr-2 text-cyan-400"></i>Аудит Холдинга AI
+            </a>
+        </div>
+    </div>
+
+    <!-- KPI Cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 flex items-center justify-between">
+            <div>
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Цифровые Двойники</p>
+                <p class="text-2xl font-bold text-white mt-1">{{ stats.objects_count }}</p>
+            </div>
+            <div class="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400">
+                <i class="fa-solid fa-cubes text-xl"></i>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 flex items-center justify-between">
+            <div>
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Орг. единицы Холдинга</p>
+                <p class="text-2xl font-bold text-white mt-1">{{ stats.org_count }}</p>
+            </div>
+            <div class="w-12 h-12 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400">
+                <i class="fa-solid fa-sitemap text-xl"></i>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 flex items-center justify-between">
+            <div>
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Источники и PLM</p>
+                <p class="text-2xl font-bold text-white mt-1">{{ stats.sources_count }}</p>
+            </div>
+            <div class="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                <i class="fa-solid fa-server text-xl"></i>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 flex items-center justify-between">
+            <div>
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Типы Онтологии</p>
+                <p class="text-2xl font-bold text-white mt-1">{{ stats.types_count }}</p>
+            </div>
+            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400">
+                <i class="fa-solid fa-layer-group text-xl"></i>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 flex items-center justify-between">
+            <div>
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Целостность SHA-256</p>
+                <p class="text-2xl font-bold {% if stats.compliance_rate == 100 %}text-emerald-400{% else %}text-amber-400{% endif %} mt-1">{{ stats.compliance_rate }}%</p>
+            </div>
+            <div class="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                <i class="fa-solid fa-shield-check text-xl"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content Layout -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Recent Objects Table -->
+        <div class="lg:col-span-2 bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <div class="px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+                <h3 class="text-base font-semibold text-white flex items-center">
+                    <i class="fa-solid fa-list-ul text-blue-400 mr-2"></i>Последние Цифровые Двойники
+                </h3>
+                <a href="/ui/objects" class="text-xs text-blue-400 hover:text-blue-300 font-medium">Все объекты &rarr;</a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase font-medium bg-slate-800">
+                            <th class="py-3 px-6">Код (Master Code)</th>
+                            <th class="py-3 px-6">Наименование</th>
+                            <th class="py-3 px-6">Тип</th>
+                            <th class="py-3 px-6">Статус</th>
+                            <th class="py-3 px-6 text-right">Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700/60 text-sm">
+                        {% for obj in recent_objects %}
+                        <tr class="hover:bg-slate-700/30 transition-colors">
+                            <td class="py-3 px-6 font-mono font-medium text-blue-400">
+                                <a href="/ui/objects/{{ obj.id }}" class="hover:underline">{{ obj.master_code }}</a>
+                            </td>
+                            <td class="py-3 px-6 text-slate-200">
+                                {{ obj.display_name }}
+                            </td>
+                            <td class="py-3 px-6">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-700 text-slate-300">
+                                    {{ obj.type_id }}
+                                </span>
+                            </td>
+                            <td class="py-3 px-6">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                    {{ obj.state }}
+                                </span>
+                            </td>
+                            <td class="py-3 px-6 text-right">
+                                <a href="/ui/objects/{{ obj.id }}" class="text-slate-400 hover:text-white transition-colors">
+                                    <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="py-8 text-center text-slate-500">Нет добавленных объектов в базе.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- System & Agent Status Card -->
+        <div class="space-y-6">
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 shadow-lg space-y-4">
+                <h3 class="text-base font-semibold text-white flex items-center">
+                    <i class="fa-solid fa-microchip text-cyan-400 mr-2"></i>Параметры и протоколы
+                </h3>
+                <div class="space-y-3 text-sm">
+                    <div class="flex justify-between py-2 border-b border-slate-700/60">
+                        <span class="text-slate-400">Архитектура БД:</span>
+                        <span class="font-mono text-slate-200 uppercase">{{ db_dialect }}</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-slate-700/60">
+                        <span class="text-slate-400">Мульти-аренда (RLS):</span>
+                        <span class="text-emerald-400 font-semibold">Включено (admin)</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-slate-700/60">
+                        <span class="text-slate-400">LLM Провайдер:</span>
+                        <span class="font-mono text-blue-400">{{ llm_provider }}</span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-slate-700/60">
+                        <span class="text-slate-400">MCP Сервер:</span>
+                        <span class="text-emerald-400 font-semibold">JSON-RPC & SSE</span>
+                    </div>
+                    <div class="flex justify-between py-2">
+                        <span class="text-slate-400">Секционирование:</span>
+                        <span class="text-slate-200">2025–2026 + default</span>
+                    </div>
+                </div>
+
+                <div class="pt-2">
+                    <a href="/ui/mcp" class="block w-full text-center py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs font-medium text-slate-200 transition-colors">
+                        <i class="fa-solid fa-book mr-1.5"></i>Инспекция MCP инструментов
+                    </a>
+                </div>
+            </div>
+
+            <div class="bg-gradient-to-br from-blue-900/40 to-indigo-900/40 border border-blue-500/30 rounded-xl p-6 shadow-lg">
+                <h4 class="text-sm font-semibold text-blue-300 flex items-center">
+                    <i class="fa-solid fa-brain mr-2"></i>Автономный Агент Холдинга
+                </h4>
+                <p class="text-xs text-slate-300 mt-2 leading-relaxed">
+                    Готовый агент на фреймворке <strong>LangGraph</strong> выполняет полный цикл: сбор контекста &rarr; запуск инструментов &rarr; проверка АП-25 &rarr; аудит бейслайнов.
+                </p>
+                <a href="/ui/agent" class="mt-4 inline-flex items-center text-xs font-semibold text-blue-400 hover:text-blue-300">
+                    Отправить запрос агенту &rarr;
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

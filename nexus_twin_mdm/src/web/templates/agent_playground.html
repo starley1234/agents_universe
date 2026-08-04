@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-6" x-data="agentPlayground()">
+    <!-- Header banner -->
+    <div class="bg-gradient-to-r from-slate-800 to-slate-800/60 border border-slate-700 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-white flex items-center">
+                <i class="fa-solid fa-robot text-cyan-400 mr-2.5"></i>
+                LangGraph Автономный Агент Холдинга МДМ
+            </h1>
+            <p class="text-xs text-slate-400 mt-1 max-w-2xl">
+                Агент использует онтологию Холдинга и внешние инструменты (REST API / MCP Server) для проверки НСИ, верификации EBOM и контроля сертификационных требований АП-25.
+            </p>
+        </div>
+        <div class="flex items-center space-x-2">
+            <span class="px-3 py-1.5 rounded-lg text-xs font-mono bg-slate-900 text-blue-400 border border-slate-700">
+                Провайдер: {{ provider }}
+            </span>
+        </div>
+    </div>
+
+    <!-- Playground Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- LEFT: Query Panel & Sample Prompts -->
+        <div class="lg:col-span-1 space-y-4">
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 shadow-lg space-y-4">
+                <h3 class="text-sm font-semibold text-white flex items-center">
+                    <i class="fa-solid fa-terminal text-blue-400 mr-2"></i>Запрос агенту
+                </h3>
+                
+                <form @submit.prevent="runQuery" class="space-y-3">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">Поставьте задачу или вопрос:</label>
+                        <textarea x-model="queryText" rows="4" required placeholder="Например: Проверь целостность цепочки бейслайнов и спецификацию EBOM для ENG-500-MASTER..." class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm text-slate-200 focus:outline-none focus:border-blue-500"></textarea>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-1">
+                        <label class="flex items-center text-xs text-slate-400">
+                            <input type="checkbox" x-model="useStreaming" class="mr-2 rounded bg-slate-900 border-slate-700 text-blue-600 focus:ring-0">
+                            SSE Стриминг шагов
+                        </label>
+                        <button type="submit" :disabled="loading" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-sm font-semibold transition-colors flex items-center shadow-lg shadow-blue-600/20">
+                            <i class="fa-solid fa-play mr-2" :class="{'fa-spin fa-spinner': loading, 'fa-play': !loading}"></i>
+                            <span x-text="loading ? 'Выполнение...' : 'Запустить агента'"></span>
+                        </button>
+                    </div>
+                </form>
+
+                <!-- Quick Prompt Chips -->
+                <div class="pt-3 border-t border-slate-700/80 space-y-2">
+                    <p class="text-xs font-medium text-slate-400">Быстрые сценарии проверки:</p>
+                    <button @click="setQuery('Синтезируй цифровой двойник вымышленного авиастроительного завода \'Небесный Титан\' — производство БПЛА и авионики')" class="w-full text-left text-xs bg-gradient-to-r from-purple-900/40 to-slate-900/60 hover:from-purple-800/40 hover:to-slate-700/50 border border-purple-500/40 rounded-lg p-2.5 text-purple-300 transition-colors">
+                        <i class="fa-solid fa-wand-magic-sparkles text-purple-400 mr-1.5"></i>Синтез предприятия по описанию
+                    </button>
+                    <button @click="setQuery('Проверь целостность криптографической цепочки бейслайнов и сертификационный статус АП-25 для всех объектов Холдинга')" class="w-full text-left text-xs bg-slate-900/60 hover:bg-slate-700/50 border border-slate-700/60 rounded-lg p-2.5 text-slate-300 transition-colors">
+                        <i class="fa-solid fa-shield-check text-emerald-400 mr-1.5"></i>Проверка бейслайнов и АП-25
+                    </button>
+                    <button @click="setQuery('Получи спецификацию EBOM для авиационного двигателя ENG-500-MASTER и рассчитай комплектующие')" class="w-full text-left text-xs bg-slate-900/60 hover:bg-slate-700/50 border border-slate-700/60 rounded-lg p-2.5 text-slate-300 transition-colors">
+                        <i class="fa-solid fa-diagram-project text-indigo-400 mr-1.5"></i>Спецификация EBOM двигателя
+                    </button>
+                    <button @click="setQuery('Проверить согласованность источников Teamcenter PLM (plm) и AI Matcher (ai) для свойств мастер-данных')" class="w-full text-left text-xs bg-slate-900/60 hover:bg-slate-700/50 border border-slate-700/60 rounded-lg p-2.5 text-slate-300 transition-colors">
+                        <i class="fa-solid fa-scale-balanced text-amber-400 mr-1.5"></i>Аудит источников PLM и AI
+                    </button>
+                </div>
+            </div>
+
+            <!-- Graph Topology Info -->
+            <div class="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 text-xs space-y-2">
+                <span class="font-semibold text-slate-300 block"><i class="fa-solid fa-sitemap mr-1 text-blue-400"></i>Топология LangGraph StateGraph:</span>
+                <p class="text-slate-400 leading-relaxed font-mono">
+                    retrieve &rarr; reason &rarr; (execute_tools) &rarr; verify_compliance &rarr; finalize
+                </p>
+            </div>
+        </div>
+
+        <!-- RIGHT: Execution Stream & Result -->
+        <div class="lg:col-span-2 space-y-4">
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 shadow-lg min-h-[420px] flex flex-col justify-between">
+                <div>
+                    <div class="flex items-center justify-between pb-4 border-b border-slate-700">
+                        <h3 class="text-sm font-semibold text-white flex items-center">
+                            <i class="fa-solid fa-stream text-cyan-400 mr-2"></i>Журнал исполнения и Отчёт агента
+                        </h3>
+                        <span x-show="statusBadge" x-text="statusBadge" class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"></span>
+                    </div>
+
+                    <!-- Step events list -->
+                    <div class="my-4 space-y-2 max-h-48 overflow-y-auto">
+                        <template x-for="(ev, idx) in events" :key="idx">
+                            <div class="flex items-center space-x-2 text-xs py-1.5 px-3 rounded bg-slate-900/60 border border-slate-700/40">
+                                <i class="fa-solid" :class="ev.icon"></i>
+                                <span class="font-mono text-slate-400" x-text="ev.time"></span>
+                                <span class="text-slate-200" x-text="ev.text"></span>
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- Markdown Result Box -->
+                    <div x-show="resultText" class="mt-4 p-4 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-sm whitespace-pre-wrap leading-relaxed font-sans" x-text="resultText"></div>
+
+                    <div x-show="!loading && !resultText && events.length === 0" class="py-20 text-center text-slate-500">
+                        <i class="fa-solid fa-robot text-4xl mb-3 block opacity-40"></i>
+                        Выберите сценарий слева или введите задачу для старта LangGraph-пайплайна.
+                    </div>
+                </div>
+
+                <div x-show="toolExecutions.length > 0" class="mt-4 pt-4 border-t border-slate-700/80">
+                    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Выполненные инструменты:</p>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="(tool, i) in toolExecutions" :key="i">
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-mono bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                                <i class="fa-solid fa-wrench mr-1.5 text-blue-400"></i><span x-text="tool.tool"></span>
+                            </span>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function agentPlayground() {
+    return {
+        queryText: 'Проверь целостность цепочки бейслайнов и статус сертификации АП-25 для всех объектов Холдинга',
+        loading: false,
+        useStreaming: true,
+        events: [],
+        resultText: '',
+        statusBadge: '',
+        toolExecutions: [],
+
+        setQuery(txt) {
+            this.queryText = txt;
+        },
+
+        addEvent(text, icon = 'fa-check text-blue-400') {
+            const now = new Date();
+            const t = now.toTimeString().split(' ')[0];
+            this.events.push({ time: t, text: text, icon: icon });
+        },
+
+        async runQuery() {
+            this.loading = true;
+            this.events = [];
+            this.resultText = '';
+            this.statusBadge = '';
+            this.toolExecutions = [];
+
+            this.addEvent('Старт задачи в LangGraph StateGraph...', 'fa-play text-blue-400');
+
+            try {
+                if (this.useStreaming) {
+                    const resp = await fetch('/api/agent/stream', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query: this.queryText })
+                    });
+                    const reader = resp.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let buffer = '';
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n\n');
+                        buffer = lines.pop();
+
+                        for (const block of lines) {
+                            if (!block.trim()) continue;
+                            const rows = block.split('\n');
+                            let eventType = 'message';
+                            let dataStr = '{}';
+
+                            for (const row of rows) {
+                                if (row.startsWith('event: ')) {
+                                    eventType = row.replace('event: ', '').trim();
+                                } else if (row.startsWith('data: ')) {
+                                    dataStr = row.replace('data: ', '').trim();
+                                }
+                            }
+                            const dataObj = JSON.parse(dataStr);
+                            if (eventType === 'step_start') {
+                                this.addEvent(dataObj.message, 'fa-circle-notch fa-spin text-cyan-400');
+                            } else if (eventType === 'tool_call') {
+                                this.addEvent(dataObj.message, 'fa-wrench text-indigo-400');
+                            } else if (eventType === 'reflect') {
+                                this.addEvent(dataObj.message, 'fa-shield-halved text-emerald-400');
+                                this.statusBadge = dataObj.status === 'PASSED_100_PERCENT' ? '100% ВАЛИДНО' : 'ОТКЛОНЕНИЕ';
+                            } else if (eventType === 'done') {
+                                this.resultText = dataObj.result;
+                                this.toolExecutions = dataObj.tool_executions || [];
+                                this.addEvent('Агент успешно завершил выполнение задачи.', 'fa-check-circle text-emerald-400');
+                            }
+                        }
+                    }
+                } else {
+                    const resp = await fetch('/api/agent/run', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query: this.queryText })
+                    });
+                    const dataObj = await resp.json();
+                    this.resultText = dataObj.result;
+                    this.toolExecutions = dataObj.tool_executions || [];
+                    this.statusBadge = dataObj.compliance_status === 'PASSED_100_PERCENT' ? '100% ВАЛИДНО' : 'ОТКЛОНЕНИЕ';
+                    this.addEvent('Агент успешно завершил выполнение задачи.', 'fa-check-circle text-emerald-400');
+                }
+            } catch (e) {
+                this.addEvent('Ошибка соединения с сервером агента: ' + e, 'fa-triangle-exclamation text-red-400');
+            } finally {
+                this.loading = false;
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-6" x-data="duplicatesUI()">
+    <!-- Header banner -->
+    <div class="bg-gradient-to-r from-slate-800 to-slate-800/60 border border-slate-700 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-white flex items-center">
+                <i class="fa-solid fa-code-merge text-amber-400 mr-2.5"></i>
+                Управление Дубликатами и Дедупликация МДМ
+            </h1>
+            <p class="text-xs text-slate-400 mt-1 max-w-3xl">
+                Алгоритмический поиск дублирующихся записей по нечеткой схожести строк (SequenceMatcher / Levenshtein), совпадению внешних идентификаторов в <code class="bg-slate-900 px-1 py-0.5 rounded text-blue-300">object_xref</code> и ключевым атрибутам. Транзакционное слияние с переносом EAV-свойств по Trust Score и перепривязкой узлов EBOM.
+            </p>
+        </div>
+        <div class="flex items-center space-x-3">
+            <button @click="scanDuplicates" :disabled="loading" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors flex items-center shadow-lg shadow-blue-600/20">
+                <i class="fa-solid fa-rotate mr-2" :class="{'fa-spin': loading}"></i>
+                <span x-text="loading ? 'Сканирование...' : 'Сканировать дубликаты'"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Cluster Results Area -->
+    <div class="space-y-4">
+        <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white flex items-center">
+                <i class="fa-solid fa-layer-group text-indigo-400 mr-2"></i>
+                Обнаруженные кластеры дубликатов
+                <span class="ml-2 px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-300" x-text="clusters.length"></span>
+            </h3>
+            <div class="flex items-center space-x-2 text-xs text-slate-400">
+                <span>Порог схожести:</span>
+                <select x-model="threshold" @change="scanDuplicates" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200">
+                    <option value="0.65">65% (Широкий поиск)</option>
+                    <option value="0.70">70% (Базовый)</option>
+                    <option value="0.75" selected>75% (Рекомендуемый)</option>
+                    <option value="0.85">85% (Строгий)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- If Loading -->
+        <div x-show="loading" class="py-16 text-center text-slate-400">
+            <i class="fa-solid fa-circle-notch fa-spin text-3xl text-blue-400 mb-3 block"></i>
+            Сканирование мастер-данных и вычисление схожести атрибутов...
+        </div>
+
+        <!-- If Clusters Empty -->
+        <div x-show="!loading && clusters.length === 0" class="bg-slate-800/60 border border-slate-700/80 rounded-2xl p-12 text-center text-slate-400" style="display: none;">
+            <div class="w-16 h-16 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mx-auto mb-4 text-2xl">
+                <i class="fa-solid fa-check"></i>
+            </div>
+            <h4 class="text-lg font-bold text-white">Дубликаты отсутствуют</h4>
+            <p class="text-xs text-slate-400 mt-1">Все активные объекты в реестре МДМ нормализованы и не имеют конфликтующих пар.</p>
+        </div>
+
+        <!-- Clusters List -->
+        <template x-for="(cl, idx) in clusters" :key="cl.cluster_id">
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg p-6 space-y-4">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-2 pb-4 border-b border-slate-700">
+                    <div>
+                        <span class="text-xs font-mono text-slate-400" x-text="cl.cluster_id"></span>
+                        <h4 class="text-base font-bold text-white mt-0.5 flex items-center">
+                            <span class="text-indigo-400 mr-2" x-text="cl.type_id.toUpperCase()"></span>
+                            <span>Конфликт мастер-кодов и атрибутов</span>
+                        </h4>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <span class="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                            <i class="fa-solid fa-triangle-exclamation mr-1"></i>Схожесть: <span x-text="Math.round(cl.similarity * 100) + '%'"></span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="text-xs text-slate-300 bg-slate-900/60 border border-slate-700/60 rounded-lg p-3">
+                    <span class="font-semibold text-amber-400">Основание для объединения: </span>
+                    <span x-text="cl.reason"></span>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Primary Candidate Box -->
+                    <div class="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 space-y-3 relative">
+                        <div class="absolute top-3 right-3">
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                                МАСТЕР-ОБЪЕКТ (PRIMARY)
+                            </span>
+                        </div>
+                        <div>
+                            <span class="text-xs text-slate-400 font-mono">Master Code</span>
+                            <p class="text-sm font-bold font-mono text-emerald-400" x-text="cl.primary_candidate.master_code"></p>
+                        </div>
+                        <div>
+                            <span class="text-xs text-slate-400">Наименование:</span>
+                            <p class="text-sm font-semibold text-slate-100" x-text="cl.primary_candidate.display_name"></p>
+                        </div>
+                        <div class="pt-2 border-t border-slate-800 flex justify-between items-center text-xs text-slate-400">
+                            <span>ID: <code class="font-mono text-slate-300" x-text="cl.primary_candidate.id.substring(0,8) + '...'"></code></span>
+                            <span class="text-emerald-400 font-medium">Рекомендуется сохранить</span>
+                        </div>
+                    </div>
+
+                    <!-- Duplicate Candidate Box -->
+                    <template x-for="(dup, dIdx) in cl.duplicates" :key="dup.id">
+                        <div class="bg-slate-900/80 border border-amber-500/30 rounded-xl p-4 space-y-3 relative">
+                            <div class="absolute top-3 right-3">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                                    ДУБЛИКАТ (MERGE SOURCE)
+                                </span>
+                            </div>
+                            <div>
+                                <span class="text-xs text-slate-400 font-mono">Master Code</span>
+                                <p class="text-sm font-bold font-mono text-amber-400" x-text="dup.master_code"></p>
+                            </div>
+                            <div>
+                                <span class="text-xs text-slate-400">Наименование:</span>
+                                <p class="text-sm font-semibold text-slate-100" x-text="dup.display_name"></p>
+                            </div>
+                            <div class="pt-2 border-t border-slate-800 flex justify-between items-center">
+                                <span class="text-xs text-slate-400">ID: <code class="font-mono text-slate-300" x-text="dup.id.substring(0,8) + '...'"></code></span>
+                                <button @click="mergePair(cl.primary_candidate.id, dup.id, dup.master_code)" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center shadow-lg shadow-amber-600/20">
+                                    <i class="fa-solid fa-code-merge mr-1.5"></i>Слить в мастер (Trust Based)
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+    </div>
+</div>
+
+<script>
+function duplicatesUI() {
+    return {
+        loading: false,
+        clusters: [],
+        threshold: 0.70,
+
+        async init() {
+            await this.scanDuplicates();
+        },
+
+        async scanDuplicates() {
+            this.loading = true;
+            try {
+                const resp = await fetch(`/api/mdm/duplicates/detect?threshold=${this.threshold}`);
+                const data = await resp.json();
+                this.clusters = data.clusters || [];
+            } catch (e) {
+                alert('Ошибка сканирования дубликатов: ' + e);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async mergePair(primaryId, duplicateId, dupCode) {
+            if (!confirm(`Вы уверены, что хотите слить дубликат "${dupCode}" в мастер-объект? Все EAV-свойства и спецификации EBOM будут консолидированы.`)) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/mdm/duplicates/merge', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        primary_id: primaryId,
+                        duplicate_id: duplicateId,
+                        strategy: 'trust_based',
+                        actor_id: 'admin'
+                    })
+                });
+                if (resp.ok) {
+                    const res = await resp.json();
+                    alert(`Слияние успешно выполнено!\n\nПеренесено EAV свойств: ${res.merged_properties_count}\nПерепривязано узлов EBOM: ${res.rebound_links_count}\nСоздан бейслайн: #${res.new_baseline.seq}`);
+                    await this.scanDuplicates();
+                } else {
+                    const err = await resp.json();
+                    alert('Ошибка слияния: ' + (err.detail || 'Неизвестная ошибка'));
+                }
+            } catch (e) {
+                alert('Ошибка соединения: ' + e);
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

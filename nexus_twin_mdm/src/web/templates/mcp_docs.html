@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-6" x-data="mcpBench()">
+    <!-- Header banner -->
+    <div class="bg-gradient-to-r from-slate-800 to-slate-800/60 border border-slate-700 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-white flex items-center">
+                <i class="fa-solid fa-plug text-amber-400 mr-2.5"></i>
+                MCP Сервер (Model Context Protocol)
+            </h1>
+            <p class="text-xs text-slate-400 mt-1 max-w-3xl">
+                Стандартный протокол MCP для интеграции с внешними агентами (Claude Desktop, LangChain, AWOS, Agent Toolkit). Поддерживается JSON-RPC 2.0 по адресу <code class="bg-slate-900 px-1 py-0.5 rounded text-blue-300">/api/mcp/rpc</code> и SSE-discovery по адресу <code class="bg-slate-900 px-1 py-0.5 rounded text-blue-300">/api/mcp/sse</code>.
+            </p>
+        </div>
+        <div class="flex items-center space-x-2">
+            <span class="px-3 py-1.5 rounded-lg text-xs font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <i class="fa-solid fa-check mr-1.5"></i>SSE & Stdio Ready
+            </span>
+        </div>
+    </div>
+
+    <!-- MCP Tools Grid & Test Bench -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- LEFT: List of Tools -->
+        <div class="lg:col-span-1 space-y-4">
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-5 shadow-lg space-y-3">
+                <h3 class="text-sm font-semibold text-white flex items-center justify-between">
+                    <span><i class="fa-solid fa-toolbox text-amber-400 mr-2"></i>Зарегистрированные инструменты</span>
+                    <span class="bg-slate-700 text-slate-300 px-2 py-0.5 rounded text-xs">{{ tools | length }}</span>
+                </h3>
+                
+                <div class="space-y-2 max-h-[500px] overflow-y-auto">
+                    {% for t in tools %}
+                    <div @click="selectTool('{{ t.name }}')" class="p-3 rounded-lg bg-slate-900/60 hover:bg-slate-700/50 border border-slate-700/60 cursor-pointer transition-colors" :class="{'border-amber-500/60 bg-slate-700/40': selectedTool === '{{ t.name }}'}">
+                        <div class="flex items-center justify-between">
+                            <span class="font-mono text-xs font-bold text-amber-400">{{ t.name }}</span>
+                            <i class="fa-solid fa-chevron-right text-[10px] text-slate-500"></i>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1 line-clamp-2">{{ t.description }}</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- CURL Example Box -->
+            <div class="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 text-xs space-y-2">
+                <span class="font-semibold text-slate-300 block"><i class="fa-solid fa-terminal mr-1 text-blue-400"></i>Пример вызова cURL (JSON-RPC):</span>
+                <pre class="bg-slate-900 p-2.5 rounded text-[11px] font-mono text-slate-300 overflow-x-auto">curl -X POST http://localhost:8117/api/mcp/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'</pre>
+            </div>
+        </div>
+
+        <!-- RIGHT: Interactive JSON-RPC Test Bench -->
+        <div class="lg:col-span-2 space-y-4">
+            <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 shadow-lg space-y-4">
+                <div class="flex items-center justify-between pb-4 border-b border-slate-700">
+                    <div>
+                        <h3 class="text-base font-semibold text-white flex items-center">
+                            <i class="fa-solid fa-flask text-cyan-400 mr-2"></i>Интерактивный тестовый стенд JSON-RPC 2.0
+                        </h3>
+                        <p class="text-xs text-slate-400 mt-0.5">Выберите инструмент слева и отправьте запрос для проверки ответа MCP-сервера.</p>
+                    </div>
+                    <button @click="runRpc" :disabled="loading" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors flex items-center shadow-lg shadow-amber-600/20">
+                        <i class="fa-solid fa-bolt mr-1.5" :class="{'fa-spin fa-spinner': loading, 'fa-bolt': !loading}"></i>
+                        <span x-text="loading ? 'Выполнение...' : 'Вызвать MCP RPC'"></span>
+                    </button>
+                </div>
+
+                <!-- Input Payload Editor -->
+                <div class="space-y-2">
+                    <label class="block text-xs font-medium text-slate-400">JSON-RPC Запрос (Method & Params):</label>
+                    <textarea x-model="payloadStr" rows="5" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-xs text-amber-300 focus:outline-none focus:border-amber-500"></textarea>
+                </div>
+
+                <!-- Response Display -->
+                <div class="space-y-2 pt-2 border-t border-slate-700/80">
+                    <label class="block text-xs font-medium text-slate-400">Ответ сервера MCP:</label>
+                    <pre class="bg-slate-900 border border-slate-700 rounded-lg p-4 font-mono text-xs text-emerald-400 overflow-x-auto min-h-[220px] max-h-[380px]" x-text="responseStr || '// Ответ будет отображён здесь...'"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function mcpBench() {
+    return {
+        selectedTool: 'mdm.search_objects',
+        loading: false,
+        payloadStr: JSON.stringify({
+            jsonrpc: "2.0",
+            method: "tools/call",
+            params: {
+                name: "mdm.search_objects",
+                arguments: { query: "" }
+            },
+            id: 1
+        }, null, 2),
+        responseStr: '',
+
+        selectTool(tname) {
+            this.selectedTool = tname;
+            let args = {};
+            if (tname === 'mdm.get_bom_graph' || tname === 'mdm.verify_compliance') {
+                args = { object_id: 'ENG-500-MASTER' };
+            } else if (tname === 'mdm.search_objects') {
+                args = { query: '' };
+            } else if (tname === 'mdm.agent_query') {
+                args = { query: 'Проверь целостность цепочки бейслайнов и АП-25 Холдинга' };
+            } else if (tname === 'mdm.upsert_property') {
+                args = { object_id: 'ENG-500-MASTER', key: 'thrust_kn', value: { value: 12.5 } };
+            }
+
+            this.payloadStr = JSON.stringify({
+                jsonrpc: "2.0",
+                method: "tools/call",
+                params: {
+                    name: tname,
+                    arguments: args
+                },
+                id: 1
+            }, null, 2);
+        },
+
+        async runRpc() {
+            this.loading = true;
+            this.responseStr = 'Отправка запроса...';
+            try {
+                const bodyObj = JSON.parse(this.payloadStr);
+                const resp = await fetch('/api/mcp/rpc', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(bodyObj)
+                });
+                const resJson = await resp.json();
+                this.responseStr = JSON.stringify(resJson, null, 2);
+            } catch (e) {
+                this.responseStr = '// Ошибка выполнения: ' + e;
+            } finally {
+                this.loading = false;
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

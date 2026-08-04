@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-8" x-data="{ tab: 'orgs' }">
+    <!-- Header banner -->
+    <div class="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-xl">
+        <h1 class="text-2xl font-bold text-white flex items-center">
+            <i class="fa-solid fa-sitemap text-emerald-400 mr-2.5"></i>
+            Справочники НСИ и Онтология Холдинга (БЛОК 1)
+        </h1>
+        <p class="text-xs text-slate-400 mt-1 max-w-3xl">
+            Иерархические структуры орг. единиц и типов на базе PostgreSQL <code class="bg-slate-900 px-1 py-0.5 rounded text-blue-300">ltree</code>, источники данных со шкалой доверия <code class="bg-slate-900 px-1 py-0.5 rounded text-blue-300">trust 0..100</code> и классификатор единиц измерения (ОКЕИ / ISO).
+        </p>
+    </div>
+
+    <!-- Tabs -->
+    <div class="border-b border-slate-700 flex space-x-6">
+        <button @click="tab = 'orgs'" :class="tab === 'orgs' ? 'border-b-2 border-emerald-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-building mr-2 text-emerald-400"></i>Орг. единицы (LTree)
+        </button>
+        <button @click="tab = 'types'" :class="tab === 'types' ? 'border-b-2 border-amber-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-layer-group mr-2 text-amber-400"></i>Онтология Типов (Types & Schema)
+        </button>
+        <button @click="tab = 'sources'" :class="tab === 'sources' ? 'border-b-2 border-blue-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-server mr-2 text-blue-400"></i>Источники (Sources & Trust)
+        </button>
+        <button @click="tab = 'uom'" :class="tab === 'uom' ? 'border-b-2 border-indigo-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-ruler-combined mr-2 text-indigo-400"></i>Единицы измерения (UOM)
+        </button>
+    </div>
+
+    <!-- TAB 1: ORG UNITS -->
+    <div x-show="tab === 'orgs'" class="space-y-4">
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">ID орг. единицы</th>
+                        <th class="py-3 px-6">Наименование</th>
+                        <th class="py-3 px-6">Родитель (Parent ID)</th>
+                        <th class="py-3 px-6 text-right">LTree Путь (Path)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for o in org_units %}
+                    <tr class="hover:bg-slate-700/30">
+                        <td class="py-3 px-6 font-mono font-semibold text-emerald-400">{{ o.id }}</td>
+                        <td class="py-3 px-6 text-slate-200">{{ o.name }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ o.parent_id | default('—') }}</td>
+                        <td class="py-3 px-6 text-right font-mono text-xs text-blue-300">{{ o.path }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 2: TYPES -->
+    <div x-show="tab === 'types'" class="space-y-4" style="display: none;">
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">ID Типа</th>
+                        <th class="py-3 px-6">Отображаемое имя</th>
+                        <th class="py-3 px-6">LTree Путь</th>
+                        <th class="py-3 px-6">JSONB Схема атрибутов</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for t in types %}
+                    <tr class="hover:bg-slate-700/30">
+                        <td class="py-3 px-6 font-mono font-semibold text-amber-400">{{ t.id }}</td>
+                        <td class="py-3 px-6 text-slate-200">{{ t.display_name }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ t.path }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-300">
+                            <pre class="bg-slate-900/60 p-2 rounded max-w-md overflow-x-auto">{{ t.schema | tojson(indent=2) }}</pre>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 3: SOURCES -->
+    <div x-show="tab === 'sources'" class="space-y-4" style="display: none;">
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">ID Источника</th>
+                        <th class="py-3 px-6">Наименование</th>
+                        <th class="py-3 px-6">Тип (Kind)</th>
+                        <th class="py-3 px-6 text-right">Уровень доверия (Trust 0..100)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for s in sources %}
+                    <tr class="hover:bg-slate-700/30">
+                        <td class="py-3 px-6 font-mono font-semibold text-blue-400">{{ s.id }}</td>
+                        <td class="py-3 px-6 text-slate-200">{{ s.name }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ s.kind }}</td>
+                        <td class="py-3 px-6 text-right">
+                            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold {% if s.trust >= 80 %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% elif s.trust >= 50 %}bg-blue-500/10 text-blue-400 border border-blue-500/20{% else %}bg-amber-500/10 text-amber-400{% endif %}">
+                                <i class="fa-solid fa-shield mr-1"></i>{{ s.trust }} / 100
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 4: UOM -->
+    <div x-show="tab === 'uom'" class="space-y-4" style="display: none;">
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">Цифровой Код</th>
+                        <th class="py-3 px-6">Наименование</th>
+                        <th class="py-3 px-6">Условное Нац.</th>
+                        <th class="py-3 px-6">Условное Межд.</th>
+                        <th class="py-3 px-6 text-right">Множитель (Factor)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for u in uom %}
+                    <tr class="hover:bg-slate-700/30">
+                        <td class="py-3 px-6 font-mono font-semibold text-indigo-400">{{ u.code }}</td>
+                        <td class="py-3 px-6 text-slate-200">{{ u.name }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-300">{{ u.symbol_nat | default('—') }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ u.symbol_intl | default('—') }}</td>
+                        <td class="py-3 px-6 text-right font-mono text-xs text-emerald-400">{{ u.factor }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
