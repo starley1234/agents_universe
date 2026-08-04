@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru" class="h-full bg-slate-900 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_title | default('NexusTwin MDM — AI-driven Holding MDM & Certification') }}</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Font Awesome CDN for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body class="h-full flex flex-col font-sans antialiased">
+    <!-- Navbar -->
+    <header class="bg-slate-800/90 backdrop-blur border-b border-slate-700 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <!-- Logo & Brand -->
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                        <i class="fa-solid fa-cube text-white text-lg"></i>
+                    </div>
+                    <div>
+                        <span class="text-lg font-bold tracking-tight text-white">NexusTwin <span class="text-blue-400">MDM</span></span>
+                        <span class="block text-xs text-slate-400">ХОЛДИНГ: MDM + СЕРТИФИКАЦИЯ + ЦИФРОВОЙ ДВОЙНИК v5.7</span>
+                    </div>
+                </div>
+
+                <!-- Navigation Links -->
+                <nav class="hidden md:flex items-center space-x-1">
+                    <a href="/" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'dashboard' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-gauge-high mr-1.5 text-blue-400"></i>Дашборд
+                    </a>
+                    <a href="/ui/objects" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'objects' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-cubes mr-1.5 text-indigo-400"></i>Цифровые Двойники
+                    </a>
+                    <a href="/ui/duplicates" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'duplicates' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-code-merge mr-1.5 text-amber-400"></i>Дубликаты и слияние
+                    </a>
+                    <a href="/ui/generator" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'generator' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-wand-magic-sparkles mr-1.5 text-purple-400"></i>Синтез предприятия
+                    </a>
+                    <a href="/ui/agent" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'agent' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-robot mr-1.5 text-cyan-400"></i>LangGraph Агент
+                    </a>
+                    <a href="/ui/ontology" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'ontology' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-sitemap mr-1.5 text-emerald-400"></i>НСИ и Онтология
+                    </a>
+                    <a href="/ui/mcp" class="px-3 py-2 rounded-md text-sm font-medium transition-colors {% if active_tab == 'mcp' %}bg-slate-700 text-white shadow-sm{% else %}text-slate-300 hover:bg-slate-700/50 hover:text-white{% endif %}">
+                        <i class="fa-solid fa-plug mr-1.5 text-amber-400"></i>MCP Сервер
+                    </a>
+                </nav>
+
+                <!-- API & Documentation Link -->
+                <div class="flex items-center space-x-3">
+                    <a href="/docs" target="_blank" class="text-xs px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 font-mono transition-colors">
+                        <i class="fa-solid fa-code mr-1"></i>REST API / Swagger
+                    </a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-slate-900 border-t border-slate-800 py-6 text-center text-xs text-slate-500">
+        <p>NexusTwin MDM & Certification Holding Platform &copy; 2026. Архитектура v5.7 / schema=public. LangGraph Autonomous Agent & MCP Server enabled.</p>
+    </footer>
+</body>
+</html>

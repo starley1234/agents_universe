@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: nexus_twin_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexustwin_secret_password
+      POSTGRES_DB: nexus_twin_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus_twin_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus_twin_app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PROJECT_NAME: "NexusTwin MDM — AI-driven Holding MDM & Certification"
+      ENVIRONMENT: "production"
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8117"
+      DATABASE_URL: "postgresql+asyncpg://nexus:nexustwin_secret_password@postgres:5432/nexus_twin_db"
+      LLM_ACTIVE_PROVIDER: "custom_remote"
+    ports:
+      - "8117:8117"
+    volumes:
+      - app_workspace:/app/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8117/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pg_data:
+  app_workspace:

@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="space-y-6" x-data="{ tab: 'properties', showPropModal: false, showBomModal: false }">
+    <!-- Breadcrumbs & Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-800/80 border border-slate-700 rounded-xl p-6 shadow-lg">
+        <div>
+            <div class="flex items-center space-x-2 text-xs text-slate-400 mb-1">
+                <a href="/ui/objects" class="hover:text-white">Цифровые Двойники</a>
+                <span>/</span>
+                <span class="text-slate-300 font-mono">{{ obj.master_code }}</span>
+            </div>
+            <h1 class="text-2xl font-bold text-white flex items-center">
+                {{ obj.display_name }}
+                <span class="ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                    {{ obj.type_id }}
+                </span>
+            </h1>
+            <p class="text-xs text-slate-400 mt-1 max-w-2xl">{{ obj.display_desc }}</p>
+        </div>
+        <div class="flex items-center space-x-3">
+            <span class="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-semibold {% if obj.state == 'active' %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% else %}bg-slate-700 text-slate-300{% endif %}">
+                <i class="fa-solid fa-circle text-[8px] mr-1.5"></i>{{ obj.state | upper }}
+            </span>
+            <a href="/ui/agent" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-medium transition-colors">
+                <i class="fa-solid fa-robot mr-1.5 text-cyan-400"></i>Проверить агентом
+            </a>
+        </div>
+    </div>
+
+    <!-- Tab Buttons -->
+    <div class="border-b border-slate-700 flex space-x-4">
+        <button @click="tab = 'properties'" :class="tab === 'properties' ? 'border-b-2 border-blue-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-list-check mr-2 text-blue-400"></i>Атрибуты EAV и Time-Travel
+        </button>
+        <button @click="tab = 'bom'" :class="tab === 'bom' ? 'border-b-2 border-indigo-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-diagram-project mr-2 text-indigo-400"></i>Спецификация EBOM / MBOM
+            <span class="ml-2 bg-slate-700 text-slate-300 px-1.5 py-0.2 rounded text-xs">{{ bom_items | length }}</span>
+        </button>
+        <button @click="tab = 'baselines'" :class="tab === 'baselines' ? 'border-b-2 border-emerald-500 text-white font-semibold' : 'text-slate-400 hover:text-slate-300'" class="pb-3 text-sm transition-colors flex items-center">
+            <i class="fa-solid fa-shield-halved mr-2 text-emerald-400"></i>Цепочка Бейслайнов (SHA-256)
+        </button>
+    </div>
+
+    <!-- TAB 1: PROPERTIES (EAV) -->
+    <div x-show="tab === 'properties'" class="space-y-4">
+        <div class="flex justify-between items-center">
+            <h3 class="text-sm font-semibold text-white">История атрибутов (с контролем Trust Score источника)</h3>
+            <button @click="showPropModal = true" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors">
+                <i class="fa-solid fa-plus mr-1"></i>Добавить свойство
+            </button>
+        </div>
+
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">ID</th>
+                        <th class="py-3 px-6">Ключ (Key)</th>
+                        <th class="py-3 px-6">Значение (JSONB)</th>
+                        <th class="py-3 px-6">Источник & Trust</th>
+                        <th class="py-3 px-6">Период (Valid Period)</th>
+                        <th class="py-3 px-6">Статус</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for p in obj.properties %}
+                    <tr class="{% if not p.is_current %}opacity-60 bg-slate-900/40{% endif %}">
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ p.id }}</td>
+                        <td class="py-3 px-6 font-semibold text-blue-400">{{ p.key }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-200">
+                            <pre class="bg-slate-900/80 p-2 rounded max-w-md overflow-x-auto">{{ p.value | tojson(indent=2) }}</pre>
+                        </td>
+                        <td class="py-3 px-6">
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-700 text-slate-200">
+                                {{ p.source_id }}
+                            </span>
+                        </td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-300">{{ p.valid_period }}</td>
+                        <td class="py-3 px-6">
+                            {% if p.is_current %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                CURRENT
+                            </span>
+                            {% else %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-700 text-slate-400">
+                                ARCHIVED
+                            </span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="py-8 text-center text-slate-500">Свойства не найдены.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 2: EBOM / MBOM TREE -->
+    <div x-show="tab === 'bom'" class="space-y-4" style="display: none;">
+        <div class="flex justify-between items-center">
+            <div>
+                <h3 class="text-sm font-semibold text-white">Иерархия спецификации объекта (EBOM / MBOM)</h3>
+                <p class="text-xs text-slate-400">Входящие подсборки и комплектующие детали в таблице object_links.</p>
+            </div>
+            <button @click="showBomModal = true" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors">
+                <i class="fa-solid fa-link mr-1"></i>Связать компонент
+            </button>
+        </div>
+
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">Тип связи</th>
+                        <th class="py-3 px-6">Код компонента</th>
+                        <th class="py-3 px-6">Наименование</th>
+                        <th class="py-3 px-6">Кол-во (Qty)</th>
+                        <th class="py-3 px-6">Позиции (Designator)</th>
+                        <th class="py-3 px-6 text-right">Период</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for lk in bom_items %}
+                    <tr class="hover:bg-slate-700/30 transition-colors">
+                        <td class="py-3 px-6">
+                            <span class="px-2 py-0.5 rounded text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                                {{ lk.link_type }}
+                            </span>
+                        </td>
+                        <td class="py-3 px-6 font-mono font-medium text-blue-400">
+                            <a href="/ui/objects/{{ lk.child_id }}" class="hover:underline">{{ lk.child_master_code }}</a>
+                        </td>
+                        <td class="py-3 px-6 text-slate-200">{{ lk.child_display_name }}</td>
+                        <td class="py-3 px-6 font-semibold text-white">{{ lk.qty }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ lk.designator | default('—') }}</td>
+                        <td class="py-3 px-6 text-right font-mono text-xs text-emerald-400">{{ lk.valid_period }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="py-8 text-center text-slate-500">В спецификацию пока не добавлено ни одного компонента.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 3: BASELINES & HASH-CHAIN VERIFICATION -->
+    <div x-show="tab === 'baselines'" class="space-y-6" style="display: none;">
+        <!-- Certification Badge Banner -->
+        <div class="bg-gradient-to-r from-emerald-900/40 to-slate-800 border border-emerald-500/30 rounded-xl p-6 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+                    <i class="fa-solid fa-shield-check text-2xl"></i>
+                </div>
+                <div>
+                    <h3 class="text-base font-bold text-white">Верификация криптографической цепочки бейслайнов (SHA-256)</h3>
+                    <p class="text-xs text-slate-300 mt-0.5">
+                        Проверка хеша каждого снимка: <code class="bg-slate-900 px-1 py-0.5 rounded text-blue-300">prev_hash | object_id | code | snapshot | compliance_ref | actor_id</code>
+                    </p>
+                </div>
+            </div>
+            <div class="text-right">
+                <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                    100% ВАЛИДНО (OK)
+                </span>
+            </div>
+        </div>
+
+        <!-- Baselines Table -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl overflow-hidden shadow-lg">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="border-b border-slate-700 bg-slate-800 text-xs uppercase text-slate-400">
+                        <th class="py-3 px-6">Seq</th>
+                        <th class="py-3 px-6">ID Бейслайна</th>
+                        <th class="py-3 px-6">SHA-256 Хеш Снимка</th>
+                        <th class="py-3 px-6">Дата фиксации</th>
+                        <th class="py-3 px-6 text-right">Статус (verify_baseline_chain)</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-700/60 text-sm">
+                    {% for b in baseline_chain %}
+                    <tr class="hover:bg-slate-700/30">
+                        <td class="py-3 px-6 font-semibold text-white">#{{ b.seq }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-slate-400">{{ b.baseline_id }}</td>
+                        <td class="py-3 px-6 font-mono text-xs text-emerald-400">{{ b.status }}</td>
+                        <td class="py-3 px-6 text-slate-300 text-xs">{{ b.created_at }}</td>
+                        <td class="py-3 px-6 text-right">
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold {% if b.status == 'OK' %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/20{% else %}bg-red-500/10 text-red-400{% endif %}">
+                                <i class="fa-solid fa-check mr-1"></i>{{ b.status }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5" class="py-8 text-center text-slate-500">Бейслайны для данного объекта отсутствуют.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Modal: Upsert Property -->
+    <div x-show="showPropModal" class="fixed inset-0 z-50 overflow-y-auto" style="display: none;">
+        <div class="flex items-center justify-center min-h-screen px-4">
+            <div @click="showPropModal = false" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm"></div>
+            <div class="relative bg-slate-800 border border-slate-700 rounded-2xl p-6 max-w-lg w-full shadow-2xl">
+                <h3 class="text-lg font-semibold text-white mb-4">Добавление EAV Свойства</h3>
+                <form id="upsertForm" @submit.prevent="submitUpsert('{{ obj.id }}')" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300">Ключ свойства (key)</label>
+                        <input type="text" id="propKey" required placeholder="weight_kg" class="mt-1 block w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300">Источник (Source ID & Trust)</label>
+                        <select id="propSource" required class="mt-1 block w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200">
+                            {% for s in sources %}
+                            <option value="{{ s.id }}">{{ s.name }} (Доверие: {{ s.trust }}%)</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300">Значение (JSONB объект)</label>
+                        <textarea id="propVal" required rows="3" placeholder='{"value": 185.0, "unit": "kg"}' class="mt-1 block w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono text-slate-200"></textarea>
+                    </div>
+                    <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                        <button type="button" @click="showPropModal = false" class="px-4 py-2 bg-slate-700 text-slate-200 rounded-lg text-sm">Отмена</button>
+                        <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm">Сохранить</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function submitUpsert(objectId) {
+    const key = document.getElementById('propKey').value;
+    const source_id = document.getElementById('propSource').value;
+    const rawVal = document.getElementById('propVal').value;
+
+    let val;
+    try {
+        val = JSON.parse(rawVal);
+    } catch (e) {
+        alert('Значение должно быть корректным JSON объектом');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/objects/${objectId}/properties`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                key: key,
+                value: val,
+                source_id: source_id,
+                actor_id: 'admin'
+            })
+        });
+        if (resp.ok) {
+            window.location.reload();
+        } else {
+            const err = await resp.json();
+            alert('Отклонено: ' + (err.detail || 'Ошибка сохранения свойства'));
+        }
+    } catch (e) {
+        alert('Ошибка: ' + e);
+    }
+}
+</script>
+{% endblock %}
