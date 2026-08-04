@@ -208,6 +208,7 @@ class AgentGraph:
             "headless_browser": False,
             "mcp": False,
             "dangerous_actions": False,
+            "mcp_servers": [],
         }
 
     def _tool_enabled(self, state: dict, tool_name: str) -> bool:
@@ -248,11 +249,15 @@ class AgentGraph:
             scratchpad = self.fs.read_file("scratchpad.md")["content"][-8000:]
         except Exception:
             scratchpad = ""
+        tool_config = {**self._default_tool_config(), **state.get("tool_config", {})}
+        mcp_servers = [server for server in tool_config.get("mcp_servers", []) if server.get("enabled")]
+        mcp_hint = "\n".join(f"- {server.get('name')}: {server.get('url')} ({server.get('transport', 'sse')})" for server in mcp_servers) or "нет подключенных MCP серверов"
         prompt = (
             f"Цель: {state.get('goal')}\n"
             f"Итерация: {state.get('iteration', 0) + 1}\n"
             f"Шаг: {step.get('title')}\n"
             f"Executive summary: {state.get('executive_summary', 'пока отсутствует')}\n"
+            f"Доступные внешние MCP серверы:\n{mcp_hint}\n"
             f"Scratchpad:\n{scratchpad}\n\n"
             "Выполни этот шаг как автономный исследователь. "
             "Сформируй содержательный Markdown-результат на русском: факты, выводы, риски, следующие действия. "

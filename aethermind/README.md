@@ -19,6 +19,10 @@
 - Переключатель темы день/ночь.
 - Просмотр и скачивание артефактов из UI.
 - Панель управления инструментами агента: LLM, файловая система, Code Interpreter, browser/MCP placeholders, dangerous actions.
+- Human-in-the-loop панель для `AWAITING_USER`: вмешательство, продолжение, rollback.
+- Просмотр настроек агента и JSON состояния задачи прямо в UI.
+- Подключение внешних MCP серверов к задаче через UI/API.
+- Live Trace обновляется через SSE + fallback polling.
 - Docker Compose для локального запуска.
 - Тесты guardrails и агентного цикла.
 
@@ -77,6 +81,35 @@ LLM_ACTIVE_PROVIDER=deterministic
 ```
 
 Но это не production-режим.
+
+## MCP серверы
+
+Внешний инструмент MCP подключается к конкретной задаче через панель **Инструменты агента → Добавить внешний MCP сервер**.
+
+Поля:
+
+- `name` — короткое имя, например `search`;
+- `url` — SSE endpoint, например `http://your-mcp-server:8001/sse`;
+- `transport` — сейчас используется `sse`.
+
+API:
+
+```bash
+curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"search","url":"http://your-mcp-server:8001/sse","transport":"sse","enabled":true}'
+```
+
+Текущая реализация сохраняет MCP серверы в `tool_config` и передает их агенту в prompt как доступные внешние инструменты. Полноценный MCP client runtime остается следующим production-hardening шагом.
+
+## Настройки агента
+
+В UI есть блок **Настройки агента**. API без секретов:
+
+```bash
+curl http://localhost:8128/api/settings
+curl http://localhost:8128/api/tasks/{task_id}/tools
+```
 
 ## Диагностика
 

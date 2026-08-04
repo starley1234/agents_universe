@@ -22,13 +22,17 @@
 - [x] Confidence scoring.
 - [x] Budget guardrails по итерациям, токенам и стоимости.
 - [x] Human-in-the-loop statuses: pause/resume/intervene/awaiting_user.
-- [x] Rollback endpoint.
-- [x] Realtime-ish обновление UI через periodic refresh и SSE endpoint на backend.
+- [x] Human-in-the-loop UI: текст вмешательства, продолжение, сохранение без запуска, rollback.
+- [x] Rollback endpoint и базовый UI выбора checkpoint/iteration.
+- [x] SSE endpoint и frontend EventSource для Live Trace + fallback polling.
 - [x] Mission Control UI на русском.
 - [x] День/ночь в интерфейсе.
+- [x] Индикатор активной работы агента/LLM и блокировка повторного запуска во время submit.
 - [x] Просмотр артефактов в UI.
 - [x] Скачивание артефактов из UI.
 - [x] Панель управления инструментами агента.
+- [x] Просмотр настроек агента и состояния задачи в UI.
+- [x] Регистрация внешних MCP серверов на задачу через UI/API.
 - [x] Docker Compose для локального запуска.
 - [x] `.env.example` без реальных секретов.
 - [x] Базовые тесты.
@@ -38,24 +42,21 @@
 - [~] **LangGraph**: реализован LangGraph-shaped класс с явными узлами, но не нативный `langgraph.StateGraph`.
 - [~] **LangSmith tracing**: архитектурно предусмотрено, но SDK/трейсинг не подключены.
 - [~] **pgvector memory**: таблица и extension есть, но полноценные embedding write/retrieval pipeline пока не реализованы.
-- [~] **Time-travel debugging**: rollback API есть, но UI checkpoint slider и ветвление не завершены.
+- [~] **Time-travel debugging**: rollback API и checkpoint UI есть, но нет полноценного branching/lineage.
 - [~] **Budget guardrails**: базовые лимиты есть, но нет точного provider-specific cost model.
-- [~] **Live Trace**: UI показывает события, но пока через polling; SSE endpoint есть, но frontend не переключен на EventSource.
 - [~] **Model routing**: provider abstraction есть, но автоматический выбор cheap/expensive model по сложности шага пока упрощен.
-- [~] **Tool management**: UI/API переключатели есть; browser/MCP помечены как зарезервированные, фактическая интеграция не подключена.
+- [~] **Tool management**: LLM/filesystem/code-interpreter реально учитываются; browser/MCP подключаются как конфигурация, но без полноценного runtime-клиента.
+- [~] **MCP**: серверы можно добавить и передать агенту в контекст, но вызов MCP tools еще не реализован.
 
 ## Не реализовано / требует production-hardening
 
 - [ ] Нативный LangGraph `StateGraph` с checkpointing через graph runtime.
 - [ ] LangSmith tracing для каждого LLM/tool call.
 - [ ] Полноценный Headless Browser: DOM-анализ, screenshot, формы.
-- [ ] MCP client runtime для SSE/Stdio серверов.
+- [ ] Полноценный MCP client runtime для SSE/Stdio серверов с discovery и вызовом tools.
 - [ ] Embedding pipeline: генерация эмбеддингов, запись в `memory_items.embedding`, semantic retrieval.
 - [ ] Object storage для крупных артефактов.
 - [ ] RBAC/SSO/production authentication.
-- [ ] WebSocket/SSE frontend stream вместо polling.
-- [ ] Checkpoint slider в UI.
-- [ ] UI для rollback/intervene с вводом пользовательской инструкции.
 - [ ] Branching после rollback: запуск альтернативной ветки с lineage.
 - [ ] Детальный token/cost accounting по каждому провайдеру.
 - [ ] Notifications: email/Telegram при низкой уверенности или `AWAITING_USER`.
@@ -69,7 +70,7 @@
 ## Следующий рекомендуемый шаг
 
 1. Подключить нативный LangGraph + LangSmith.
-2. Перевести frontend Live Trace с polling на SSE.
+2. Реализовать полноценный MCP client runtime: discovery, tool schema, вызов tools, запись observations.
 3. Реализовать embedding memory pipeline.
-4. Добавить UI для checkpoint slider, rollback и intervention text.
-5. Подключить Headless Browser и MCP runtime как настоящие инструменты.
+4. Добавить branching/lineage после rollback.
+5. Подключить Headless Browser как настоящий инструмент.

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Artifact, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
-from app.schemas import Budget, EventRead, InterveneRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
+from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
 from app.services.events import add_event
 from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
@@ -31,6 +31,23 @@ def default_tools() -> dict:
 @router.get("/health")
 def health():
     return {"status": "ok", "project": settings.project_name}
+
+@router.get("/settings", response_model=AgentSettingsRead)
+def get_agent_settings():
+    default_model = settings.custom_remote_default_model if settings.llm_active_provider == "custom_remote" else settings.openrouter_default_model
+    return AgentSettingsRead(
+        project_name=settings.project_name,
+        environment=settings.environment,
+        llm_active_provider=settings.llm_active_provider,
+        default_model=default_model,
+        embedding_dimensions=settings.embedding_dimensions,
+        summary_every_iterations=settings.summary_every_iterations,
+        low_confidence_threshold=settings.low_confidence_threshold,
+        low_confidence_streak_limit=settings.low_confidence_streak_limit,
+        default_max_iterations=settings.default_max_iterations,
+        planner_min_steps=settings.planner_min_steps,
+        workspace_path=settings.workspace_path,
+    )
 
 @router.post("/tasks", response_model=TaskRead)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
@@ -170,6 +187,38 @@ def update_tools(task_id: UUID, payload: ToolConfig, db: Session = Depends(get_d
     add_event(db, task.id, "tools", {"message": "Настройки инструментов обновлены.", "tool_config": state["tool_config"]})
     db.commit(); db.refresh(task)
     return payload
+
+@router.post("/tasks/{task_id}/mcp", response_model=ToolConfig)
+def add_mcp_server(task_id: UUID, payload: MCPServerConfig, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    servers = [server for server in config.get("mcp_servers", []) if server.get("name") != payload.name]
+    servers.append(payload.model_dump())
+    config["mcp_servers"] = servers
+    config["mcp"] = any(server.get("enabled") for server in servers)
+    state["tool_config"] = config
+    task.current_state_json = state
+    add_event(db, task.id, "tools", {"message": f"MCP сервер добавлен: {payload.name}", "server": payload.model_dump()})
+    db.commit(); db.refresh(task)
+    return ToolConfig(**config)
+
+@router.delete("/tasks/{task_id}/mcp/{server_name}", response_model=ToolConfig)
+def delete_mcp_server(task_id: UUID, server_name: str, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    config["mcp_servers"] = [server for server in config.get("mcp_servers", []) if server.get("name") != server_name]
+    config["mcp"] = any(server.get("enabled") for server in config.get("mcp_servers", []))
+    state["tool_config"] = config
+    task.current_state_json = state
+    add_event(db, task.id, "tools", {"message": f"MCP сервер удален: {server_name}"})
+    db.commit(); db.refresh(task)
+    return ToolConfig(**config)
 
 @router.get("/tasks/{task_id}/artifacts/{artifact_id}/content")
 def get_artifact_content(task_id: UUID, artifact_id: UUID, db: Session = Depends(get_db)):

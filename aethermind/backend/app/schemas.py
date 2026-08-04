@@ -25,6 +25,12 @@ class RollbackRequest(BaseModel):
     iteration: int | None = None
     new_instruction: str | None = None
 
+class MCPServerConfig(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    url: str = Field(min_length=1, max_length=500)
+    transport: str = "sse"
+    enabled: bool = True
+
 class ToolConfig(BaseModel):
     llm: bool = True
     filesystem: bool = True
@@ -32,6 +38,20 @@ class ToolConfig(BaseModel):
     headless_browser: bool = False
     mcp: bool = False
     dangerous_actions: bool = False
+    mcp_servers: list[MCPServerConfig] = []
+
+class AgentSettingsRead(BaseModel):
+    project_name: str
+    environment: str
+    llm_active_provider: str
+    default_model: str
+    embedding_dimensions: int
+    summary_every_iterations: int
+    low_confidence_threshold: float
+    low_confidence_streak_limit: int
+    default_max_iterations: int
+    planner_min_steps: int
+    workspace_path: str
 
 class TaskRead(BaseModel):
     id: UUID
