@@ -24,7 +24,7 @@
 - [x] Human-in-the-loop statuses: pause/resume/intervene/awaiting_user.
 - [x] Human-in-the-loop UI: текст вмешательства, продолжение, сохранение без запуска, rollback.
 - [x] Rollback endpoint и базовый UI выбора checkpoint/iteration.
-- [x] SSE endpoint и frontend EventSource для Live Trace + fallback polling.
+- [x] Backend SSE endpoint и надежное frontend polling-обновление Live Trace.
 - [x] Mission Control UI на русском.
 - [x] День/ночь в интерфейсе.
 - [x] Индикатор активной работы агента/LLM и блокировка повторного запуска во время submit.

@@ -22,7 +22,7 @@
 - Human-in-the-loop панель для `AWAITING_USER`: вмешательство, продолжение, rollback.
 - Просмотр настроек агента и JSON состояния задачи прямо в UI.
 - Подключение внешних MCP серверов к задаче через UI/API.
-- Live Trace обновляется через SSE + fallback polling.
+- Live Trace обновляется надежным polling-циклом; SSE endpoint сохранен на backend для дальнейшего production-streaming.
 - Docker Compose для локального запуска.
 - Тесты guardrails и агентного цикла.
 

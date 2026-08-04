@@ -31,7 +31,7 @@
 - [x] Human-in-the-loop UI для `AWAITING_USER`.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
-- [x] SSE обновление Live Trace с fallback polling.
+- [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.
 - [x] Docker Compose.
 - [x] `.env.example` без реальных секретов.
 - [x] Базовые тесты.

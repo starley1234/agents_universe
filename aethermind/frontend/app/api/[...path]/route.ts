@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://localhost:8128'
 
-async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
+type RouteContext = { params: Promise<{ path: string[] }> }
+
+async function proxy(request: NextRequest, context: RouteContext) {
   const { path } = await context.params
   const target = new URL(`/api/${path.join('/')}`, BACKEND_INTERNAL_URL)
   target.search = request.nextUrl.search
@@ -10,19 +12,28 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const headers = new Headers(request.headers)
   headers.delete('host')
   headers.delete('connection')
+  headers.delete('content-length')
+
+  const hasBody = !['GET', 'HEAD'].includes(request.method) && request.headers.get('content-length') !== '0'
+  if (!hasBody) headers.delete('content-type')
 
   try {
     const response = await fetch(target, {
       method: request.method,
       headers,
-      body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer(),
+      body: hasBody ? await request.arrayBuffer() : undefined,
       redirect: 'manual',
+      cache: 'no-store',
     })
+
+    const responseHeaders = new Headers(response.headers)
+    responseHeaders.delete('content-encoding')
+    responseHeaders.delete('transfer-encoding')
 
     return new NextResponse(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers: response.headers,
+      headers: responseHeaders,
     })
   } catch (error) {
     return NextResponse.json(
