@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus_twin_app_dev
+    restart: unless-stopped
+    environment:
+      PROJECT_NAME: "NexusTwin MDM (SQLite Dev Mode)"
+      ENVIRONMENT: "development"
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8117"
+      DATABASE_URL: "sqlite+aiosqlite:///./workspace/nexus_twin.db"
+      LLM_ACTIVE_PROVIDER: "mock"
+    ports:
+      - "8117:8117"
+    volumes:
+      - ./workspace:/app/workspace
