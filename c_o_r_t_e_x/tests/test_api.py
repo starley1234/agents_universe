@@ -4,9 +4,16 @@ import json
 import unittest
 
 from c_o_r_t_e_x.gateway.app import FallbackApp, create_app, create_services
+from c_o_r_t_e_x.gateway.ui import get_ui_html
 
 
 class APITests(unittest.TestCase):
+    def test_ui_explains_how_to_start_agent(self):
+        html = get_ui_html()
+        self.assertIn("Запустить агента", html)
+        self.assertIn("/api/agent/run", html)
+        self.assertIn("Toolkit audit", html)
+
     def test_health_and_mcp_over_fallback(self):
         services = create_services()
         app = create_app(services)

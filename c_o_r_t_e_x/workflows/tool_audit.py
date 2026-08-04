@@ -131,6 +131,17 @@ class ToolAuditWorkflow:
             report.notes.append(f"Не удалось получить tools/list: {exc}")
             report.recommendations.append({"priority": "high", "code": "provider_unavailable", "text": "Проверить MCP URL, сеть и авторизацию."})
             return report
+        if not descriptors:
+            health = self.provider.health() if hasattr(self.provider, "health") else {}
+            reason = str(health.get("error", "provider вернул пустой tools/list"))
+            report = AuditReport(provider=getattr(self.provider, "name", "unknown"), success=False)
+            report.notes.append(f"Agent Toolkit недоступен: {reason}")
+            report.recommendations.append({
+                "priority": "high",
+                "code": "provider_unavailable",
+                "text": "Подключите agent_toolkit локально или задайте MCP_AGENT_TOOLKIT и повторите запуск.",
+            })
+            return report
         items: list[AuditItem] = []
         for descriptor in descriptors:
             if descriptor.dangerous or descriptor.attributes.get("dangerous"):

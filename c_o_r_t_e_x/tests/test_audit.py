@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from c_o_r_t_e_x.gateway.toolkit_client import UnavailableToolkitProvider
 from c_o_r_t_e_x.signals import ToolDescriptor
 from c_o_r_t_e_x.workflows.tool_audit import ToolAuditWorkflow
 
@@ -32,6 +33,16 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(report.failed, 0)
         self.assertEqual(report.coverage_percent, 50.0)
         self.assertTrue(report.recommendations)
+
+    def test_unavailable_provider_is_not_reported_as_completed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = ToolAuditWorkflow(
+                UnavailableToolkitProvider("set MCP_AGENT_TOOLKIT"),
+                workspace=Path(directory), native_diagnostics=False,
+            ).run()
+        self.assertFalse(report.success)
+        self.assertEqual(report.total, 0)
+        self.assertEqual(report.recommendations[0]["code"], "provider_unavailable")
 
 
 if __name__ == "__main__":

@@ -104,6 +104,21 @@ production fan-out; для первого запуска оставьте `CORTE
 Открыть:
 
 - <http://localhost:8117/ui> — Operations Dashboard;
+
+В UI запуск агента находится в блоке **«Запустить агента»**: выберите workflow
+(для первого запуска — `Toolkit audit`), при необходимости укажите JSON payload и
+нажмите **«Запустить агента»**. Кнопка создаёт task, а ниже и в блоке Workflows
+показываются task status, event trace и результат. Если Runtime показывает только
+1 встроенный инструмент и жёлтое предупреждение, сначала подключите
+`agent_toolkit` через `CORTEX_TOOLKIT_MODE=local` или `remote`.
+
+То же самое через API:
+
+```bash
+curl -s -X POST http://localhost:8117/api/agent/run \
+  -H 'content-type: application/json' \
+  -d '{"title":"Agent Toolkit practical audit","workflow":"toolkit_audit","payload":{}}'
+```
 - <http://localhost:8117/docs> — Swagger после `pip install -e '.[api]'`;
 - <http://localhost:8117/health> — health и число инструментов;
 - <http://localhost:8117/api/tools?q=антенна> — поиск каталога;
@@ -141,12 +156,13 @@ curl -s http://localhost:8117/sse \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-MCP показывает LLM десять router-tools вместо сотен схем:
+MCP показывает LLM одиннадцать router-tools вместо сотен схем:
 
 - `cortex.search_tools(query)`;
 - `cortex.fetch(url)` — first-party HTTP(S) fetch;
 - `cortex.call_tool(name, arguments)`;
 - `cortex.submit_task(...)`;
+- `cortex.start_agent(title, workflow)` — запустить workflow из MCP;
 - `cortex.get_task(task_id)`;
 - `cortex.run_tool_audit()`;
 - `cortex.blackboard_read(key)`;
@@ -202,6 +218,7 @@ curl -s http://localhost:8117/api/toolkit/audit/latest | jq
 | GET | `/api/stream` | live SSE event bus |
 | GET/PUT | `/api/blackboard` | состояние и CAS update |
 | GET/POST | `/api/tasks` | workflow tasks |
+| POST | `/api/agent/run` | запустить workflow-агента из UI/API |
 | POST | `/api/tasks/{id}/run` | запустить pending task |
 | POST | `/api/toolkit/audit` | создать и выполнить audit task |
 | GET | `/api/toolkit/audit/latest` | последний отчёт |

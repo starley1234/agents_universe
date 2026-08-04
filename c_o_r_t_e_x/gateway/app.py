@@ -207,7 +207,7 @@ def create_app(services: CortexServices | None = None) -> Any:
             "name": services.settings.project_name,
             "version": "0.1.0",
             "protocols": ["REST", "MCP JSON-RPC 2.0", "MCP Streamable HTTP", "MCP SSE"],
-            "endpoints": {"mcp": "/sse", "messages": "/messages", "events": "/api/stream", "ui": "/ui"},
+            "endpoints": {"mcp": "/sse", "messages": "/messages", "events": "/api/stream", "ui": "/ui", "agent_run": "/api/agent/run"},
             "config": services.settings.public_dict(),
         }
 
@@ -269,6 +269,20 @@ def create_app(services: CortexServices | None = None) -> Any:
     @app.get("/api/tasks")
     async def tasks(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
         return {"tasks": [task.to_dict() for task in services.workflows.list(limit=limit)]}
+
+    @app.post("/api/agent/run")
+    async def run_agent(body: dict[str, Any] = Body(default={})):  # noqa: B008
+        """Запустить workflow-агента из UI/API и вернуть task trace."""
+        try:
+            task = await services.workflows.submit(
+                str(body.get("title", "C.O.R.T.E.X. agent task")),
+                workflow=str(body.get("workflow", "toolkit_audit")),
+                payload=body.get("payload") or {},
+                run=True,
+            )
+            return {"accepted": True, "task": task.to_dict()}
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     @app.post("/api/tasks")
     async def create_task(body: dict[str, Any] = Body(default={})):  # noqa: B008
@@ -482,6 +496,15 @@ class FallbackApp:
                 task = asyncio.run(self.services.workflows.submit(str(payload.get("title", "Agent Toolkit practical audit")), workflow="toolkit_audit"))
                 task = asyncio.run(self.services.workflows.run(task.task_id))
                 return self._response(200, {"accepted": True, "task": task.to_dict(), "result": task.result})
+            if method == "POST" and path == "/api/agent/run":
+                payload = _parse_body(body)
+                task = asyncio.run(self.services.workflows.submit(
+                    str(payload.get("title", "C.O.R.T.E.X. agent task")),
+                    workflow=str(payload.get("workflow", "toolkit_audit")),
+                    payload=payload.get("payload") or {}, run=False,
+                ))
+                task = asyncio.run(self.services.workflows.run(task.task_id))
+                return self._response(200, {"accepted": True, "task": task.to_dict()})
             if method == "POST" and path == "/api/tasks":
                 payload = _parse_body(body)
                 task = asyncio.run(self.services.workflows.submit(str(payload.get("title", "C.O.R.T.E.X. task")), workflow=str(payload.get("workflow", "toolkit_audit")), payload=payload.get("payload") or {}, run=False))

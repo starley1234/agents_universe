@@ -117,6 +117,16 @@ class CortexMCPServer:
                 },
             },
             {
+                "name": "cortex.start_agent",
+                "description": "Запустить workflow-агента C.O.R.T.E.X. и вернуть task_id для отслеживания.",
+                "inputSchema": {
+                    "type": "object", "properties": {
+                        "title": {"type": "string"}, "workflow": {"type": "string", "default": "toolkit_audit"},
+                        "payload": {"type": "object", "default": {}},
+                    }, "required": ["title"],
+                },
+            },
+            {
                 "name": "cortex.get_task",
                 "description": "Получить статус и результат workflow по task_id.",
                 "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
@@ -170,6 +180,14 @@ class CortexMCPServer:
                 run=bool(arguments.get("run", True)),
             )
             return task.to_dict()
+        if name == "cortex.start_agent":
+            task = await services.workflows.submit(
+                str(arguments.get("title", "C.O.R.T.E.X. agent task")),
+                workflow=str(arguments.get("workflow", "toolkit_audit")),
+                payload=arguments.get("payload") or {},
+                run=True,
+            )
+            return {"accepted": True, "task": task.to_dict()}
         if name == "cortex.get_task":
             task = services.workflows.get(str(arguments.get("task_id", "")))
             return task.to_dict() if task else {"error": "task_not_found"}
