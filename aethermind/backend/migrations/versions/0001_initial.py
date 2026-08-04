@@ -20,12 +20,36 @@ class Vector(sa.types.UserDefinedType):
     def get_col_spec(self, **kw):
         return f"vector({self.dimensions})"
 
-TASK_STATUS = sa.Enum("PENDING", "RUNNING", "PAUSED", "AWAITING_USER", "SLEEPING", "FAILED", "COMPLETED", "ROLLED_BACK", name="taskstatus")
+TASK_STATUS = postgresql.ENUM(
+    "PENDING",
+    "RUNNING",
+    "PAUSED",
+    "AWAITING_USER",
+    "SLEEPING",
+    "FAILED",
+    "COMPLETED",
+    "ROLLED_BACK",
+    name="taskstatus",
+    create_type=False,
+)
 
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    TASK_STATUS.create(op.get_bind(), checkfirst=True)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'taskstatus') THEN
+                CREATE TYPE taskstatus AS ENUM (
+                    'PENDING', 'RUNNING', 'PAUSED', 'AWAITING_USER',
+                    'SLEEPING', 'FAILED', 'COMPLETED', 'ROLLED_BACK'
+                );
+            END IF;
+        END
+        $$;
+        """
+    )
     op.create_table(
         "tasks",
         sa.Column("id", sa.Uuid(), primary_key=True),
@@ -86,4 +110,4 @@ def downgrade() -> None:
     op.drop_table("task_snapshots")
     op.drop_index("ix_tasks_status", table_name="tasks")
     op.drop_table("tasks")
-    TASK_STATUS.drop(op.get_bind(), checkfirst=True)
+    op.execute("DROP TYPE IF EXISTS taskstatus")
