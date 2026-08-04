@@ -38,6 +38,7 @@ type Theme = {
   title: string
   input: string
   code: string
+  mutedPanel: string
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ''
@@ -80,6 +81,10 @@ function isAgentActive(status?: string) {
   return status === 'PENDING' || status === 'RUNNING'
 }
 
+function compactJson(value: unknown) {
+  return JSON.stringify(value, null, 2)
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -96,21 +101,23 @@ function getTheme(isDark: boolean): Theme {
   return isDark
     ? {
         page: 'bg-gradient-to-br from-[#070b16] to-[#111a33] text-slate-100',
-        card: 'border-slate-800 bg-slate-950/70',
-        soft: 'bg-slate-900 text-slate-300 border-slate-700',
+        card: 'border-slate-800 bg-slate-950/75 shadow-[0_0_0_1px_rgba(15,23,42,0.6)]',
+        soft: 'bg-slate-900/95 text-slate-300 border-slate-700',
         text: 'text-slate-300',
         title: 'text-white',
-        input: 'border-slate-700 bg-slate-900 text-white',
-        code: 'bg-slate-900 text-emerald-200',
+        input: 'border-slate-700 bg-slate-900 text-white placeholder:text-slate-500',
+        code: 'bg-slate-950 text-emerald-200 border-slate-800',
+        mutedPanel: 'bg-slate-900/50 border-slate-800',
       }
     : {
         page: 'bg-gradient-to-br from-sky-50 to-slate-100 text-slate-950',
-        card: 'border-slate-200 bg-white/85 shadow-sm',
-        soft: 'bg-slate-100 text-slate-700 border-slate-200',
+        card: 'border-slate-200 bg-white/90 shadow-sm',
+        soft: 'bg-slate-50 text-slate-700 border-slate-200',
         text: 'text-slate-600',
         title: 'text-slate-950',
-        input: 'border-slate-300 bg-white text-slate-950',
-        code: 'bg-slate-100 text-slate-900',
+        input: 'border-slate-300 bg-white text-slate-950 placeholder:text-slate-400',
+        code: 'bg-slate-50 text-slate-900 border-slate-200',
+        mutedPanel: 'bg-white/60 border-slate-200',
       }
 }
 
@@ -207,10 +214,7 @@ export default function Home() {
     setError(null)
     setNotice('Задача создается и ставится в очередь Celery...')
     try {
-      const task = await apiFetch<Task>('/api/tasks', {
-        method: 'POST',
-        body: JSON.stringify({ goal }),
-      })
+      const task = await apiFetch<Task>('/api/tasks', { method: 'POST', body: JSON.stringify({ goal }) })
       setSelected(task)
       setEvents([])
       setArtifacts([])
@@ -314,6 +318,10 @@ export default function Home() {
 
   async function addMcpServer() {
     if (!selected || !mcpName.trim() || !mcpUrl.trim()) return
+    if (!/^https?:\/\//.test(mcpUrl.trim())) {
+      setError('URL MCP сервера должен начинаться с http:// или https://')
+      return
+    }
     setBusyAction('mcp')
     setError(null)
     try {
@@ -335,9 +343,7 @@ export default function Home() {
     if (!selected) return
     setBusyAction('mcp')
     try {
-      const saved = await apiFetch<ToolConfig>(`/api/tasks/${selected.id}/mcp/${encodeURIComponent(name)}`, {
-        method: 'DELETE',
-      })
+      const saved = await apiFetch<ToolConfig>(`/api/tasks/${selected.id}/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' })
       setTools({ ...DEFAULT_TOOLS, ...saved, mcp_servers: saved.mcp_servers || [] })
       setNotice(`MCP сервер «${name}» удален.`)
       await refreshSelected(selected.id)
@@ -358,111 +364,106 @@ export default function Home() {
   const contextFill = useMemo(() => Math.min(100, ((iter % 5) / 5) * 100), [iter])
 
   return (
-    <main className={`min-h-screen p-6 transition-colors ${theme.page}`}>
-      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className={`text-3xl font-bold ${theme.title}`}>AetherMind: Центр управления</h1>
-          <p className={theme.text}>Автономный итерационный движок</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button onClick={() => setIsDark((value) => !value)} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`}>
-            {isDark ? '☀️ День' : '🌙 Ночь'}
-          </button>
-          <div className="rounded-full border border-sky-400/50 px-4 py-2 text-sky-500">
-            {isLoading ? 'СИНХРОНИЗАЦИЯ' : statusLabel(selected?.status)}
+    <main className={`min-h-screen overflow-x-hidden p-4 transition-colors sm:p-6 ${theme.page}`}>
+      <div className="mx-auto grid w-full max-w-[1800px] min-w-0 gap-6">
+        <header className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className={`truncate text-2xl font-bold sm:text-3xl ${theme.title}`}>AetherMind: Центр управления</h1>
+            <p className={`${theme.text} truncate`}>Автономный итерационный движок</p>
           </div>
-        </div>
-      </header>
+          <div className="flex shrink-0 items-center gap-3">
+            <button onClick={() => setIsDark((value) => !value)} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`}>
+              {isDark ? '☀️ День' : '🌙 Ночь'}
+            </button>
+            <div className="rounded-full border border-sky-400/50 px-4 py-2 text-sky-500">
+              {isLoading ? 'СИНХРОНИЗАЦИЯ' : statusLabel(selected?.status)}
+            </div>
+          </div>
+        </header>
 
-      {error && (
-        <div className="mb-6 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-red-500">
-          <div className="font-semibold">Проблема соединения или выполнения</div>
-          <div className="mt-1 text-sm opacity-90">{error}</div>
-        </div>
-      )}
-      {notice && (
-        <div className="mb-6 flex items-center justify-between rounded-2xl border border-sky-400/40 bg-sky-400/10 p-4 text-sky-500">
-          <span>{notice}</span>
-          <button onClick={() => setNotice(null)} className="text-sm opacity-70 hover:opacity-100">закрыть</button>
-        </div>
-      )}
+        {error && <Banner kind="error" message={error} onClose={() => setError(null)} />}
+        {notice && <Banner kind="notice" message={notice} onClose={() => setNotice(null)} />}
 
-      {(isLaunching || isAgentActive(selected?.status)) && (
-        <div className={`mb-6 rounded-2xl border p-4 ${theme.card}`}>
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-3 w-3">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />
-              <span className="relative inline-flex h-3 w-3 rounded-full bg-sky-500" />
-            </span>
-            <div>
-              <div className="font-semibold">Агент работает: LLM выполняет автономный цикл</div>
-              <div className={`text-sm ${theme.text}`}>
-                Текущий шаг: {activeStep?.title || 'постановка в очередь / ожидание worker'} · итерация {iter} · LLM вызовы {llmCalls}
+        {(isLaunching || isAgentActive(selected?.status)) && (
+          <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="relative flex h-3 w-3 shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-sky-500" />
+              </span>
+              <div className="min-w-0">
+                <div className="font-semibold">Агент работает: LLM выполняет автономный цикл</div>
+                <div className={`truncate text-sm ${theme.text}`}>
+                  Текущий шаг: {activeStep?.title || 'постановка в очередь / ожидание worker'} · итерация {iter} · LLM вызовы {llmCalls}
+                </div>
               </div>
             </div>
           </div>
+        )}
+
+        {selected?.status === 'AWAITING_USER' && (
+          <HumanGatePanel theme={theme} intervention={intervention} setIntervention={setIntervention} rollbackIteration={rollbackIteration} setRollbackIteration={setRollbackIteration} busyAction={busyAction} onSend={sendIntervention} onRollback={rollback} />
+        )}
+
+        <section className={`grid min-w-0 gap-3 rounded-2xl border p-4 md:grid-cols-[minmax(0,1fr)_auto] ${theme.card}`}>
+          <input value={goal} onChange={(event) => setGoal(event.target.value)} className={`min-w-0 rounded-xl border px-4 py-3 outline-none focus:border-sky-400 ${theme.input}`} />
+          <button disabled={isLaunching || !goal.trim()} onClick={createTask} className={`rounded-xl px-5 py-3 font-semibold text-slate-950 ${isLaunching || !goal.trim() ? 'cursor-not-allowed bg-slate-400 opacity-60' : 'bg-sky-400 hover:bg-sky-300'}`}>
+            {isLaunching ? 'Запускаю...' : 'Запустить агента'}
+          </button>
+        </section>
+
+        <div className="grid min-w-0 gap-6 xl:grid-cols-[260px_minmax(0,1fr)_380px] 2xl:grid-cols-[280px_minmax(0,1fr)_420px]">
+          <TasksPanel tasks={tasks} selected={selected} theme={theme} onSelect={(task) => { setSelected(task); setArtifactContent(null) }} />
+          <section className="grid min-w-0 content-start gap-6">
+            <StrategyPanel plan={plan} theme={theme} />
+            <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} />
+            <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} />
+          </section>
+          <aside className="grid min-w-0 content-start gap-6">
+            <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
+            <TracePanel theme={theme} events={events} />
+            <ToolsPanel theme={theme} tools={tools} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} />
+            <SnapshotsPanel theme={theme} snapshots={snapshots} setRollbackIteration={setRollbackIteration} />
+          </aside>
         </div>
-      )}
-
-      {selected?.status === 'AWAITING_USER' && (
-        <section className="mb-6 rounded-2xl border border-amber-400/50 bg-amber-400/10 p-4">
-          <h2 className="font-semibold text-amber-500">Требуется вмешательство человека</h2>
-          <p className={`mt-1 text-sm ${theme.text}`}>
-            Агент остановлен из-за низкой уверенности, ошибки LLM/runtime или отключенного инструмента. Дайте инструкцию и продолжите, либо выполните rollback.
-          </p>
-          <textarea
-            value={intervention}
-            onChange={(event) => setIntervention(event.target.value)}
-            placeholder="Например: включи LLM, продолжай с более строгой проверкой источников..."
-            className={`mt-3 h-24 w-full rounded-xl border p-3 ${theme.input}`}
-          />
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button disabled={busyAction === 'intervene'} onClick={() => sendIntervention(true)} className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">
-              Отправить и продолжить
-            </button>
-            <button disabled={busyAction === 'intervene'} onClick={() => sendIntervention(false)} className={`rounded-lg border px-4 py-2 disabled:opacity-50 ${theme.soft}`}>
-              Сохранить без запуска
-            </button>
-            <input value={rollbackIteration} onChange={(event) => setRollbackIteration(event.target.value)} placeholder="итерация rollback" className={`w-40 rounded-lg border px-3 py-2 ${theme.input}`} />
-            <button disabled={busyAction === 'rollback'} onClick={rollback} className="rounded-lg bg-red-500/20 px-4 py-2 text-red-500 disabled:opacity-50">
-              Rollback
-            </button>
-          </div>
-        </section>
-      )}
-
-      <section className={`mb-6 grid gap-3 rounded-2xl border p-4 md:grid-cols-[1fr_auto] ${theme.card}`}>
-        <input value={goal} onChange={(event) => setGoal(event.target.value)} className={`rounded-xl border px-4 py-3 outline-none focus:border-sky-400 ${theme.input}`} />
-        <button disabled={isLaunching || !goal.trim()} onClick={createTask} className={`rounded-xl px-5 py-3 font-semibold text-slate-950 ${isLaunching || !goal.trim() ? 'cursor-not-allowed bg-slate-400 opacity-60' : 'bg-sky-400'}`}>
-          {isLaunching ? 'Запускаю...' : 'Запустить агента'}
-        </button>
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr_440px]">
-        <TasksPanel tasks={tasks} selected={selected} theme={theme} onSelect={(task) => { setSelected(task); setArtifactContent(null) }} />
-        <section className="space-y-6">
-          <StrategyPanel plan={plan} theme={theme} />
-          <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} />
-          <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} />
-        </section>
-        <aside className="space-y-6">
-          <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
-          <ToolsPanel theme={theme} tools={tools} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} />
-          <SnapshotsPanel theme={theme} snapshots={snapshots} setRollbackIteration={setRollbackIteration} />
-          <TracePanel theme={theme} events={events} />
-        </aside>
       </div>
     </main>
   )
 }
 
+function Banner({ kind, message, onClose }: { kind: 'error' | 'notice'; message: string; onClose: () => void }) {
+  const cls = kind === 'error' ? 'border-red-500/40 bg-red-500/10 text-red-500' : 'border-sky-400/40 bg-sky-400/10 text-sky-500'
+  return (
+    <div className={`flex min-w-0 items-start justify-between gap-3 rounded-2xl border p-4 ${cls}`}>
+      <div className="min-w-0 break-words text-sm"><span className="font-semibold">{kind === 'error' ? 'Проблема: ' : 'Инфо: '}</span>{message}</div>
+      <button onClick={onClose} className="shrink-0 text-xs opacity-70 hover:opacity-100">закрыть</button>
+    </div>
+  )
+}
+
+function HumanGatePanel({ theme, intervention, setIntervention, rollbackIteration, setRollbackIteration, busyAction, onSend, onRollback }: { theme: Theme; intervention: string; setIntervention: (value: string) => void; rollbackIteration: string; setRollbackIteration: (value: string) => void; busyAction: string | null; onSend: (resume: boolean) => void; onRollback: () => void }) {
+  return (
+    <section className="min-w-0 rounded-2xl border border-amber-400/50 bg-amber-400/10 p-4">
+      <h2 className="font-semibold text-amber-500">Требуется вмешательство человека</h2>
+      <p className={`mt-1 text-sm ${theme.text}`}>Агент остановлен из-за низкой уверенности, ошибки LLM/runtime или отключенного инструмента. Дайте инструкцию и продолжите, либо выполните rollback.</p>
+      <textarea value={intervention} onChange={(event) => setIntervention(event.target.value)} placeholder="Например: включи LLM, продолжай с более строгой проверкой источников..." className={`mt-3 h-24 w-full min-w-0 resize-y rounded-xl border p-3 ${theme.input}`} />
+      <div className="mt-3 flex min-w-0 flex-wrap gap-2">
+        <button disabled={busyAction === 'intervene' || !intervention.trim()} onClick={() => onSend(true)} className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Отправить и продолжить</button>
+        <button disabled={busyAction === 'intervene' || !intervention.trim()} onClick={() => onSend(false)} className={`rounded-lg border px-4 py-2 disabled:opacity-50 ${theme.soft}`}>Сохранить без запуска</button>
+        <input value={rollbackIteration} onChange={(event) => setRollbackIteration(event.target.value)} placeholder="итерация rollback" className={`w-40 rounded-lg border px-3 py-2 ${theme.input}`} />
+        <button disabled={busyAction === 'rollback'} onClick={onRollback} className="rounded-lg bg-red-500/20 px-4 py-2 text-red-500 disabled:opacity-50">Rollback</button>
+      </div>
+    </section>
+  )
+}
+
 function TasksPanel({ tasks, selected, theme, onSelect }: { tasks: Task[]; selected: Task | null; theme: Theme; onSelect: (task: Task) => void }) {
   return (
-    <aside className={`rounded-2xl border p-4 ${theme.card}`}>
+    <aside className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-3 font-semibold">Задачи</h2>
-      <div className="space-y-2">
+      <div className="max-h-[70vh] space-y-2 overflow-auto pr-1">
         {tasks.map((task) => (
-          <button key={task.id} onClick={() => onSelect(task)} className={`block w-full rounded-xl border p-3 text-left text-sm ${selected?.id === task.id ? 'border-sky-400 bg-sky-400/15 text-sky-500' : theme.soft}`}>
+          <button key={task.id} onClick={() => onSelect(task)} className={`block w-full min-w-0 rounded-xl border p-3 text-left text-sm ${selected?.id === task.id ? 'border-sky-400 bg-sky-400/15 text-sky-500' : theme.soft}`}>
             <div className="truncate">{task.goal}</div>
             <div className="text-xs opacity-70">{statusLabel(task.status)}</div>
           </button>
@@ -475,13 +476,13 @@ function TasksPanel({ tasks, selected, theme, onSelect }: { tasks: Task[]; selec
 
 function StrategyPanel({ plan, theme }: { plan: any[]; theme: Theme }) {
   return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-4 font-semibold">Дерево стратегии</h2>
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
         {plan.map((node: any) => (
-          <div key={node.id} className={`rounded-xl border p-4 ${node.status === 'done' ? 'border-emerald-400 bg-emerald-400/10' : node.status === 'running' ? 'border-sky-400 bg-sky-400/10' : theme.soft}`}>
+          <div key={node.id} className={`min-w-0 rounded-xl border p-4 ${node.status === 'done' ? 'border-emerald-400 bg-emerald-400/10' : node.status === 'running' ? 'border-sky-400 bg-sky-400/10' : theme.soft}`}>
             <div className="text-xs uppercase opacity-60">{node.status}</div>
-            <div className="font-medium">{node.title}</div>
+            <div className="break-words font-medium leading-snug">{node.title}</div>
           </div>
         ))}
         {!plan.length && <div className={`text-sm ${theme.text}`}>Дерево стратегии пока не сформировано.</div>}
@@ -492,18 +493,18 @@ function StrategyPanel({ plan, theme }: { plan: any[]; theme: Theme }) {
 
 function ArtifactsPanel({ artifacts, artifactContent, selected, theme, busyAction, onView }: { artifacts: Artifact[]; artifactContent: ArtifactContent | null; selected: Task | null; theme: Theme; busyAction: string | null; onView: (artifact: Artifact) => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
-      <div className="mb-4 flex items-center justify-between">
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
+      <div className="mb-4 flex items-center justify-between gap-2">
         <h2 className="font-semibold">Артефакты</h2>
-        <span className={`text-xs ${theme.text}`}>{artifacts.length} файлов</span>
+        <span className={`shrink-0 text-xs ${theme.text}`}>{artifacts.length} файлов</span>
       </div>
-      <div className="grid gap-3 md:grid-cols-[260px_1fr]">
-        <div className="space-y-2">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="max-h-72 min-w-0 space-y-2 overflow-auto pr-1">
           {artifacts.map((artifact) => (
-            <div key={artifact.id} className={`rounded-xl border p-3 text-sm ${theme.soft}`}>
-              <div className="truncate font-medium">{artifact.path}</div>
+            <div key={artifact.id} className={`min-w-0 rounded-xl border p-3 text-sm ${theme.soft}`}>
+              <div className="truncate font-medium" title={artifact.path}>{artifact.path}</div>
               <div className="mb-2 text-xs opacity-70">{artifact.kind}</div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button disabled={busyAction === `artifact:${artifact.id}`} onClick={() => onView(artifact)} className="rounded-lg bg-sky-400/20 px-3 py-1 text-sky-500 disabled:opacity-50">Просмотр</button>
                 {selected && <a href={`${API_BASE}/api/tasks/${selected.id}/artifacts/${artifact.id}/download`} className="rounded-lg bg-emerald-400/20 px-3 py-1 text-emerald-500">Скачать</a>}
               </div>
@@ -511,8 +512,8 @@ function ArtifactsPanel({ artifacts, artifactContent, selected, theme, busyActio
           ))}
           {!artifacts.length && <div className={`text-sm ${theme.text}`}>Артефактов пока нет.</div>}
         </div>
-        <div className={`min-h-64 overflow-auto rounded-xl p-4 text-sm ${theme.code}`}>
-          {artifactContent ? artifactContent.binary ? <div>{artifactContent.message}</div> : <pre className="whitespace-pre-wrap">{artifactContent.content}</pre> : <div className={theme.text}>Выберите артефакт для просмотра.</div>}
+        <div className={`min-h-64 min-w-0 overflow-auto rounded-xl border p-4 text-sm ${theme.code}`}>
+          {artifactContent ? artifactContent.binary ? <div>{artifactContent.message}</div> : <pre className="max-w-full whitespace-pre-wrap break-words">{artifactContent.content}</pre> : <div className={theme.text}>Выберите артефакт для просмотра.</div>}
         </div>
       </div>
     </div>
@@ -520,23 +521,29 @@ function ArtifactsPanel({ artifacts, artifactContent, selected, theme, busyActio
 }
 
 function SettingsPanel({ settings, selected, budget, tools, theme }: { settings: AgentSettings | null; selected: Task | null; budget: any; tools: ToolConfig; theme: Theme }) {
+  const statePreview = {
+    app: settings,
+    task_budget: budget,
+    task_state: selected?.current_state_json,
+    tools,
+  }
   return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
-      <h2 className="mb-3 font-semibold">Настройки агента</h2>
-      <pre className={`max-h-80 overflow-auto rounded-xl p-4 text-xs ${theme.code}`}>{JSON.stringify({ app: settings, task_budget: budget, task_state: selected?.current_state_json, tools }, null, 2)}</pre>
-    </div>
+    <details className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
+      <summary className="cursor-pointer font-semibold">Настройки агента и состояние</summary>
+      <pre className={`mt-3 max-h-96 min-w-0 overflow-auto rounded-xl border p-4 text-xs ${theme.code}`}><code className="break-words">{compactJson(statePreview)}</code></pre>
+    </details>
   )
 }
 
 function ControlPanel({ theme, confidence, contextFill, iter, budget, llmCalls, tokensUsed, busyAction, onPause, onResume }: { theme: Theme; confidence: number; contextFill: number; iter: number; budget: any; llmCalls: number; tokensUsed: number; busyAction: string | null; onPause: () => void; onResume: () => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-4 font-semibold">Контроль и ограничения</h2>
       <div className="space-y-4">
         <Meter label="Уверенность" value={confidence} color={confidence < 50 ? 'bg-red-500' : 'bg-emerald-400'} />
         <Meter label="Заполнение контекста" value={contextFill} color="bg-amberMind" />
         <Meter label="Бюджет итераций" value={(iter / (budget.max_iterations || 25)) * 100} />
-        <div className={`rounded-xl border p-3 text-xs ${theme.soft}`}>LLM вызовы: {llmCalls} · токены: {tokensUsed}</div>
+        <div className={`min-w-0 rounded-xl border p-3 text-xs ${theme.soft}`}>LLM вызовы: {llmCalls} · токены: {tokensUsed}</div>
         <div className="grid grid-cols-2 gap-2">
           <button disabled={busyAction === 'pause'} onClick={onPause} className="rounded-lg bg-amberMind/20 px-3 py-2 text-amberMind disabled:opacity-50">Пауза</button>
           <button disabled={busyAction === 'resume'} onClick={onResume} className="rounded-lg bg-emerald-400/20 px-3 py-2 text-emerald-500 disabled:opacity-50">Продолжить</button>
@@ -546,34 +553,51 @@ function ControlPanel({ theme, confidence, contextFill, iter, budget, llmCalls, 
   )
 }
 
+function TracePanel({ theme, events }: { theme: Theme; events: TaskEvent[] }) {
+  return (
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
+      <h2 className="mb-4 font-semibold">Живой trace</h2>
+      <div className="max-h-[420px] min-w-0 space-y-2 overflow-auto pr-1">
+        {events.map((event) => (
+          <div key={event.id} className={`min-w-0 rounded-lg border p-3 text-sm ${theme.soft}`}>
+            <div className="text-xs text-sky-500">{event.event_type}</div>
+            <div className="break-words">{event.payload_json?.message || compactJson(event.payload_json)}</div>
+          </div>
+        ))}
+        {!events.length && <div className={`text-sm ${theme.text}`}>Событий пока нет.</div>}
+      </div>
+    </div>
+  )
+}
+
 function ToolsPanel({ theme, tools, busyAction, mcpName, mcpUrl, setMcpName, setMcpUrl, onToggle, onAddMcp, onDeleteMcp }: { theme: Theme; tools: ToolConfig; busyAction: string | null; mcpName: string; mcpUrl: string; setMcpName: (value: string) => void; setMcpUrl: (value: string) => void; onToggle: (key: keyof Omit<ToolConfig, 'mcp_servers'>) => void; onAddMcp: () => void; onDeleteMcp: (name: string) => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-4 font-semibold">Инструменты агента</h2>
       <div className="space-y-3">
         {(Object.keys(TOOL_LABELS) as Array<keyof Omit<ToolConfig, 'mcp_servers'>>).map((key) => (
-          <div key={key} className={`rounded-xl border p-3 ${theme.soft}`}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
+          <div key={key} className={`min-w-0 rounded-xl border p-3 ${theme.soft}`}>
+            <div className="flex min-w-0 items-center justify-between gap-3">
+              <div className="min-w-0">
                 <div className="font-medium">{TOOL_LABELS[key].title}</div>
-                <div className="text-xs opacity-70">{TOOL_LABELS[key].description}</div>
+                <div className="break-words text-xs opacity-70">{TOOL_LABELS[key].description}</div>
               </div>
-              <button disabled={busyAction === 'tools'} onClick={() => onToggle(key)} className={`rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-50 ${tools[key] ? 'bg-emerald-400 text-slate-950' : 'bg-slate-500/30 text-slate-400'}`}>
+              <button disabled={busyAction === 'tools'} onClick={() => onToggle(key)} className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-50 ${tools[key] ? 'bg-emerald-400 text-slate-950' : 'bg-slate-500/30 text-slate-400'}`}>
                 {tools[key] ? 'Вкл' : 'Выкл'}
               </button>
             </div>
           </div>
         ))}
-        <div className={`rounded-xl border p-3 ${theme.soft}`}>
+        <div className={`min-w-0 rounded-xl border p-3 ${theme.soft}`}>
           <div className="mb-2 font-medium">Добавить внешний MCP сервер</div>
-          <div className="grid gap-2">
-            <input value={mcpName} onChange={(event) => setMcpName(event.target.value)} className={`rounded-lg border px-3 py-2 ${theme.input}`} placeholder="имя, например search" />
-            <input value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} className={`rounded-lg border px-3 py-2 ${theme.input}`} placeholder="http://server:8001/sse" />
-            <button disabled={busyAction === 'mcp'} onClick={onAddMcp} className="rounded-lg bg-sky-400 px-3 py-2 font-semibold text-slate-950 disabled:opacity-50">Подключить MCP</button>
+          <div className="grid min-w-0 gap-2">
+            <input value={mcpName} onChange={(event) => setMcpName(event.target.value)} className={`min-w-0 rounded-lg border px-3 py-2 ${theme.input}`} placeholder="имя, например search" />
+            <input value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} className={`min-w-0 rounded-lg border px-3 py-2 ${theme.input}`} placeholder="http://server:8001/sse" />
+            <button disabled={busyAction === 'mcp' || !mcpName.trim() || !mcpUrl.trim()} onClick={onAddMcp} className="rounded-lg bg-sky-400 px-3 py-2 font-semibold text-slate-950 disabled:opacity-50">Подключить MCP</button>
           </div>
           <div className="mt-3 space-y-2">
             {(tools.mcp_servers || []).map((server) => (
-              <div key={server.name} className="rounded-lg border border-current/10 p-2 text-xs">
+              <div key={server.name} className="min-w-0 rounded-lg border border-current/10 p-2 text-xs">
                 <div className="font-medium">{server.name}</div>
                 <div className="break-all opacity-70">{server.url}</div>
                 <button disabled={busyAction === 'mcp'} onClick={() => onDeleteMcp(server.name)} className="mt-1 text-red-500 disabled:opacity-50">удалить</button>
@@ -589,32 +613,15 @@ function ToolsPanel({ theme, tools, busyAction, mcpName, mcpUrl, setMcpName, set
 
 function SnapshotsPanel({ theme, snapshots, setRollbackIteration }: { theme: Theme; snapshots: Snapshot[]; setRollbackIteration: (value: string) => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-4 font-semibold">Checkpoint / rollback</h2>
-      <div className="max-h-40 space-y-2 overflow-auto">
+      <div className="max-h-40 min-w-0 space-y-2 overflow-auto pr-1">
         {snapshots.slice(-8).reverse().map((snapshot) => (
           <button key={snapshot.id} onClick={() => setRollbackIteration(String(snapshot.iteration))} className={`block w-full rounded-lg border p-2 text-left text-xs ${theme.soft}`}>
             Итерация {snapshot.iteration} · confidence {Number(snapshot.confidence).toFixed(2)}
           </button>
         ))}
         {!snapshots.length && <div className={`text-sm ${theme.text}`}>Снапшотов пока нет.</div>}
-      </div>
-    </div>
-  )
-}
-
-function TracePanel({ theme, events }: { theme: Theme; events: TaskEvent[] }) {
-  return (
-    <div className={`rounded-2xl border p-4 ${theme.card}`}>
-      <h2 className="mb-4 font-semibold">Живой trace</h2>
-      <div className="max-h-[520px] space-y-2 overflow-auto">
-        {events.map((event) => (
-          <div key={event.id} className={`rounded-lg border p-3 text-sm ${theme.soft}`}>
-            <div className="text-xs text-sky-500">{event.event_type}</div>
-            <div>{event.payload_json?.message || JSON.stringify(event.payload_json)}</div>
-          </div>
-        ))}
-        {!events.length && <div className={`text-sm ${theme.text}`}>Событий пока нет.</div>}
       </div>
     </div>
   )

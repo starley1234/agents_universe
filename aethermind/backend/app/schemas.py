@@ -1,6 +1,6 @@
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from app.db.models import TaskStatus
 
 class Budget(BaseModel):
@@ -26,10 +26,17 @@ class RollbackRequest(BaseModel):
     new_instruction: str | None = None
 
 class MCPServerConfig(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_.-]+$")
     url: str = Field(min_length=1, max_length=500)
     transport: str = "sse"
     enabled: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("MCP URL должен начинаться с http:// или https://")
+        return value
 
 class ToolConfig(BaseModel):
     llm: bool = True
@@ -38,7 +45,7 @@ class ToolConfig(BaseModel):
     headless_browser: bool = False
     mcp: bool = False
     dangerous_actions: bool = False
-    mcp_servers: list[MCPServerConfig] = []
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
 class AgentSettingsRead(BaseModel):
     project_name: str
