@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 
-from .config import Settings, get_settings
+from .config import Settings, get_settings, load_dotenv
 
 
 def _services():
@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     serve = sub.add_parser("serve", help="запустить UI/API/MCP SSE gateway")
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", type=int, default=None)
+    serve.add_argument("--env-file", default=None, help="явно указать путь к .env")
     mcp = sub.add_parser("mcp-check", help="вывести tools/list MCP router")
     mcp.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -78,7 +79,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "serve":
         from .gateway.app import run_server
-        settings = get_settings()
+        if args.env_file:
+            loaded = load_dotenv(args.env_file, override=True)
+            if loaded is None:
+                print(f"[warn] .env file not found: {args.env_file}", file=sys.stderr)
+        settings = get_settings(reload=True)
         if args.host or args.port:
             values = dict(settings.__dict__)
             if args.host:

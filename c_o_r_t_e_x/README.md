@@ -69,11 +69,37 @@ c_o_r_t_e_x/
 
 ```bash
 cd c_o_r_t_e_x
+cp .env.example .env       # заполнить только нужные значения
 make check
 make test
 make audit
 make serve
 ```
+
+### Если сервис не стартует после создания `.env`
+
+C.O.R.T.E.X. теперь сам загружает `.env` из `c_o_r_t_e_x/.env`, текущего
+каталога или пути из `CORTEX_ENV_FILE`. Уже экспортированные переменные имеют
+приоритет. Можно явно указать файл:
+
+```bash
+cd /path/to/agents_universe
+PYTHONPATH=. python -m c_o_r_t_e_x serve --env-file c_o_r_t_e_x/.env
+```
+
+Проверить, что переменные читаются, без вывода секретов:
+
+```bash
+PYTHONPATH=. python -m c_o_r_t_e_x check
+```
+
+Если в `.env` выбран `CORTEX_EVENT_BUS=redis`, Redis должен быть доступен для
+production fan-out; для первого запуска оставьте `CORTEX_EVENT_BUS=memory`.
+Если указан `CORTEX_TOOLKIT_MODE=remote`, проверьте URL `/sse` проекта
+`agent_toolkit`; для запуска обоих сервисов локально используйте `auto`.
+
+Важно: в `.env` должны быть обычные URL без Markdown-скобок, например
+`MCP_AGENT_TOOLKIT=http://localhost:8090/sse`, а не `[http://...](...)`.
 
 Открыть:
 

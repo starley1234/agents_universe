@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -14,6 +15,58 @@ from urllib.parse import urlsplit
 
 _TRUE = {"1", "true", "yes", "y", "on", "да"}
 _FALSE = {"0", "false", "no", "n", "off", "нет"}
+
+def _strip_inline_comment(value: str) -> str:
+    """Удалить комментарий `.env`, не ломая `#` внутри кавычек."""
+    quote = None
+    for index, char in enumerate(value):
+        if char in {'"', "'"}:
+            if quote is None:
+                quote = char
+            elif quote == char and (index == 0 or value[index - 1] != "\\"):
+                quote = None
+        elif char == "#" and quote is None and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.strip()
+
+
+def load_dotenv(path: str | Path | None = None, *, override: bool = False) -> Path | None:
+    """Загрузить простой `.env` без обязательной зависимости python-dotenv.
+
+    Ищем явно указанный `CORTEX_ENV_FILE`, текущий каталог и каталог самого
+    проекта. Уже заданные переменные окружения имеют приоритет, если
+    `override=False`. Возвращается путь загруженного файла либо `None`.
+    """
+    explicit = path or os.getenv("CORTEX_ENV_FILE")
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    else:
+        package_dir = Path(__file__).resolve().parent
+        candidates.extend([Path.cwd() / ".env", package_dir / ".env", package_dir.parent / ".env"])
+
+    env_path = next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
+    if env_path is None:
+        return None
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        value = _strip_inline_comment(raw_value.strip())
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        if override or key not in os.environ:
+            os.environ[key] = value
+    return env_path
 
 
 def _bool(value: str | None, default: bool = False) -> bool:
@@ -110,6 +163,8 @@ class Settings:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
+        if env is None:
+            load_dotenv()
         values = dict(os.environ if env is None else env)
         origins_raw = _env(values, "CORTEX_CORS_ORIGINS", default="*")
         origins = tuple(item.strip() for item in origins_raw.split(",") if item.strip()) or ("*",)

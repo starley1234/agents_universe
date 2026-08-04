@@ -532,12 +532,14 @@ def run_server(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     services = create_services(settings)
     app = create_app(services)
+    if isinstance(app, FallbackApp):
+        print(f"FastAPI не установлен — stdlib server на http://{settings.app_host}:{settings.app_port}")
+        app.serve(settings.app_host, settings.app_port)
+        return
     try:
         import uvicorn  # type: ignore
     except ImportError:
-        print(f"FastAPI/uvicorn не установлены — stdlib server на http://{settings.app_host}:{settings.app_port}")
-        if isinstance(app, FallbackApp):
-            app.serve(settings.app_host, settings.app_port)
+        print("Для FastAPI-приложения нужен uvicorn: pip install -e '.[api]'")
         return
     print(f"C.O.R.T.E.X. gateway на http://{settings.app_host}:{settings.app_port}")
     uvicorn.run(app, host=settings.app_host, port=settings.app_port)

@@ -115,7 +115,7 @@ class RemoteMCPProvider:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise ToolkitUnavailable(f"MCP endpoint {self.endpoint} недоступен: {exc}") from exc
         # Streamable HTTP may return one SSE frame even when Accept contains SSE.
         if raw.lstrip().startswith("event:") or "data:" in raw[:80]:

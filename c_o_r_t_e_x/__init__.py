@@ -9,7 +9,7 @@ from __future__ import annotations
 __version__ = "0.1.0"
 __project__ = "C.O.R.T.E.X."
 
-from .config import Settings, get_settings
+from .config import Settings, get_settings, load_dotenv
 from .signals import Event, Task, TaskStatus
 
-__all__ = ["__version__", "__project__", "Settings", "get_settings", "Event", "Task", "TaskStatus"]
+__all__ = ["__version__", "__project__", "Settings", "get_settings", "load_dotenv", "Event", "Task", "TaskStatus"]
