@@ -9,7 +9,6 @@ ENV/
 .env
 .env.*
 !.env.example
-!*/.env.example
 
 ## Байткод и кэши Python
 __pycache__/

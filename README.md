@@ -25,8 +25,8 @@
 | **NexusTwin MDM** | [`nexus_twin_mdm/`](nexus_twin_mdm/) | Интеллектуальный сервис единой шины НСИ Холдинга, управления мастер-данными, дедупликации, **режим LLM-синтеза вымышленных предприятий** и сертификации авиатехники (АП-25 / MoC): Time-Travel EAV, EBOM/MBOM, SHA-256 бейслайны, агент на **LangGraph**, сервер **MCP** и Docker Compose. | Python 3.10+, FastAPI, LangGraph, MCP (JSON-RPC + SSE), PostgreSQL 14+ (`ltree`, `vector`, `pg_trgm`, RLS), Docker | 24 проверки |
 | **SAPS (САПС)** | [`saps/`](saps/) | Прикладная система авиационной сертификации (АП-25 / MoC): автоматизированная сборка протоколов соответствия в Word/Excel и анализ дыр. | PostgreSQL + `pgvector`, `pymupdf` | 638 проверок |
 | **VLM Services** | [`vlm_services/`](vlm_services/) | Мультимодальные сервисы компьютерного зрения (VLM): ритейл-аудит полок (`SOS %`), UX-критик, безопасность сайтов и распознавание документов. | Python 3.10+, `Pillow` (опционально) | 279 проверок |
+| **C.O.R.T.E.X.** | [`c_o_r_t_e_x/`](c_o_r_t_e_x/) | Событийный runtime и «центральная нервная система» распределённых агентов: Event Bus, Shared Blackboard, circuit breakers, HITL, dynamic MCP hot-swap, operations UI и практический audit `agent_toolkit`. | Python 3.10+, FastAPI/SSE (опционально), Redis/NATS, PostgreSQL JSONB/RLS, LiteLLM | unit-тесты |
 
-**Итого по репозиторию: 4980 автоматических проверок.** Каждый проект содержит собственный тестовый набор, работающий локально без ключей и сетевого доступа.
 
 ---
 

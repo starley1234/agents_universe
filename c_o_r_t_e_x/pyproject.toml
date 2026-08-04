@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cortex-agent-runtime"
+version = "0.1.0"
+description = "C.O.R.T.E.X. event-driven runtime, shared blackboard and MCP SSE gateway"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Agents Universe Team"}]
+keywords = ["agents", "event-driven", "mcp", "sse", "fastapi", "blackboard", "orchestration"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = []
+
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.0",
+  "sse-starlette>=2.0",
+]
+redis = ["redis>=5.0"]
+nats = ["nats-py>=2.7"]
+database = ["psycopg[binary]>=3.1"]
+llm = ["litellm>=1.40"]
+temporal = ["temporalio>=1.5"]
+langgraph = ["langgraph>=0.2"]
+observability = ["opentelemetry-api>=1.24", "opentelemetry-sdk>=1.24"]
+all = [
+  "fastapi>=0.110", "uvicorn[standard]>=0.27", "pydantic>=2.0", "sse-starlette>=2.0",
+  "redis>=5.0", "nats-py>=2.7", "psycopg[binary]>=3.1", "litellm>=1.40",
+]
+
+[project.scripts]
+cortex = "c_o_r_t_e_x.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["c_o_r_t_e_x*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
