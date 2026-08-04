@@ -34,6 +34,8 @@
 - [x] MCP SSE discovery через initialize/list_tools.
 - [x] MCP tool call через call_tool.
 - [x] Встроенный внутренний tool `__internal__.fetch_url`.
+- [x] Встроенный внутренний tool `__internal__.run_python`.
+- [x] Глобальный registry MCP серверов для новых задач.
 - [x] Сохранение MCP результатов как artifacts.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.

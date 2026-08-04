@@ -2,13 +2,17 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.tools.code_interpreter import CodeInterpreter
+
 
 INTERNAL_SERVER_NAME = "__internal__"
 INTERNAL_FETCH_TOOL = "fetch_url"
+INTERNAL_PYTHON_TOOL = "run_python"
 
 
 @dataclass
@@ -60,7 +64,23 @@ def _internal_tools() -> list[dict[str, Any]]:
             },
             "status": "ok",
             "internal": True,
-        }
+        },
+        {
+            "server_name": INTERNAL_SERVER_NAME,
+            "server_url": "builtin://python",
+            "name": INTERNAL_PYTHON_TOOL,
+            "title": "Встроенный Python sandbox",
+            "description": "Выполняет Python-код в workspace задачи через тот же sandbox/runtime, что и Code Interpreter.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python код для выполнения"},
+                },
+                "required": ["code"],
+            },
+            "status": "ok",
+            "internal": True,
+        },
     ]
 
 
@@ -68,8 +88,13 @@ def list_mcp_tools_sync(servers: list[dict[str, Any]], include_internal: bool = 
     return asyncio.run(list_mcp_tools(servers, include_internal=include_internal))
 
 
-def call_mcp_tool_sync(server: dict[str, Any], tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return asyncio.run(call_mcp_tool(server, tool_name, arguments))
+def call_mcp_tool_sync(
+    server: dict[str, Any],
+    tool_name: str,
+    arguments: dict[str, Any],
+    workspace_path: str | None = None,
+) -> dict[str, Any]:
+    return asyncio.run(call_mcp_tool(server, tool_name, arguments, workspace_path=workspace_path))
 
 
 async def list_mcp_tools(servers: list[dict[str, Any]], include_internal: bool = True) -> list[dict[str, Any]]:
@@ -107,11 +132,18 @@ async def list_mcp_tools(servers: list[dict[str, Any]], include_internal: bool =
     return result
 
 
-async def call_mcp_tool(server: dict[str, Any], tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if server.get("name") == INTERNAL_SERVER_NAME or server.get("url") == "builtin://fetch":
-        if tool_name != INTERNAL_FETCH_TOOL:
-            raise MCPClientError(f"Неизвестный внутренний инструмент: {tool_name}")
-        return await _call_internal_fetch(arguments)
+async def call_mcp_tool(
+    server: dict[str, Any],
+    tool_name: str,
+    arguments: dict[str, Any],
+    workspace_path: str | None = None,
+) -> dict[str, Any]:
+    if server.get("name") == INTERNAL_SERVER_NAME or str(server.get("url", "")).startswith("builtin://"):
+        if tool_name == INTERNAL_FETCH_TOOL:
+            return await _call_internal_fetch(arguments)
+        if tool_name == INTERNAL_PYTHON_TOOL:
+            return await _call_internal_python(arguments, workspace_path=workspace_path)
+        raise MCPClientError(f"Неизвестный внутренний инструмент: {tool_name}")
 
     mcp_server = MCPServer(**server)
     if not mcp_server.enabled:
@@ -193,6 +225,28 @@ async def _call_internal_fetch(arguments: dict[str, Any]) -> dict[str, Any]:
                     "status_code": response.status_code,
                     "headers": dict(response.headers),
                 },
+            }
+        ],
+    }
+
+
+async def _call_internal_python(arguments: dict[str, Any], workspace_path: str | None = None) -> dict[str, Any]:
+    code = str(arguments.get("code") or "")
+    if not code.strip():
+        raise MCPClientError("run_python требует аргумент code")
+    workspace = Path(workspace_path or "/tmp/aethermind-mcp-python").resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    result = CodeInterpreter(workspace).run_python(code)
+    return {
+        "server_name": INTERNAL_SERVER_NAME,
+        "server_url": "builtin://python",
+        "tool_name": INTERNAL_PYTHON_TOOL,
+        "arguments": {"code": code},
+        "is_error": bool(result.get("exit_code", 1)),
+        "content": [
+            {
+                "type": "json",
+                "json": result,
             }
         ],
     }

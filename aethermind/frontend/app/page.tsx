@@ -81,7 +81,7 @@ const DEFAULT_TOOLS: ToolConfig = {
   filesystem: true,
   code_interpreter: true,
   headless_browser: false,
-  mcp: false,
+  mcp: true,
   dangerous_actions: false,
   mcp_servers: [],
 }

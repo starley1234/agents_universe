@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     default_time_budget_seconds: int = 14400
     llm_required: bool = True
     planner_min_steps: int = 8
+    mcp_search_url: str = ""
+    mcp_agent_toolkit: str = ""
 
 @lru_cache
 def get_settings() -> Settings:

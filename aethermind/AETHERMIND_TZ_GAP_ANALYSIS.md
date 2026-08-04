@@ -36,6 +36,8 @@
 - [x] MCP discovery: подключение к SSE-серверам, initialize, list_tools.
 - [x] MCP tool call: вызов внешних tools через call_tool, сохранение результата в artifact.
 - [x] Встроенный внутренний MCP-like инструмент `__internal__.fetch_url`.
+- [x] Встроенный внутренний MCP-like инструмент `__internal__.run_python` для выполнения Python-кода.
+- [x] Глобальный registry MCP серверов: ранее подключенные MCP автоматически попадают в новые задачи.
 - [x] Агент получает discovered MCP tools в prompt и может запросить MCP вызов через `MCP_CALL_JSON`.
 - [x] Валидация MCP name/url на frontend и backend.
 - [x] Укрепленный responsive UI без горизонтального разъезда при длинном плане/JSON/URL.

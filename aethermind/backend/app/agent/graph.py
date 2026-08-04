@@ -207,7 +207,7 @@ class AgentGraph:
             "filesystem": True,
             "code_interpreter": True,
             "headless_browser": False,
-            "mcp": False,
+            "mcp": True,
             "dangerous_actions": False,
             "mcp_servers": [],
         }
@@ -305,7 +305,7 @@ class AgentGraph:
                     server = next((item for item in tool_config.get("mcp_servers", []) if item.get("name") == server_name), None)
                 if not server or not tool_name:
                     raise ValueError(f"MCP server/tool не найден: {server_name}.{tool_name}")
-                result = call_mcp_tool_sync(server, tool_name, arguments)
+                result = call_mcp_tool_sync(server, tool_name, arguments, workspace_path=str(self.workspace))
                 state.setdefault("mcp_calls", []).append({"request": request, "result": result})
                 state["events"].append({"type": "mcp_call", "message": f"Агент вызвал MCP инструмент: {server_name}.{tool_name}", "arguments": arguments})
                 additions.append(f"\n\n## Результат MCP: {server_name}.{tool_name}\n\n```json\n{json.dumps(result, ensure_ascii=False, indent=2, default=str)[:12000]}\n```\n")

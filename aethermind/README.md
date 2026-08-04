@@ -106,7 +106,9 @@ curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp \
 - `GET /api/tasks/{task_id}/mcp/tools` подключается к каждому enabled SSE серверу, вызывает `initialize` и `list_tools`;
 - `POST /api/tasks/{task_id}/mcp/call` вызывает выбранный tool через `call_tool`;
 - результат сохраняется как artifact `mcp_result` и попадает в Live Trace;
-- встроенный внутренний tool `__internal__.fetch_url` доступен без внешнего сервера и позволяет скачать HTTP/HTTPS страницу.
+- встроенные внутренние tools доступны без внешнего сервера:
+  - `__internal__.fetch_url` скачивает HTTP/HTTPS страницу;
+  - `__internal__.run_python` выполняет Python-код в workspace задачи через sandbox/Code Interpreter.
 
 Пример вызова встроенного fetch:
 
@@ -115,6 +117,16 @@ curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp/call \
   -H 'Content-Type: application/json' \
   -d '{"server_name":"__internal__","tool_name":"fetch_url","arguments":{"url":"https://example.com","max_chars":12000}}'
 ```
+
+Пример вызова встроенного Python sandbox:
+
+```bash
+curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp/call \
+  -H 'Content-Type: application/json' \
+  -d '{"server_name":"__internal__","tool_name":"run_python","arguments":{"code":"print(2 + 2)"}}'
+```
+
+MCP серверы, добавленные через UI/API, сохраняются в глобальный workspace registry `workspace/mcp_servers.json` и автоматически подключаются к новым задачам.
 
 Агент также получает список discovered MCP tools в prompt и может запросить вызов инструмента через строку `MCP_CALL_JSON: {...}`; runtime выполнит такой вызов и добавит результат в артефакт.
 

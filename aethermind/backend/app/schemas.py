@@ -43,7 +43,7 @@ class ToolConfig(BaseModel):
     filesystem: bool = True
     code_interpreter: bool = True
     headless_browser: bool = False
-    mcp: bool = False
+    mcp: bool = True
     dangerous_actions: bool = False
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 

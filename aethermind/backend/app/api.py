@@ -13,6 +13,7 @@ from app.db.session import get_db
 from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
 from app.services.events import add_event
 from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
+from app.services.mcp_registry import delete_global_mcp_server, load_global_mcp_servers, upsert_global_mcp_server
 from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
 
@@ -27,7 +28,10 @@ def default_budget() -> dict:
     ).model_dump()
 
 def default_tools() -> dict:
-    return ToolConfig().model_dump()
+    config = ToolConfig().model_dump()
+    config["mcp_servers"] = load_global_mcp_servers()
+    config["mcp"] = True
+    return config
 
 @router.get("/health")
 def health():
@@ -197,9 +201,11 @@ def add_mcp_server(task_id: UUID, payload: MCPServerConfig, db: Session = Depend
     state = dict(task.current_state_json or {})
     config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
     servers = [server for server in config.get("mcp_servers", []) if server.get("name") != payload.name]
-    servers.append(payload.model_dump())
+    server_payload = payload.model_dump()
+    servers.append(server_payload)
+    upsert_global_mcp_server(server_payload)
     config["mcp_servers"] = servers
-    config["mcp"] = any(server.get("enabled") for server in servers)
+    config["mcp"] = True
     state["tool_config"] = config
     task.current_state_json = state
     add_event(db, task.id, "tools", {"message": f"MCP сервер добавлен: {payload.name}", "server": payload.model_dump()})
@@ -214,7 +220,8 @@ def delete_mcp_server(task_id: UUID, server_name: str, db: Session = Depends(get
     state = dict(task.current_state_json or {})
     config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
     config["mcp_servers"] = [server for server in config.get("mcp_servers", []) if server.get("name") != server_name]
-    config["mcp"] = any(server.get("enabled") for server in config.get("mcp_servers", []))
+    delete_global_mcp_server(server_name)
+    config["mcp"] = True
     state["tool_config"] = config
     task.current_state_json = state
     add_event(db, task.id, "tools", {"message": f"MCP сервер удален: {server_name}"})
@@ -251,7 +258,7 @@ def call_task_mcp_tool(task_id: UUID, payload: MCPToolCallRequest, db: Session =
             raise HTTPException(404, f"MCP сервер не найден: {payload.server_name}")
 
     try:
-        result = call_mcp_tool_sync(server, payload.tool_name, payload.arguments)
+        result = call_mcp_tool_sync(server, payload.tool_name, payload.arguments, workspace_path=task.workspace_path)
     except Exception as exc:  # noqa: BLE001
         add_event(db, task.id, "mcp_error", {"message": f"Ошибка MCP tool call: {payload.server_name}.{payload.tool_name}", "error": str(exc)})
         db.commit()
