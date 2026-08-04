@@ -25,6 +25,14 @@ class RollbackRequest(BaseModel):
     iteration: int | None = None
     new_instruction: str | None = None
 
+class ToolConfig(BaseModel):
+    llm: bool = True
+    filesystem: bool = True
+    code_interpreter: bool = True
+    headless_browser: bool = False
+    mcp: bool = False
+    dangerous_actions: bool = False
+
 class TaskRead(BaseModel):
     id: UUID
     goal: str

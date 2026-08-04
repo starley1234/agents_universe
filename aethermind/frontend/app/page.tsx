@@ -14,11 +14,16 @@ type Task = {
   updated_at: string
 }
 
-type TaskEvent = {
-  id: string
-  event_type: string
-  payload_json: any
-  created_at: string
+type TaskEvent = { id: string; event_type: string; payload_json: any; created_at: string }
+type Artifact = { id: string; task_id: string; path: string; kind: string; metadata_json: any; created_at: string }
+type ArtifactContent = { id: string; path: string; kind: string; mime: string; content?: string; binary?: boolean; message?: string }
+type ToolConfig = {
+  llm: boolean
+  filesystem: boolean
+  code_interpreter: boolean
+  headless_browser: boolean
+  mcp: boolean
+  dangerous_actions: boolean
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ''
@@ -31,6 +36,14 @@ const STATUS_LABELS: Record<string, string> = {
   FAILED: 'Ошибка',
   COMPLETED: 'Завершено',
   ROLLED_BACK: 'Откат выполнен',
+}
+const TOOL_LABELS: Record<keyof ToolConfig, { title: string; description: string }> = {
+  llm: { title: 'LLM', description: 'Планирование, исполнение, критика и summaries.' },
+  filesystem: { title: 'Файловая система', description: 'Чтение/запись scratchpad и артефактов.' },
+  code_interpreter: { title: 'Code Interpreter', description: 'Python sandbox для проверок и вычислений.' },
+  headless_browser: { title: 'Headless Browser', description: 'Зарезервировано для веб-серфинга.' },
+  mcp: { title: 'MCP', description: 'Зарезервировано для внешних MCP-серверов.' },
+  dangerous_actions: { title: 'Опасные действия', description: 'Удаление, публикация, платежи и production-операции.' },
 }
 
 function statusLabel(status?: string) {
@@ -45,28 +58,50 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers || {}),
     },
   })
-
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     throw new Error(`API ${response.status}: ${body || response.statusText}`)
   }
-
   return response.json() as Promise<T>
 }
 
 export default function Home() {
-  const [tasks, setЗадачи] = useState<Task[]>([])
+  const [isDark, setIsDark] = useState(true)
+  const [tasks, setTasks] = useState<Task[]>([])
   const [selected, setSelected] = useState<Task | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
+  const [artifacts, setArtifacts] = useState<Artifact[]>([])
+  const [artifactContent, setArtifactContent] = useState<ArtifactContent | null>(null)
+  const [tools, setTools] = useState<ToolConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [goal, setGoal] = useState('Подготовьте самостоятельный исследовательский отчет об архитектуре AetherMind.')
+
+  const theme = isDark
+    ? {
+        page: 'bg-gradient-to-br from-[#070b16] to-[#111a33] text-slate-100',
+        card: 'border-slate-800 bg-slate-950/70',
+        soft: 'bg-slate-900 text-slate-300 border-slate-700',
+        text: 'text-slate-300',
+        title: 'text-white',
+        input: 'border-slate-700 bg-slate-900 text-white',
+        code: 'bg-slate-900 text-emerald-200',
+      }
+    : {
+        page: 'bg-gradient-to-br from-sky-50 to-slate-100 text-slate-950',
+        card: 'border-slate-200 bg-white/85 shadow-sm',
+        soft: 'bg-slate-100 text-slate-700 border-slate-200',
+        text: 'text-slate-600',
+        title: 'text-slate-950',
+        input: 'border-slate-300 bg-white text-slate-950',
+        code: 'bg-slate-100 text-slate-900',
+      }
 
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
       const data = await apiFetch<Task[]>('/api/tasks')
-      setЗадачи(data)
+      setTasks(data)
       setError(null)
       setSelected((current) => current ?? data[0] ?? null)
     } catch (err) {
@@ -78,12 +113,16 @@ export default function Home() {
 
   const refreshSelected = useCallback(async (id: string) => {
     try {
-      const [task, taskEvents] = await Promise.all([
+      const [task, taskEvents, taskArtifacts, taskTools] = await Promise.all([
         apiFetch<Task>(`/api/tasks/${id}`),
         apiFetch<TaskEvent[]>(`/api/tasks/${id}/events`),
+        apiFetch<Artifact[]>(`/api/tasks/${id}/artifacts`),
+        apiFetch<ToolConfig>(`/api/tasks/${id}/tools`),
       ])
       setSelected(task)
       setEvents(taskEvents)
+      setArtifacts(taskArtifacts)
+      setTools(taskTools)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Backend недоступен')
@@ -92,12 +131,11 @@ export default function Home() {
 
   async function createTask() {
     try {
-      const task = await apiFetch<Task>('/api/tasks', {
-        method: 'POST',
-        body: JSON.stringify({ goal }),
-      })
+      const task = await apiFetch<Task>('/api/tasks', { method: 'POST', body: JSON.stringify({ goal }) })
       setSelected(task)
+      setArtifactContent(null)
       await load()
+      await refreshSelected(task.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось создать задачу')
     }
@@ -109,7 +147,32 @@ export default function Home() {
       await apiFetch<Task>(`/api/tasks/${selected.id}/${name}`, { method: 'POST' })
       await refreshSelected(selected.id)
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${name}`)
+      setError(err instanceof Error ? err.message : `Не удалось выполнить действие ${name}`)
+    }
+  }
+
+  async function viewArtifact(artifact: Artifact) {
+    if (!selected) return
+    try {
+      const content = await apiFetch<ArtifactContent>(`/api/tasks/${selected.id}/artifacts/${artifact.id}/content`)
+      setArtifactContent(content)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось открыть артефакт')
+    }
+  }
+
+  async function toggleTool(key: keyof ToolConfig) {
+    if (!selected || !tools) return
+    const next = { ...tools, [key]: !tools[key] }
+    try {
+      const saved = await apiFetch<ToolConfig>(`/api/tasks/${selected.id}/tools`, {
+        method: 'PUT',
+        body: JSON.stringify(next),
+      })
+      setTools(saved)
+      await refreshSelected(selected.id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось обновить инструменты')
     }
   }
 
@@ -128,54 +191,47 @@ export default function Home() {
   const confidence = (selected?.current_state_json?.confidence ?? 1) * 100
   const budget = selected?.budget_json || {}
   const iter = selected?.current_state_json?.iteration || 0
+  const llmCalls = selected?.current_state_json?.llm_usage?.calls || budget.llm_calls || 0
+  const tokensUsed = selected?.current_state_json?.llm_usage?.tokens_used || budget.tokens_used || 0
   const contextFill = useMemo(() => Math.min(100, ((iter % 5) / 5) * 100), [iter])
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-[#070b16] to-[#111a33] p-6">
-      <header className="mb-6 flex items-center justify-between">
+    <main className={`min-h-screen p-6 transition-colors ${theme.page}`}>
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold text-white">AetherMind: Центр управления</h1>
-          <p className="text-slate-400">Автономный итерационный движок</p>
+          <h1 className={`text-3xl font-bold ${theme.title}`}>AetherMind: Центр управления</h1>
+          <p className={theme.text}>Автономный итерационный движок</p>
         </div>
-        <div className="rounded-full border border-neon/40 px-4 py-2 text-neon">
-          {isLoading ? 'СИНХРОНИЗАЦИЯ' : statusLabel(selected?.status)}
+        <div className="flex items-center gap-3">
+          <button onClick={() => setIsDark((value) => !value)} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`}>
+            {isDark ? '☀️ День' : '🌙 Ночь'}
+          </button>
+          <div className="rounded-full border border-sky-400/50 px-4 py-2 text-sky-500">
+            {isLoading ? 'СИНХРОНИЗАЦИЯ' : statusLabel(selected?.status)}
+          </div>
         </div>
       </header>
 
       {error && (
-        <div className="mb-6 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-red-200">
-          <div className="font-semibold">Проблема соединения с backend</div>
+        <div className="mb-6 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-red-500">
+          <div className="font-semibold">Проблема соединения или выполнения</div>
           <div className="mt-1 text-sm opacity-90">{error}</div>
-          <div className="mt-2 text-xs text-red-100/70">
-            Запустите полный стек командой <code>docker compose up --build</code>. Интерфейс использует относительные
-            <code> /api/*</code> запросы, поэтому работает за preview/proxy и Docker-маршрутизацией.
-          </div>
         </div>
       )}
 
-      <section className="mb-6 grid gap-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4 md:grid-cols-[1fr_auto]">
-        <input
-          value={goal}
-          onChange={(event) => setGoal(event.target.value)}
-          className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none focus:border-neon"
-        />
-        <button onClick={createTask} className="rounded-xl bg-neon px-5 py-3 font-semibold text-slate-950">
+      <section className={`mb-6 grid gap-3 rounded-2xl border p-4 md:grid-cols-[1fr_auto] ${theme.card}`}>
+        <input value={goal} onChange={(event) => setGoal(event.target.value)} className={`rounded-xl border px-4 py-3 outline-none focus:border-sky-400 ${theme.input}`} />
+        <button onClick={createTask} className="rounded-xl bg-sky-400 px-5 py-3 font-semibold text-slate-950">
           Запустить агента
         </button>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-[260px_1fr_380px]">
-        <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+      <div className="grid gap-6 lg:grid-cols-[280px_1fr_420px]">
+        <aside className={`rounded-2xl border p-4 ${theme.card}`}>
           <h2 className="mb-3 font-semibold">Задачи</h2>
           <div className="space-y-2">
             {tasks.map((task) => (
-              <button
-                key={task.id}
-                onClick={() => setSelected(task)}
-                className={`block w-full rounded-xl p-3 text-left text-sm ${
-                  selected?.id === task.id ? 'bg-neon/20 text-neon' : 'bg-slate-900 text-slate-300'
-                }`}
-              >
+              <button key={task.id} onClick={() => { setSelected(task); setArtifactContent(null) }} className={`block w-full rounded-xl border p-3 text-left text-sm ${selected?.id === task.id ? 'border-sky-400 bg-sky-400/15 text-sky-500' : theme.soft}`}>
                 <div className="truncate">{task.goal}</div>
                 <div className="text-xs opacity-70">{statusLabel(task.status)}</div>
               </button>
@@ -184,64 +240,98 @@ export default function Home() {
         </aside>
 
         <section className="space-y-6">
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+          <div className={`rounded-2xl border p-4 ${theme.card}`}>
             <h2 className="mb-4 font-semibold">Дерево стратегии</h2>
             <div className="grid gap-3 md:grid-cols-4">
               {plan.map((node: any) => (
-                <div
-                  key={node.id}
-                  className={`rounded-xl border p-4 ${
-                    node.status === 'done'
-                      ? 'border-emerald-400 bg-emerald-400/10'
-                      : node.status === 'running'
-                        ? 'border-neon bg-neon/10'
-                        : 'border-slate-700 bg-slate-900'
-                  }`}
-                >
-                  <div className="text-xs uppercase text-slate-400">{node.status}</div>
+                <div key={node.id} className={`rounded-xl border p-4 ${node.status === 'done' ? 'border-emerald-400 bg-emerald-400/10' : node.status === 'running' ? 'border-sky-400 bg-sky-400/10' : theme.soft}`}>
+                  <div className="text-xs uppercase opacity-60">{node.status}</div>
                   <div className="font-medium">{node.title}</div>
                 </div>
               ))}
-              {!plan.length && <div className="text-sm text-slate-400">Дерево стратегии пока не сформировано.</div>}
+              {!plan.length && <div className={`text-sm ${theme.text}`}>Дерево стратегии пока не сформировано.</div>}
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <h2 className="mb-4 font-semibold">Артефакты</h2>
-            <pre className="max-h-64 overflow-auto rounded-xl bg-slate-900 p-4 text-sm text-artifact">
-              {JSON.stringify(selected?.current_state_json?.artifacts || [], null, 2)}
-            </pre>
+          <div className={`rounded-2xl border p-4 ${theme.card}`}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-semibold">Артефакты</h2>
+              <span className={`text-xs ${theme.text}`}>{artifacts.length} файлов</span>
+            </div>
+            <div className="grid gap-3 md:grid-cols-[260px_1fr]">
+              <div className="space-y-2">
+                {artifacts.map((artifact) => (
+                  <div key={artifact.id} className={`rounded-xl border p-3 text-sm ${theme.soft}`}>
+                    <div className="truncate font-medium">{artifact.path}</div>
+                    <div className="mb-2 text-xs opacity-70">{artifact.kind}</div>
+                    <div className="flex gap-2">
+                      <button onClick={() => viewArtifact(artifact)} className="rounded-lg bg-sky-400/20 px-3 py-1 text-sky-500">Просмотр</button>
+                      {selected && <a href={`${API_BASE}/api/tasks/${selected.id}/artifacts/${artifact.id}/download`} className="rounded-lg bg-emerald-400/20 px-3 py-1 text-emerald-500">Скачать</a>}
+                    </div>
+                  </div>
+                ))}
+                {!artifacts.length && <div className={`text-sm ${theme.text}`}>Артефактов пока нет.</div>}
+              </div>
+              <div className={`min-h-64 overflow-auto rounded-xl p-4 text-sm ${theme.code}`}>
+                {artifactContent ? (
+                  artifactContent.binary ? (
+                    <div>{artifactContent.message}</div>
+                  ) : (
+                    <pre className="whitespace-pre-wrap">{artifactContent.content}</pre>
+                  )
+                ) : (
+                  <div className={theme.text}>Выберите артефакт для просмотра.</div>
+                )}
+              </div>
+            </div>
           </div>
         </section>
 
         <aside className="space-y-6">
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+          <div className={`rounded-2xl border p-4 ${theme.card}`}>
             <h2 className="mb-4 font-semibold">Контроль и ограничения</h2>
             <div className="space-y-4">
               <Meter label="Уверенность" value={confidence} color={confidence < 50 ? 'bg-red-500' : 'bg-emerald-400'} />
               <Meter label="Заполнение контекста" value={contextFill} color="bg-amberMind" />
               <Meter label="Бюджет итераций" value={(iter / (budget.max_iterations || 25)) * 100} />
+              <div className={`rounded-xl border p-3 text-xs ${theme.soft}`}>LLM вызовы: {llmCalls} · токены: {tokensUsed}</div>
               <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => action('pause')} className="rounded-lg bg-amberMind/20 px-3 py-2 text-amberMind">
-                  Пауза
-                </button>
-                <button onClick={() => action('resume')} className="rounded-lg bg-emerald-400/20 px-3 py-2 text-emerald-300">
-                  Продолжить
-                </button>
+                <button onClick={() => action('pause')} className="rounded-lg bg-amberMind/20 px-3 py-2 text-amberMind">Пауза</button>
+                <button onClick={() => action('resume')} className="rounded-lg bg-emerald-400/20 px-3 py-2 text-emerald-500">Продолжить</button>
               </div>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+          <div className={`rounded-2xl border p-4 ${theme.card}`}>
+            <h2 className="mb-4 font-semibold">Инструменты агента</h2>
+            <div className="space-y-3">
+              {tools && (Object.keys(TOOL_LABELS) as Array<keyof ToolConfig>).map((key) => (
+                <div key={key} className={`rounded-xl border p-3 ${theme.soft}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-medium">{TOOL_LABELS[key].title}</div>
+                      <div className="text-xs opacity-70">{TOOL_LABELS[key].description}</div>
+                    </div>
+                    <button onClick={() => toggleTool(key)} className={`rounded-full px-3 py-1 text-xs font-semibold ${tools[key] ? 'bg-emerald-400 text-slate-950' : 'bg-slate-500/30 text-slate-400'}`}>
+                      {tools[key] ? 'Вкл' : 'Выкл'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {!tools && <div className={`text-sm ${theme.text}`}>Выберите задачу для управления инструментами.</div>}
+            </div>
+          </div>
+
+          <div className={`rounded-2xl border p-4 ${theme.card}`}>
             <h2 className="mb-4 font-semibold">Живой trace</h2>
             <div className="max-h-[520px] space-y-2 overflow-auto">
               {events.map((event) => (
-                <div key={event.id} className="rounded-lg bg-slate-900 p-3 text-sm">
-                  <div className="text-xs text-neon">{event.event_type}</div>
-                  <div className="text-slate-300">{event.payload_json?.message || JSON.stringify(event.payload_json)}</div>
+                <div key={event.id} className={`rounded-lg border p-3 text-sm ${theme.soft}`}>
+                  <div className="text-xs text-sky-500">{event.event_type}</div>
+                  <div>{event.payload_json?.message || JSON.stringify(event.payload_json)}</div>
                 </div>
               ))}
-              {!events.length && <div className="text-sm text-slate-400">Событий пока нет.</div>}
+              {!events.length && <div className={`text-sm ${theme.text}`}>Событий пока нет.</div>}
             </div>
           </div>
         </aside>

@@ -16,6 +16,9 @@
 - Budget guardrails, confidence scoring, pause/resume/intervene/rollback.
 - Realtime/API proxy для UI.
 - Next.js + Tailwind интерфейс «Центр управления» на русском языке.
+- Переключатель темы день/ночь.
+- Просмотр и скачивание артефактов из UI.
+- Панель управления инструментами агента: LLM, файловая система, Code Interpreter, browser/MCP placeholders, dangerous actions.
 - Docker Compose для локального запуска.
 - Тесты guardrails и агентного цикла.
 

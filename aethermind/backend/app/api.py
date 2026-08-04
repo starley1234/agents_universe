@@ -1,16 +1,18 @@
 import asyncio
 import json
+import mimetypes
+from pathlib import Path
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Artifact, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
-from app.schemas import Budget, EventRead, InterveneRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead
+from app.schemas import Budget, EventRead, InterveneRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
 from app.services.events import add_event
-from app.services.workspace import task_workspace
+from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
 
 router = APIRouter()
@@ -23,6 +25,9 @@ def default_budget() -> dict:
         time_budget_seconds=settings.default_time_budget_seconds,
     ).model_dump()
 
+def default_tools() -> dict:
+    return ToolConfig().model_dump()
+
 @router.get("/health")
 def health():
     return {"status": "ok", "project": settings.project_name}
@@ -34,7 +39,14 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
     db.flush()
     ws = task_workspace(task.id)
     task.workspace_path = str(ws)
-    task.current_state_json = {"task_id": str(task.id), "goal": task.goal, "iteration": 0, "events": [], "artifacts": []}
+    task.current_state_json = {
+        "task_id": str(task.id),
+        "goal": task.goal,
+        "iteration": 0,
+        "events": [],
+        "artifacts": [],
+        "tool_config": default_tools(),
+    }
     add_event(db, task.id, "created", {"message": "Задача создана и поставлена в очередь.", "goal": task.goal})
     db.commit()
     db.refresh(task)
@@ -138,6 +150,52 @@ def get_artifacts(task_id: UUID, db: Session = Depends(get_db)):
         {"id": str(a.id), "task_id": str(a.task_id), "path": a.path, "kind": a.kind, "metadata_json": a.metadata_json, "created_at": a.created_at.isoformat()}
         for a in artifacts
     ]
+
+@router.get("/tasks/{task_id}/tools", response_model=ToolConfig)
+def get_tools(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    return ToolConfig(**{**default_tools(), **state.get("tool_config", {})})
+
+@router.put("/tasks/{task_id}/tools", response_model=ToolConfig)
+def update_tools(task_id: UUID, payload: ToolConfig, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    state["tool_config"] = payload.model_dump()
+    task.current_state_json = state
+    add_event(db, task.id, "tools", {"message": "Настройки инструментов обновлены.", "tool_config": state["tool_config"]})
+    db.commit(); db.refresh(task)
+    return payload
+
+@router.get("/tasks/{task_id}/artifacts/{artifact_id}/content")
+def get_artifact_content(task_id: UUID, artifact_id: UUID, db: Session = Depends(get_db)):
+    artifact = db.get(Artifact, artifact_id)
+    task = db.get(Task, task_id)
+    if not task or not artifact or artifact.task_id != task.id:
+        raise HTTPException(404, "Артефакт не найден")
+    path = safe_path(Path(task.workspace_path), artifact.path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Файл артефакта не найден")
+    mime, _ = mimetypes.guess_type(path.name)
+    text_types = {"text/markdown", "text/plain", "application/json", "text/csv", "text/x-python"}
+    if (mime or "").startswith("text/") or mime in text_types or path.suffix.lower() in {".md", ".txt", ".json", ".csv", ".py", ".log"}:
+        return {"id": str(artifact.id), "path": artifact.path, "kind": artifact.kind, "mime": mime or "text/plain", "content": path.read_text(encoding="utf-8", errors="replace")}
+    return {"id": str(artifact.id), "path": artifact.path, "kind": artifact.kind, "mime": mime or "application/octet-stream", "binary": True, "message": "Бинарный файл доступен для скачивания."}
+
+@router.get("/tasks/{task_id}/artifacts/{artifact_id}/download")
+def download_artifact(task_id: UUID, artifact_id: UUID, db: Session = Depends(get_db)):
+    artifact = db.get(Artifact, artifact_id)
+    task = db.get(Task, task_id)
+    if not task or not artifact or artifact.task_id != task.id:
+        raise HTTPException(404, "Артефакт не найден")
+    path = safe_path(Path(task.workspace_path), artifact.path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Файл артефакта не найден")
+    return FileResponse(path, filename=path.name, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 
 @router.get("/tasks/{task_id}/stream")
 def stream_events(task_id: UUID):

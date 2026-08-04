@@ -64,6 +64,11 @@ class AgentGraph:
             return state
 
     def plan(self, state: dict) -> dict:
+        state.setdefault("tool_config", self._default_tool_config())
+        if not self._tool_enabled(state, "llm"):
+            state["awaiting_user"] = True
+            state["events"].append({"type": "tools", "message": "LLM-инструмент выключен. Включите его в панели инструментов для продолжения."})
+            return state
         if not state.get("plan"):
             state["events"].append({"type": "thought", "message": "Запрашиваю у LLM производственный план выполнения задачи."})
             state["plan"] = self._build_llm_plan(state)
@@ -89,12 +94,20 @@ class AgentGraph:
             return state
 
         if action == "run_python":
+            if not self._tool_enabled(state, "code_interpreter"):
+                state["awaiting_user"] = True
+                state["observation"] = {"blocked": True, "reason": "Инструмент Code Interpreter выключен пользователем"}
+                return state
             result = self.code.run_python(
                 "from pathlib import Path\n"
                 "print('Проверка sandbox: OK')\n"
                 "print('Рабочая директория:', Path.cwd())\n"
             )
         else:
+            if not self._tool_enabled(state, "filesystem"):
+                state["awaiting_user"] = True
+                state["observation"] = {"blocked": True, "reason": "Инструмент File System выключен пользователем"}
+                return state
             content = self._run_llm_step(state, step)
             target = self._target_file_for_action(action)
             result = self.fs.write_file(target, content)
@@ -186,6 +199,20 @@ class AgentGraph:
         self._remember_artifact(state, "artifacts/executive_summary.md", "summary")
         state["events"].append({"type": "summary", "message": llm_result.content[:1200]})
         return state
+
+    def _default_tool_config(self) -> dict:
+        return {
+            "llm": True,
+            "filesystem": True,
+            "code_interpreter": True,
+            "headless_browser": False,
+            "mcp": False,
+            "dangerous_actions": False,
+        }
+
+    def _tool_enabled(self, state: dict, tool_name: str) -> bool:
+        config = {**self._default_tool_config(), **state.get("tool_config", {})}
+        return bool(config.get(tool_name, False))
 
     def _build_llm_plan(self, state: dict) -> list[dict]:
         prompt = (

@@ -24,6 +24,10 @@
 - [x] OpenAI-compatible providers для custom remote и OpenRouter.
 - [x] Next.js runtime API proxy.
 - [x] Next.js/Tailwind UI на русском.
+- [x] День/ночь в интерфейсе.
+- [x] Просмотр артефактов в UI.
+- [x] Скачивание артефактов.
+- [x] API и UI для управления инструментами агента.
 - [x] Docker Compose.
 - [x] `.env.example` без реальных секретов.
 - [x] Базовые тесты.
