@@ -22,6 +22,20 @@ type TaskEvent = {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || ''
+const STATUS_LABELS: Record<string, string> = {
+  PENDING: 'В очереди',
+  RUNNING: 'В работе',
+  PAUSED: 'Пауза',
+  AWAITING_USER: 'Ждет человека',
+  SLEEPING: 'Спит / лимит',
+  FAILED: 'Ошибка',
+  COMPLETED: 'Завершено',
+  ROLLED_BACK: 'Откат выполнен',
+}
+
+function statusLabel(status?: string) {
+  return status ? STATUS_LABELS[status] || status : 'НЕТ ЗАДАЧИ'
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -41,22 +55,22 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export default function Home() {
-  const [tasks, setTasks] = useState<Task[]>([])
+  const [tasks, setЗадачи] = useState<Task[]>([])
   const [selected, setSelected] = useState<Task | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [goal, setGoal] = useState('Prepare an autonomous research report about AetherMind architecture')
+  const [goal, setGoal] = useState('Подготовьте самостоятельный исследовательский отчет об архитектуре AetherMind.')
 
   const load = useCallback(async () => {
     setIsLoading(true)
     try {
       const data = await apiFetch<Task[]>('/api/tasks')
-      setTasks(data)
+      setЗадачи(data)
       setError(null)
       setSelected((current) => current ?? data[0] ?? null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Backend is unavailable')
+      setError(err instanceof Error ? err.message : 'Backend недоступен')
     } finally {
       setIsLoading(false)
     }
@@ -72,7 +86,7 @@ export default function Home() {
       setEvents(taskEvents)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Backend is unavailable')
+      setError(err instanceof Error ? err.message : 'Backend недоступен')
     }
   }, [])
 
@@ -85,7 +99,7 @@ export default function Home() {
       setSelected(task)
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create task')
+      setError(err instanceof Error ? err.message : 'Не удалось создать задачу')
     }
   }
 
@@ -120,21 +134,21 @@ export default function Home() {
     <main className="min-h-screen bg-gradient-to-br from-[#070b16] to-[#111a33] p-6">
       <header className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-white">AetherMind Mission Control</h1>
-          <p className="text-slate-400">Autonomous Iterative Engine</p>
+          <h1 className="text-3xl font-bold text-white">AetherMind: Центр управления</h1>
+          <p className="text-slate-400">Автономный итерационный движок</p>
         </div>
         <div className="rounded-full border border-neon/40 px-4 py-2 text-neon">
-          {isLoading ? 'SYNCING' : selected?.status || 'NO TASK'}
+          {isLoading ? 'СИНХРОНИЗАЦИЯ' : statusLabel(selected?.status)}
         </div>
       </header>
 
       {error && (
         <div className="mb-6 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-red-200">
-          <div className="font-semibold">Backend connection problem</div>
+          <div className="font-semibold">Проблема соединения с backend</div>
           <div className="mt-1 text-sm opacity-90">{error}</div>
           <div className="mt-2 text-xs text-red-100/70">
-            Start the full stack with <code>docker compose up --build</code>. The UI now uses relative
-            <code> /api/*</code> requests, so it works behind previews and Docker rewrites.
+            Запустите полный стек командой <code>docker compose up --build</code>. Интерфейс использует относительные
+            <code> /api/*</code> запросы, поэтому работает за preview/proxy и Docker-маршрутизацией.
           </div>
         </div>
       )}
@@ -146,13 +160,13 @@ export default function Home() {
           className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-white outline-none focus:border-neon"
         />
         <button onClick={createTask} className="rounded-xl bg-neon px-5 py-3 font-semibold text-slate-950">
-          Launch Agent
+          Запустить агента
         </button>
       </section>
 
       <div className="grid gap-6 lg:grid-cols-[260px_1fr_380px]">
         <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <h2 className="mb-3 font-semibold">Tasks</h2>
+          <h2 className="mb-3 font-semibold">Задачи</h2>
           <div className="space-y-2">
             {tasks.map((task) => (
               <button
@@ -163,7 +177,7 @@ export default function Home() {
                 }`}
               >
                 <div className="truncate">{task.goal}</div>
-                <div className="text-xs opacity-70">{task.status}</div>
+                <div className="text-xs opacity-70">{statusLabel(task.status)}</div>
               </button>
             ))}
           </div>
@@ -171,7 +185,7 @@ export default function Home() {
 
         <section className="space-y-6">
           <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <h2 className="mb-4 font-semibold">Strategy Graph</h2>
+            <h2 className="mb-4 font-semibold">Дерево стратегии</h2>
             <div className="grid gap-3 md:grid-cols-4">
               {plan.map((node: any) => (
                 <div
@@ -188,12 +202,12 @@ export default function Home() {
                   <div className="font-medium">{node.title}</div>
                 </div>
               ))}
-              {!plan.length && <div className="text-sm text-slate-400">No strategy graph yet.</div>}
+              {!plan.length && <div className="text-sm text-slate-400">Дерево стратегии пока не сформировано.</div>}
             </div>
           </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <h2 className="mb-4 font-semibold">Artifacts Canvas</h2>
+            <h2 className="mb-4 font-semibold">Артефакты</h2>
             <pre className="max-h-64 overflow-auto rounded-xl bg-slate-900 p-4 text-sm text-artifact">
               {JSON.stringify(selected?.current_state_json?.artifacts || [], null, 2)}
             </pre>
@@ -202,24 +216,24 @@ export default function Home() {
 
         <aside className="space-y-6">
           <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <h2 className="mb-4 font-semibold">Control & Guardrails</h2>
+            <h2 className="mb-4 font-semibold">Контроль и ограничения</h2>
             <div className="space-y-4">
-              <Meter label="Confidence" value={confidence} color={confidence < 50 ? 'bg-red-500' : 'bg-emerald-400'} />
-              <Meter label="Context heatmap" value={contextFill} color="bg-amberMind" />
-              <Meter label="Iteration budget" value={(iter / (budget.max_iterations || 25)) * 100} />
+              <Meter label="Уверенность" value={confidence} color={confidence < 50 ? 'bg-red-500' : 'bg-emerald-400'} />
+              <Meter label="Заполнение контекста" value={contextFill} color="bg-amberMind" />
+              <Meter label="Бюджет итераций" value={(iter / (budget.max_iterations || 25)) * 100} />
               <div className="grid grid-cols-2 gap-2">
                 <button onClick={() => action('pause')} className="rounded-lg bg-amberMind/20 px-3 py-2 text-amberMind">
-                  Pause
+                  Пауза
                 </button>
                 <button onClick={() => action('resume')} className="rounded-lg bg-emerald-400/20 px-3 py-2 text-emerald-300">
-                  Resume
+                  Продолжить
                 </button>
               </div>
             </div>
           </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <h2 className="mb-4 font-semibold">Live Trace</h2>
+            <h2 className="mb-4 font-semibold">Живой trace</h2>
             <div className="max-h-[520px] space-y-2 overflow-auto">
               {events.map((event) => (
                 <div key={event.id} className="rounded-lg bg-slate-900 p-3 text-sm">
@@ -227,7 +241,7 @@ export default function Home() {
                   <div className="text-slate-300">{event.payload_json?.message || JSON.stringify(event.payload_json)}</div>
                 </div>
               ))}
-              {!events.length && <div className="text-sm text-slate-400">No events yet.</div>}
+              {!events.length && <div className="text-sm text-slate-400">Событий пока нет.</div>}
             </div>
           </div>
         </aside>

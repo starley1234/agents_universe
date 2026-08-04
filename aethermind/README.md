@@ -1,58 +1,83 @@
 # AetherMind
 
-AetherMind is an autonomous iterative-agent runtime: FastAPI control plane, Celery workers, PostgreSQL/pgvector persistence, Redis queues, Docker sandbox tooling, and a Next.js Mission Control UI.
+**AetherMind** — платформа для долгоживущих автономных ИИ-агентов: FastAPI control plane, Celery workers, PostgreSQL/pgvector, Redis, Docker sandbox и панель управления Next.js.
 
-## What is implemented
+## Что реализовано
 
-- FastAPI backend with task lifecycle API.
-- Celery worker that executes one persisted agent iteration at a time and re-queues long-running tasks.
-- LangGraph-compatible agent loop: plan, execute, observe, reflect, summarize, persist, route.
-- PostgreSQL models for tasks, snapshots, events, artifacts, and vector memory.
-- Workspace per task with file tools and a Docker-backed Python code interpreter.
-- Budget guardrails, confidence scoring, low-confidence escalation rules, pause/resume/intervene/rollback.
-- SSE live event stream for UI.
-- Next.js + Tailwind Mission Control dashboard.
-- Docker Compose for local development.
-- Tests for state routing and guardrails.
+- Backend на FastAPI с API жизненного цикла задач.
+- Celery worker, выполняющий одну сохраненную агентную итерацию за раз.
+- Производственный агентный цикл: `plan -> execute -> observe -> reflect -> summarize -> persist`.
+- Реальные LLM-вызовы через OpenAI-compatible endpoints: `custom_remote` или `openrouter`.
+- Без молчаливого deterministic fallback в production: если LLM недоступна, задача переходит в режим ожидания человека.
+- PostgreSQL-модели для задач, снапшотов, событий, артефактов и памяти.
+- `pgvector` extension в миграции.
+- Workspace для каждой задачи.
+- File tools и Docker-backed Python code interpreter.
+- Budget guardrails, confidence scoring, pause/resume/intervene/rollback.
+- Realtime/API proxy для UI.
+- Next.js + Tailwind интерфейс «Центр управления» на русском языке.
+- Docker Compose для локального запуска.
+- Тесты guardrails и агентного цикла.
 
-## Quick start
+## Быстрый старт
 
 ```bash
 cd aethermind
 cp .env.example .env
+```
+
+Перед запуском настройте LLM в `.env`:
+
+```env
+LLM_ACTIVE_PROVIDER=custom_remote
+CUSTOM_REMOTE_URL=https://your-openai-compatible-endpoint/api/v1
+CUSTOM_REMOTE_KEY=your-key
+CUSTOM_REMOTE_DEFAULT_MODEL=your-model
+```
+
+или OpenRouter:
+
+```env
+LLM_ACTIVE_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_DEFAULT_MODEL=google/gemini-2.0-flash-lite:preview
+```
+
+Запуск:
+
+```bash
 docker compose up --build
 ```
 
-Open:
+Открыть:
 
-- Frontend: http://localhost:8127
-- API: http://localhost:8128/docs
+- UI: http://localhost:8127
+- API docs: http://localhost:8128/docs
 - API health: http://localhost:8128/api/health
 
-The frontend calls relative `/api/*` paths. In Docker these requests are handled by a Next.js runtime proxy route and forwarded to `BACKEND_INTERNAL_URL=http://api:8128`, so the browser never needs to reach container-internal hostnames.
+Frontend использует относительные `/api/*` запросы. В Docker они проксируются через Next.js runtime route в `BACKEND_INTERNAL_URL=http://api:8128`.
 
-## Local backend without Docker
+## Важное отличие production-режима
 
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-uvicorn app.main:app --host 0.0.0.0 --port 8128
+Агент больше не «симулирует» работу. На каждом смысловом шаге он вызывает LLM:
+
+1. LLM строит дерево стратегии.
+2. LLM выполняет исследовательский шаг и пишет Markdown-артефакт.
+3. LLM-критик оценивает результат и confidence.
+4. Каждые N итераций LLM делает executive summary.
+5. Если LLM недоступна или endpoint настроен неверно, задача останавливается в `AWAITING_USER`, а в trace появляется ошибка.
+
+Для тестов можно явно поставить:
+
+```env
+LLM_ACTIVE_PROVIDER=deterministic
 ```
 
-## Core flow
+Но это не production-режим.
 
-1. Create a task via API/UI.
-2. Backend persists `tasks` row and enqueues `run_agent_iteration`.
-3. Worker loads latest state and executes exactly one iteration.
-4. Worker writes `task_events`, `task_snapshots`, artifacts and updated task state.
-5. If still runnable, worker re-queues the task.
-6. UI receives realtime updates through SSE.
+## Диагностика
 
-## Troubleshooting
-
-If the UI shows `Backend connection problem`:
+Если UI показывает проблему backend:
 
 ```bash
 cd aethermind
@@ -62,14 +87,31 @@ curl http://localhost:8128/api/health
 curl http://localhost:8127/api/health
 ```
 
-Expected health response:
+Проверка LLM изнутри контейнера API:
 
-```json
-{"status":"ok","project":"AetherMind"}
+```bash
+docker compose exec api python - <<'PY'
+from app.llm.providers import get_llm_provider
+r = get_llm_provider().complete_sync([
+    {"role": "user", "content": "Ответь одним предложением на русском: LLM доступна."}
+])
+print(r.model)
+print(r.content)
+PY
 ```
 
-If `localhost:8128/docs` is unavailable, inspect the `api` logs first; the API container runs migrations before starting Uvicorn.
+## Основной поток
 
-## Safety model
+1. Пользователь создает задачу через UI/API.
+2. Backend сохраняет задачу и ставит `run_agent_iteration` в Celery.
+3. Worker загружает последнее состояние и выполняет одну итерацию.
+4. Worker сохраняет events, snapshots, artifacts и обновляет задачу.
+5. Если задача еще в работе, worker ставит следующую итерацию в очередь.
+6. UI отображает дерево стратегии, trace, артефакты и guardrails.
 
-Dangerous operations are blocked by guardrails and converted to `AWAITING_USER` requests. Real secrets are not stored in the repository; use `.env` or a secret manager.
+## Безопасность
+
+- Реальные секреты не хранятся в репозитории.
+- Используйте `.env` или secret manager.
+- Опасные действия должны проходить через human approval.
+- Sandbox запускает Python-код с лимитами CPU/RAM/time и без сети.

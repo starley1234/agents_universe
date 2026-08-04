@@ -1,12 +1,12 @@
 def summarize_state(state: dict) -> str:
     plan = state.get("plan", [])
-    completed = [s.get("title") for s in plan if s.get("status") == "done"]
-    current = state.get("current_step", {}).get("title", "n/a")
+    completed = [step.get("title") for step in plan if step.get("status") == "done"]
+    current = state.get("current_step", {}).get("title", "нет активного шага")
     return (
-        f"Goal: {state.get('goal')}\n"
-        f"Iteration: {state.get('iteration', 0)}\n"
-        f"Completed: {', '.join(completed) if completed else 'none'}\n"
-        f"Current: {current}\n"
-        f"Last observation: {str(state.get('observation', {}))[:1000]}\n"
-        f"Next: continue unfinished plan or request human if blocked."
+        f"Цель: {state.get('goal')}\n"
+        f"Итерация: {state.get('iteration', 0)}\n"
+        f"Завершено: {', '.join(completed) if completed else 'пока ничего'}\n"
+        f"Текущий шаг: {current}\n"
+        f"Последнее наблюдение: {str(state.get('observation', {}))[:1000]}\n"
+        "Рекомендация: продолжать незавершенный план, либо запросить человека при блокировке."
     )

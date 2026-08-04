@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     default_token_budget: int = 100000
     default_cost_budget_usd: float = 25
     default_time_budget_seconds: int = 14400
+    llm_required: bool = True
+    planner_min_steps: int = 8
 
 @lru_cache
 def get_settings() -> Settings:

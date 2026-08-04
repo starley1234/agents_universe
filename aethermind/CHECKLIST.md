@@ -1,37 +1,40 @@
-# AetherMind Implementation Checklist
+# Чек-лист AetherMind
 
-## Completed in this project folder
+## Реализовано
 
-- [x] FastAPI backend scaffold and task API.
-- [x] Celery worker for autonomous iterations.
-- [x] Redis broker configuration.
-- [x] PostgreSQL schema and Alembic migration.
-- [x] pgvector extension initialization.
-- [x] Task snapshots after each iteration.
-- [x] Task event log.
-- [x] Workspace per task.
-- [x] Scratchpad memory file.
-- [x] Artifact records and artifact files.
-- [x] Deterministic LangGraph-shaped plan/execute/observe/reflect/summarize loop.
+- [x] FastAPI backend и API задач.
+- [x] Celery worker для автономных итераций.
+- [x] Redis broker.
+- [x] PostgreSQL schema и Alembic migration.
+- [x] Идемпотентная инициализация `pgvector` и enum-типов.
+- [x] Снапшоты после итераций.
+- [x] Журнал событий задачи.
+- [x] Workspace на каждую задачу.
+- [x] Scratchpad memory.
+- [x] Артефакты в файловой системе и БД.
+- [x] Производственный цикл агента: plan / execute / observe / reflect / summarize.
+- [x] Реальные LLM-вызовы для планирования, исполнения, критики и summaries.
+- [x] Отсутствие молчаливого fake-success fallback в production.
 - [x] Budget guardrails.
-- [x] Confidence scoring and low-confidence routing.
-- [x] Human-in-the-loop statuses and intervention endpoint.
+- [x] Confidence scoring и routing при низкой уверенности.
+- [x] Human-in-the-loop статусы и intervention endpoint.
 - [x] Pause/resume endpoints.
 - [x] Rollback endpoint.
-- [x] Docker sandbox Python interpreter.
-- [x] OpenAI-compatible LLM provider abstraction for custom remote and OpenRouter.
-- [x] SSE stream endpoint.
-- [x] Next.js/Tailwind Mission Control UI.
+- [x] Docker sandbox для Python interpreter.
+- [x] OpenAI-compatible providers для custom remote и OpenRouter.
+- [x] Next.js runtime API proxy.
+- [x] Next.js/Tailwind UI на русском.
 - [x] Docker Compose.
-- [x] `.env.example` without real secrets.
-- [x] Basic tests.
+- [x] `.env.example` без реальных секретов.
+- [x] Базовые тесты.
 
-## Production hardening still recommended
+## Рекомендуемое production-hardening
 
-- [ ] Replace deterministic planner with native LangGraph + production prompts.
-- [ ] Add authentication/RBAC beyond dev token placeholder.
-- [ ] Add object storage for large artifacts.
-- [ ] Add browser automation service.
-- [ ] Add real tokenizer/cost accounting per provider.
-- [ ] Add secret manager integration.
-- [ ] Add CI pipeline and deployment manifests.
+- [ ] Добавить полноценный LangGraph `StateGraph` вместо совместимого класса-обертки.
+- [ ] Добавить auth/RBAC.
+- [ ] Добавить object storage для крупных артефактов.
+- [ ] Добавить browser automation service.
+- [ ] Добавить точный tokenizer/cost accounting для каждого провайдера.
+- [ ] Добавить secret manager.
+- [ ] Добавить CI/CD и deployment manifests.
+- [ ] Добавить мониторинг Celery/Redis/Postgres.

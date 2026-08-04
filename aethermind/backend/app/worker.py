@@ -31,8 +31,14 @@ def run_agent_iteration(task_id: str) -> dict:
         state["events"] = []
         graph = AgentGraph(workspace)
         state = graph.run_one_iteration(state)
+        budget = dict(task.budget_json or {})
+        llm_usage = state.get("llm_usage", {})
+        budget["tokens_used"] = int(llm_usage.get("tokens_used", budget.get("tokens_used", 0)) or 0)
+        budget["cost_used_usd"] = float(llm_usage.get("cost_used_usd", budget.get("cost_used_usd", 0.0)) or 0.0)
+        budget["llm_calls"] = int(llm_usage.get("calls", budget.get("llm_calls", 0)) or 0)
+        task.budget_json = budget
         task.current_state_json = state
-        task.status = route_after_reflection(state, task.budget_json or {})
+        task.status = route_after_reflection(state, budget)
         db.add(TaskSnapshot(task_id=task.id, iteration=state.get("iteration", 0), state_json=state, confidence=state.get("confidence", 1)))
         for artifact in state.get("artifacts", []):
             exists = db.execute(select(Artifact).where(Artifact.task_id == task.id, Artifact.path == artifact["path"])).scalar_one_or_none()

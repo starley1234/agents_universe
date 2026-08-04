@@ -1,7 +1,7 @@
 import asyncio
 import json
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -35,7 +35,7 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
     ws = task_workspace(task.id)
     task.workspace_path = str(ws)
     task.current_state_json = {"task_id": str(task.id), "goal": task.goal, "iteration": 0, "events": [], "artifacts": []}
-    add_event(db, task.id, "created", {"message": "Task created", "goal": task.goal})
+    add_event(db, task.id, "created", {"message": "Задача создана и поставлена в очередь.", "goal": task.goal})
     db.commit()
     db.refresh(task)
     run_agent_iteration.delay(str(task.id))
@@ -49,16 +49,16 @@ def list_tasks(db: Session = Depends(get_db)):
 def get_task(task_id: UUID, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if not task:
-        raise HTTPException(404, "Task not found")
+        raise HTTPException(404, "Задача не найдена")
     return task
 
 @router.post("/tasks/{task_id}/pause", response_model=TaskRead)
 def pause_task(task_id: UUID, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if not task:
-        raise HTTPException(404, "Task not found")
+        raise HTTPException(404, "Задача не найдена")
     task.status = TaskStatus.PAUSED
-    add_event(db, task.id, "paused", {"message": "Paused by user"})
+    add_event(db, task.id, "paused", {"message": "Пользователь поставил задачу на паузу."})
     db.commit(); db.refresh(task)
     return task
 
@@ -66,12 +66,18 @@ def pause_task(task_id: UUID, db: Session = Depends(get_db)):
 def resume_task(task_id: UUID, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if not task:
-        raise HTTPException(404, "Task not found")
+        raise HTTPException(404, "Задача не найдена")
+    if task.status == TaskStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Задача уже завершена. Для повторного запуска используйте rollback к нужному checkpoint.",
+        )
     task.status = TaskStatus.RUNNING
     state = dict(task.current_state_json or {})
     state["awaiting_user"] = False
+    state["goal_completed"] = False
     task.current_state_json = state
-    add_event(db, task.id, "resumed", {"message": "Resumed by user"})
+    add_event(db, task.id, "resumed", {"message": "Пользователь возобновил задачу."})
     db.commit(); db.refresh(task)
     run_agent_iteration.delay(str(task.id))
     return task
@@ -80,7 +86,7 @@ def resume_task(task_id: UUID, db: Session = Depends(get_db)):
 def intervene(task_id: UUID, payload: InterveneRequest, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if not task:
-        raise HTTPException(404, "Task not found")
+        raise HTTPException(404, "Задача не найдена")
     state = dict(task.current_state_json or {})
     interventions = state.setdefault("human_interventions", [])
     interventions.append({"message": payload.message})
@@ -97,7 +103,7 @@ def intervene(task_id: UUID, payload: InterveneRequest, db: Session = Depends(ge
 def rollback(task_id: UUID, payload: RollbackRequest, db: Session = Depends(get_db)):
     task = db.get(Task, task_id)
     if not task:
-        raise HTTPException(404, "Task not found")
+        raise HTTPException(404, "Задача не найдена")
     query = select(TaskSnapshot).where(TaskSnapshot.task_id == task.id)
     if payload.snapshot_id:
         query = query.where(TaskSnapshot.id == payload.snapshot_id)
@@ -107,7 +113,7 @@ def rollback(task_id: UUID, payload: RollbackRequest, db: Session = Depends(get_
         query = query.order_by(desc(TaskSnapshot.created_at))
     snapshot = db.execute(query).scalars().first()
     if not snapshot:
-        raise HTTPException(404, "Snapshot not found")
+        raise HTTPException(404, "Снапшот не найден")
     state = dict(snapshot.state_json)
     if payload.new_instruction:
         state.setdefault("human_interventions", []).append({"message": payload.new_instruction, "rollback": True})
