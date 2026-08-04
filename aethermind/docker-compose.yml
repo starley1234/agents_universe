@@ -48,7 +48,8 @@ services:
   frontend:
     build: ./frontend
     environment:
-      NEXT_PUBLIC_API_BASE: http://localhost:8128
+      BACKEND_INTERNAL_URL: http://api:8128
+      NEXT_PUBLIC_API_BASE: ""
     ports: ["8127:8127"]
     depends_on: [api]
 
