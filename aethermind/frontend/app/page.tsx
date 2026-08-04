@@ -28,6 +28,19 @@ type ToolConfig = {
   dangerous_actions: boolean
   mcp_servers: MCPServer[]
 }
+type MCPTool = {
+  server_name: string
+  server_url?: string
+  name?: string
+  title?: string
+  description?: string
+  input_schema?: any
+  status: 'ok' | 'error'
+  error?: string
+  internal?: boolean
+}
+type MCPToolsResponse = { enabled: boolean; tools: MCPTool[]; message?: string }
+type MCPCallResponse = { result: any; artifact?: { id: string; path: string; kind: string } }
 type AgentSettings = Record<string, string | number | boolean>
 
 type Theme = {
@@ -130,6 +143,9 @@ export default function Home() {
   const [artifactContent, setArtifactContent] = useState<ArtifactContent | null>(null)
   const [tools, setTools] = useState<ToolConfig>(DEFAULT_TOOLS)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
+  const [mcpTools, setMcpTools] = useState<MCPTool[]>([])
+  const [mcpCallArgs, setMcpCallArgs] = useState('{\n  "url": "https://example.com",\n  "max_chars": 12000\n}')
+  const [mcpCallResult, setMcpCallResult] = useState<any>(null)
   const [settings, setSettings] = useState<AgentSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -158,18 +174,20 @@ export default function Home() {
   }, [])
 
   const refreshSelected = useCallback(async (id: string) => {
-    const [task, taskEvents, taskArtifacts, taskTools, taskSnapshots] = await Promise.all([
+    const [task, taskEvents, taskArtifacts, taskTools, taskSnapshots, taskMcpTools] = await Promise.all([
       apiFetch<Task>(`/api/tasks/${id}`),
       apiFetch<TaskEvent[]>(`/api/tasks/${id}/events`),
       apiFetch<Artifact[]>(`/api/tasks/${id}/artifacts`),
       apiFetch<ToolConfig>(`/api/tasks/${id}/tools`),
       apiFetch<Snapshot[]>(`/api/tasks/${id}/snapshots`),
+      apiFetch<MCPToolsResponse>(`/api/tasks/${id}/mcp/tools`).catch(() => ({ enabled: false, tools: [] })),
     ])
     setSelected(task)
     setEvents(taskEvents)
     setArtifacts(taskArtifacts)
     setTools({ ...DEFAULT_TOOLS, ...taskTools, mcp_servers: taskTools.mcp_servers || [] })
     setSnapshots(taskSnapshots)
+    setMcpTools(taskMcpTools.tools || [])
   }, [])
 
   const safeRefreshSelected = useCallback(async (id: string) => {
@@ -354,6 +372,44 @@ export default function Home() {
     }
   }
 
+  async function refreshMcpTools() {
+    if (!selected) return
+    setBusyAction('mcp_tools')
+    try {
+      const data = await apiFetch<MCPToolsResponse>(`/api/tasks/${selected.id}/mcp/tools`)
+      setMcpTools(data.tools || [])
+      setNotice(data.enabled ? `Найдено MCP инструментов: ${(data.tools || []).filter((tool) => tool.status === 'ok').length}` : data.message || 'MCP выключен')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось получить MCP tools')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function callMcpTool(tool: MCPTool) {
+    if (!selected || !tool.name) return
+    setBusyAction(`mcp_call:${tool.server_name}:${tool.name}`)
+    try {
+      let args = {}
+      try {
+        args = mcpCallArgs.trim() ? JSON.parse(mcpCallArgs) : {}
+      } catch {
+        throw new Error('Аргументы MCP должны быть валидным JSON объектом')
+      }
+      const response = await apiFetch<MCPCallResponse>(`/api/tasks/${selected.id}/mcp/call`, {
+        method: 'POST',
+        body: JSON.stringify({ server_name: tool.server_name, tool_name: tool.name, arguments: args }),
+      })
+      setMcpCallResult(response)
+      setNotice(`MCP инструмент выполнен: ${tool.server_name}.${tool.name}`)
+      await refreshSelected(selected.id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось выполнить MCP инструмент')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
   const plan = selected?.current_state_json?.plan || []
   const activeStep = plan.find((node: any) => node.status === 'running')
   const budget = selected?.budget_json || {}
@@ -422,7 +478,7 @@ export default function Home() {
           <aside className="grid min-w-0 content-start gap-6">
             <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
             <TracePanel theme={theme} events={events} />
-            <ToolsPanel theme={theme} tools={tools} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} />
+            <ToolsPanel theme={theme} tools={tools} mcpTools={mcpTools} mcpCallArgs={mcpCallArgs} mcpCallResult={mcpCallResult} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} setMcpCallArgs={setMcpCallArgs} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} onRefreshMcpTools={refreshMcpTools} onCallMcpTool={callMcpTool} />
             <SnapshotsPanel theme={theme} snapshots={snapshots} setRollbackIteration={setRollbackIteration} />
           </aside>
         </div>
@@ -570,10 +626,52 @@ function TracePanel({ theme, events }: { theme: Theme; events: TaskEvent[] }) {
   )
 }
 
-function ToolsPanel({ theme, tools, busyAction, mcpName, mcpUrl, setMcpName, setMcpUrl, onToggle, onAddMcp, onDeleteMcp }: { theme: Theme; tools: ToolConfig; busyAction: string | null; mcpName: string; mcpUrl: string; setMcpName: (value: string) => void; setMcpUrl: (value: string) => void; onToggle: (key: keyof Omit<ToolConfig, 'mcp_servers'>) => void; onAddMcp: () => void; onDeleteMcp: (name: string) => void }) {
+function ToolsPanel({
+  theme,
+  tools,
+  mcpTools,
+  mcpCallArgs,
+  mcpCallResult,
+  busyAction,
+  mcpName,
+  mcpUrl,
+  setMcpName,
+  setMcpUrl,
+  setMcpCallArgs,
+  onToggle,
+  onAddMcp,
+  onDeleteMcp,
+  onRefreshMcpTools,
+  onCallMcpTool,
+}: {
+  theme: Theme
+  tools: ToolConfig
+  mcpTools: MCPTool[]
+  mcpCallArgs: string
+  mcpCallResult: any
+  busyAction: string | null
+  mcpName: string
+  mcpUrl: string
+  setMcpName: (value: string) => void
+  setMcpUrl: (value: string) => void
+  setMcpCallArgs: (value: string) => void
+  onToggle: (key: keyof Omit<ToolConfig, 'mcp_servers'>) => void
+  onAddMcp: () => void
+  onDeleteMcp: (name: string) => void
+  onRefreshMcpTools: () => void
+  onCallMcpTool: (tool: MCPTool) => void
+}) {
+  const okTools = mcpTools.filter((tool) => tool.status === 'ok' && tool.name)
+  const errorTools = mcpTools.filter((tool) => tool.status === 'error')
+
   return (
     <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
-      <h2 className="mb-4 font-semibold">Инструменты агента</h2>
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <h2 className="font-semibold">Инструменты агента</h2>
+        <button disabled={busyAction === 'mcp_tools'} onClick={onRefreshMcpTools} className="rounded-lg bg-sky-400/20 px-3 py-1 text-xs text-sky-500 disabled:opacity-50">
+          Обновить tools
+        </button>
+      </div>
       <div className="space-y-3">
         {(Object.keys(TOOL_LABELS) as Array<keyof Omit<ToolConfig, 'mcp_servers'>>).map((key) => (
           <div key={key} className={`min-w-0 rounded-xl border p-3 ${theme.soft}`}>
@@ -588,8 +686,9 @@ function ToolsPanel({ theme, tools, busyAction, mcpName, mcpUrl, setMcpName, set
             </div>
           </div>
         ))}
+
         <div className={`min-w-0 rounded-xl border p-3 ${theme.soft}`}>
-          <div className="mb-2 font-medium">Добавить внешний MCP сервер</div>
+          <div className="mb-2 font-medium">MCP серверы</div>
           <div className="grid min-w-0 gap-2">
             <input value={mcpName} onChange={(event) => setMcpName(event.target.value)} className={`min-w-0 rounded-lg border px-3 py-2 ${theme.input}`} placeholder="имя, например search" />
             <input value={mcpUrl} onChange={(event) => setMcpUrl(event.target.value)} className={`min-w-0 rounded-lg border px-3 py-2 ${theme.input}`} placeholder="http://server:8001/sse" />
@@ -598,13 +697,47 @@ function ToolsPanel({ theme, tools, busyAction, mcpName, mcpUrl, setMcpName, set
           <div className="mt-3 space-y-2">
             {(tools.mcp_servers || []).map((server) => (
               <div key={server.name} className="min-w-0 rounded-lg border border-current/10 p-2 text-xs">
-                <div className="font-medium">{server.name}</div>
+                <div className="font-medium">{server.name} · {server.transport} · {server.enabled ? 'enabled' : 'disabled'}</div>
                 <div className="break-all opacity-70">{server.url}</div>
                 <button disabled={busyAction === 'mcp'} onClick={() => onDeleteMcp(server.name)} className="mt-1 text-red-500 disabled:opacity-50">удалить</button>
               </div>
             ))}
-            {!tools.mcp_servers?.length && <div className="text-xs opacity-70">MCP серверы еще не подключены.</div>}
+            {!tools.mcp_servers?.length && <div className="text-xs opacity-70">Внешние MCP серверы еще не подключены. Встроенный fetch доступен после включения MCP.</div>}
           </div>
+        </div>
+
+        <div className={`min-w-0 rounded-xl border p-3 ${theme.soft}`}>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="font-medium">MCP tools discovery</div>
+            <div className="text-xs opacity-70">ok: {okTools.length} · errors: {errorTools.length}</div>
+          </div>
+          <textarea value={mcpCallArgs} onChange={(event) => setMcpCallArgs(event.target.value)} className={`h-28 w-full min-w-0 rounded-lg border p-2 font-mono text-xs ${theme.input}`} />
+          <div className="mt-3 max-h-80 min-w-0 space-y-2 overflow-auto pr-1">
+            {okTools.map((tool) => (
+              <div key={`${tool.server_name}:${tool.name}`} className="min-w-0 rounded-lg border border-current/10 p-2 text-xs">
+                <div className="font-medium">{tool.server_name}.{tool.name}</div>
+                <div className="break-words opacity-70">{tool.description || tool.title}</div>
+                <details className="mt-1">
+                  <summary className="cursor-pointer opacity-70">input schema</summary>
+                  <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words">{compactJson(tool.input_schema || {})}</pre>
+                </details>
+                <button disabled={busyAction === `mcp_call:${tool.server_name}:${tool.name}`} onClick={() => onCallMcpTool(tool)} className="mt-2 rounded-lg bg-emerald-400/20 px-3 py-1 text-emerald-500 disabled:opacity-50">Выполнить</button>
+              </div>
+            ))}
+            {errorTools.map((tool) => (
+              <div key={`${tool.server_name}:error`} className="min-w-0 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-500">
+                <div className="font-medium">{tool.server_name}</div>
+                <div className="break-words">{tool.error}</div>
+              </div>
+            ))}
+            {!mcpTools.length && <div className="text-xs opacity-70">Нажмите «Обновить tools», чтобы получить список инструментов. Если MCP выключен — включите переключатель MCP выше.</div>}
+          </div>
+          {mcpCallResult && (
+            <details className="mt-3" open>
+              <summary className="cursor-pointer text-xs font-medium">Последний результат MCP call</summary>
+              <pre className={`mt-2 max-h-64 overflow-auto rounded-lg border p-2 text-xs ${theme.code}`}>{compactJson(mcpCallResult)}</pre>
+            </details>
+          )}
         </div>
       </div>
     </div>

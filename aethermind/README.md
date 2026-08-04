@@ -101,7 +101,22 @@ curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp \
   -d '{"name":"search","url":"http://your-mcp-server:8001/sse","transport":"sse","enabled":true}'
 ```
 
-Текущая реализация сохраняет MCP серверы в `tool_config` и передает их агенту в prompt как доступные внешние инструменты. Полноценный MCP client runtime остается следующим production-hardening шагом.
+Текущая реализация делает реальный MCP discovery/call для SSE-серверов через Python SDK `mcp`:
+
+- `GET /api/tasks/{task_id}/mcp/tools` подключается к каждому enabled SSE серверу, вызывает `initialize` и `list_tools`;
+- `POST /api/tasks/{task_id}/mcp/call` вызывает выбранный tool через `call_tool`;
+- результат сохраняется как artifact `mcp_result` и попадает в Live Trace;
+- встроенный внутренний tool `__internal__.fetch_url` доступен без внешнего сервера и позволяет скачать HTTP/HTTPS страницу.
+
+Пример вызова встроенного fetch:
+
+```bash
+curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp/call \
+  -H 'Content-Type: application/json' \
+  -d '{"server_name":"__internal__","tool_name":"fetch_url","arguments":{"url":"https://example.com","max_chars":12000}}'
+```
+
+Агент также получает список discovered MCP tools в prompt и может запросить вызов инструмента через строку `MCP_CALL_JSON: {...}`; runtime выполнит такой вызов и добавит результат в артефакт.
 
 ## Настройки агента
 

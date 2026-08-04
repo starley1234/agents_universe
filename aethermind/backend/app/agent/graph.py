@@ -5,6 +5,7 @@ from app.agent.summarizer import summarize_state
 from app.config import settings
 from app.llm.providers import LLMProvider, get_llm_provider
 from app.services.guardrails import needs_human_for_action
+from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
 from app.tools.code_interpreter import CodeInterpreter
 from app.tools.filesystem import FileSystemTools
 
@@ -251,22 +252,67 @@ class AgentGraph:
             scratchpad = ""
         tool_config = {**self._default_tool_config(), **state.get("tool_config", {})}
         mcp_servers = [server for server in tool_config.get("mcp_servers", []) if server.get("enabled")]
-        mcp_hint = "\n".join(f"- {server.get('name')}: {server.get('url')} ({server.get('transport', 'sse')})" for server in mcp_servers) or "нет подключенных MCP серверов"
+        mcp_tools_hint = "MCP выключен"
+        if tool_config.get("mcp"):
+            try:
+                tools = list_mcp_tools_sync(tool_config.get("mcp_servers", []), include_internal=True)
+                ok_tools = [tool for tool in tools if tool.get("status") == "ok"]
+                mcp_tools_hint = "\n".join(
+                    f"- {tool.get('server_name')}.{tool.get('name')}: {tool.get('description', '')} schema={tool.get('input_schema', {})}"
+                    for tool in ok_tools[:12]
+                ) or "MCP включен, но инструменты не найдены"
+            except Exception as exc:  # noqa: BLE001
+                mcp_tools_hint = f"Ошибка discovery MCP tools: {exc}"
+        mcp_hint = "\n".join(f"- {server.get('name')}: {server.get('url')} ({server.get('transport', 'sse')})" for server in mcp_servers) or "нет подключенных внешних MCP серверов"
         prompt = (
             f"Цель: {state.get('goal')}\n"
             f"Итерация: {state.get('iteration', 0) + 1}\n"
             f"Шаг: {step.get('title')}\n"
             f"Executive summary: {state.get('executive_summary', 'пока отсутствует')}\n"
             f"Доступные внешние MCP серверы:\n{mcp_hint}\n"
+            f"Доступные MCP инструменты:\n{mcp_tools_hint}\n"
             f"Scratchpad:\n{scratchpad}\n\n"
             "Выполни этот шаг как автономный исследователь. "
             "Сформируй содержательный Markdown-результат на русском: факты, выводы, риски, следующие действия. "
+            "Если нужен инструмент, добавь отдельную строку MCP_CALL_JSON: "
+            "{\"server_name\":\"__internal__\",\"tool_name\":\"fetch_url\",\"arguments\":{\"url\":\"https://example.com\"}}. "
+            "После вызова инструмента среда добавит результат к артефакту. "
             "Если это финальный отчет — сделай структурированный отчет с разделами и чек-листом проверки."
         )
         result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, {"role": "user", "content": prompt}])
         self._account_llm_usage(state, result)
+        content = self._execute_mcp_requests_if_any(state, result.content)
         state["events"].append({"type": "llm", "message": f"LLM ответила моделью {result.model}", "tokens": result.tokens_used})
-        return result.content
+        return content
+
+    def _execute_mcp_requests_if_any(self, state: dict, content: str) -> str:
+        tool_config = {**self._default_tool_config(), **state.get("tool_config", {})}
+        if not tool_config.get("mcp"):
+            return content
+        matches = re.findall(r"MCP_CALL_JSON:\s*(\{.*?\})(?:\n|$)", content, flags=re.DOTALL)
+        if not matches:
+            return content
+        additions = []
+        for raw in matches[:3]:
+            try:
+                request = json.loads(raw)
+                server_name = request.get("server_name")
+                tool_name = request.get("tool_name")
+                arguments = request.get("arguments") or {}
+                if server_name == INTERNAL_SERVER_NAME:
+                    server = {"name": INTERNAL_SERVER_NAME, "url": "builtin://fetch", "transport": "builtin", "enabled": True}
+                else:
+                    server = next((item for item in tool_config.get("mcp_servers", []) if item.get("name") == server_name), None)
+                if not server or not tool_name:
+                    raise ValueError(f"MCP server/tool не найден: {server_name}.{tool_name}")
+                result = call_mcp_tool_sync(server, tool_name, arguments)
+                state.setdefault("mcp_calls", []).append({"request": request, "result": result})
+                state["events"].append({"type": "mcp_call", "message": f"Агент вызвал MCP инструмент: {server_name}.{tool_name}", "arguments": arguments})
+                additions.append(f"\n\n## Результат MCP: {server_name}.{tool_name}\n\n```json\n{json.dumps(result, ensure_ascii=False, indent=2, default=str)[:12000]}\n```\n")
+            except Exception as exc:  # noqa: BLE001
+                state["events"].append({"type": "mcp_error", "message": "Ошибка автоматического MCP вызова", "error": str(exc)})
+                additions.append(f"\n\n> Ошибка MCP вызова: {exc}\n")
+        return content + "".join(additions)
 
     def _target_file_for_action(self, action: str | None) -> str:
         mapping = {

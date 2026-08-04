@@ -31,6 +31,10 @@
 - [x] Human-in-the-loop UI для `AWAITING_USER`.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
+- [x] MCP SSE discovery через initialize/list_tools.
+- [x] MCP tool call через call_tool.
+- [x] Встроенный внутренний tool `__internal__.fetch_url`.
+- [x] Сохранение MCP результатов как artifacts.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.
 - [x] Responsive UI hardening без горизонтального разъезда.

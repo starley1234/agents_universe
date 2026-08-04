@@ -47,6 +47,11 @@ class ToolConfig(BaseModel):
     dangerous_actions: bool = False
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
 
+class MCPToolCallRequest(BaseModel):
+    server_name: str = Field(min_length=1, max_length=80)
+    tool_name: str = Field(min_length=1, max_length=120)
+    arguments: dict = Field(default_factory=dict)
+
 class AgentSettingsRead(BaseModel):
     project_name: str
     environment: str

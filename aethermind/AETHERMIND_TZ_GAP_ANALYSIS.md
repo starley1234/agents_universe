@@ -33,6 +33,10 @@
 - [x] Панель управления инструментами агента.
 - [x] Просмотр настроек агента и состояния задачи в UI.
 - [x] Регистрация внешних MCP серверов на задачу через UI/API.
+- [x] MCP discovery: подключение к SSE-серверам, initialize, list_tools.
+- [x] MCP tool call: вызов внешних tools через call_tool, сохранение результата в artifact.
+- [x] Встроенный внутренний MCP-like инструмент `__internal__.fetch_url`.
+- [x] Агент получает discovered MCP tools в prompt и может запросить MCP вызов через `MCP_CALL_JSON`.
 - [x] Валидация MCP name/url на frontend и backend.
 - [x] Укрепленный responsive UI без горизонтального разъезда при длинном плане/JSON/URL.
 - [x] Docker Compose для локального запуска.
@@ -47,15 +51,15 @@
 - [~] **Time-travel debugging**: rollback API и checkpoint UI есть, но нет полноценного branching/lineage.
 - [~] **Budget guardrails**: базовые лимиты есть, но нет точного provider-specific cost model.
 - [~] **Model routing**: provider abstraction есть, но автоматический выбор cheap/expensive model по сложности шага пока упрощен.
-- [~] **Tool management**: LLM/filesystem/code-interpreter реально учитываются; browser/MCP подключаются как конфигурация, но без полноценного runtime-клиента.
-- [~] **MCP**: серверы можно добавить и передать агенту в контекст, но вызов MCP tools еще не реализован.
+- [~] **Tool management**: LLM/filesystem/code-interpreter реально учитываются; MCP runtime подключен; browser пока остается placeholder.
+- [~] **MCP**: SSE discovery/call реализован; Stdio transport и расширенный lifecycle/session pooling еще не реализованы.
 
 ## Не реализовано / требует production-hardening
 
 - [ ] Нативный LangGraph `StateGraph` с checkpointing через graph runtime.
 - [ ] LangSmith tracing для каждого LLM/tool call.
 - [ ] Полноценный Headless Browser: DOM-анализ, screenshot, формы.
-- [ ] Полноценный MCP client runtime для SSE/Stdio серверов с discovery и вызовом tools.
+- [ ] Stdio MCP transport и persistent MCP session pooling.
 - [ ] Embedding pipeline: генерация эмбеддингов, запись в `memory_items.embedding`, semantic retrieval.
 - [ ] Object storage для крупных артефактов.
 - [ ] RBAC/SSO/production authentication.

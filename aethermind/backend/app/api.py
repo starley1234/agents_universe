@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Artifact, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
-from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
+from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
 from app.services.events import add_event
+from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
 from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
 
@@ -219,6 +220,58 @@ def delete_mcp_server(task_id: UUID, server_name: str, db: Session = Depends(get
     add_event(db, task.id, "tools", {"message": f"MCP сервер удален: {server_name}"})
     db.commit(); db.refresh(task)
     return ToolConfig(**config)
+
+@router.get("/tasks/{task_id}/mcp/tools")
+def list_task_mcp_tools(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    if not config.get("mcp"):
+        return {"enabled": False, "tools": [], "message": "MCP выключен в настройках инструментов."}
+    tools = list_mcp_tools_sync(config.get("mcp_servers", []), include_internal=True)
+    return {"enabled": True, "tools": tools}
+
+@router.post("/tasks/{task_id}/mcp/call")
+def call_task_mcp_tool(task_id: UUID, payload: MCPToolCallRequest, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    if not config.get("mcp"):
+        raise HTTPException(409, "MCP выключен в настройках инструментов задачи")
+
+    if payload.server_name == INTERNAL_SERVER_NAME:
+        server = {"name": INTERNAL_SERVER_NAME, "url": "builtin://fetch", "transport": "builtin", "enabled": True}
+    else:
+        server = next((item for item in config.get("mcp_servers", []) if item.get("name") == payload.server_name), None)
+        if not server:
+            raise HTTPException(404, f"MCP сервер не найден: {payload.server_name}")
+
+    try:
+        result = call_mcp_tool_sync(server, payload.tool_name, payload.arguments)
+    except Exception as exc:  # noqa: BLE001
+        add_event(db, task.id, "mcp_error", {"message": f"Ошибка MCP tool call: {payload.server_name}.{payload.tool_name}", "error": str(exc)})
+        db.commit()
+        raise HTTPException(502, str(exc)) from exc
+
+    calls = state.setdefault("mcp_calls", [])
+    calls.append({"server_name": payload.server_name, "tool_name": payload.tool_name, "arguments": payload.arguments, "result": result})
+    state["mcp_calls"] = calls[-20:]
+    task.current_state_json = state
+
+    artifact_path = f"artifacts/mcp_{payload.server_name}_{payload.tool_name}_{len(calls)}.json".replace("/", "_")
+    workspace = Path(task.workspace_path)
+    out_path = safe_path(workspace, artifact_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    artifact = Artifact(task_id=task.id, path=artifact_path, kind="mcp_result", metadata_json={"server_name": payload.server_name, "tool_name": payload.tool_name})
+    db.add(artifact)
+    add_event(db, task.id, "mcp_call", {"message": f"Выполнен MCP инструмент: {payload.server_name}.{payload.tool_name}", "arguments": payload.arguments, "artifact": artifact_path})
+    db.commit(); db.refresh(artifact)
+    return {"result": result, "artifact": {"id": str(artifact.id), "path": artifact.path, "kind": artifact.kind}}
 
 @router.get("/tasks/{task_id}/artifacts/{artifact_id}/content")
 def get_artifact_content(task_id: UUID, artifact_id: UUID, db: Session = Depends(get_db)):
