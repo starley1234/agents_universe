@@ -27,6 +27,11 @@ services:
     env_file: .env
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8128"
     ports: ["8128:8128"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8128/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
     volumes:
       - ./workspace:/app/workspace
       - /var/run/docker.sock:/var/run/docker.sock
@@ -51,7 +56,8 @@ services:
       BACKEND_INTERNAL_URL: http://api:8128
       NEXT_PUBLIC_API_BASE: ""
     ports: ["8127:8127"]
-    depends_on: [api]
+    depends_on:
+      api: { condition: service_healthy }
 
 volumes:
   postgres_data:

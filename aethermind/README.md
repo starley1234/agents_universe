@@ -27,6 +27,9 @@ Open:
 
 - Frontend: http://localhost:8127
 - API: http://localhost:8128/docs
+- API health: http://localhost:8128/api/health
+
+The frontend calls relative `/api/*` paths. In Docker these requests are handled by a Next.js runtime proxy route and forwarded to `BACKEND_INTERNAL_URL=http://api:8128`, so the browser never needs to reach container-internal hostnames.
 
 ## Local backend without Docker
 
@@ -46,6 +49,26 @@ uvicorn app.main:app --host 0.0.0.0 --port 8128
 4. Worker writes `task_events`, `task_snapshots`, artifacts and updated task state.
 5. If still runnable, worker re-queues the task.
 6. UI receives realtime updates through SSE.
+
+## Troubleshooting
+
+If the UI shows `Backend connection problem`:
+
+```bash
+cd aethermind
+docker compose ps
+docker compose logs --tail=200 api frontend worker
+curl http://localhost:8128/api/health
+curl http://localhost:8127/api/health
+```
+
+Expected health response:
+
+```json
+{"status":"ok","project":"AetherMind"}
+```
+
+If `localhost:8128/docs` is unavailable, inspect the `api` logs first; the API container runs migrations before starting Uvicorn.
 
 ## Safety model
 
