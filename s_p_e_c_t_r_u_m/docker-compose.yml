@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  # === SPECTRUM Application ===
+  spectrum:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spectrum-app
+    ports:
+      - "${APP_PORT:-8118}:8118"
+    volumes:
+      - ./knowledge_base:/app/knowledge_base
+      - ./.env:/app/.env:ro
+    environment:
+      - VECTOR_STORE=qdrant
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - qdrant
+      - redis
+    restart: unless-stopped
+
+  # === Qdrant Vector DB ===
+  qdrant:
+    image: qdrant/qdrant:v1.10.1
+    container_name: spectrum-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # === Redis (Task Queue) ===
+  redis:
+    image: redis:7-alpine
+    container_name: spectrum-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  redis_data:
