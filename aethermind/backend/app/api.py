@@ -8,13 +8,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 from app.config import settings
-from app.db.models import Artifact, Task, TaskEvent, TaskSnapshot, TaskStatus
+from app.db.models import Artifact, MemoryItem, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
-from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
+from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, MemoryCreateRequest, MemorySearchRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
 from app.llm.providers import get_llm_provider
 from app.services.events import add_event
 from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, diagnose_mcp_servers_sync, list_mcp_tools_sync
 from app.services.mcp_registry import delete_global_mcp_server, load_global_mcp_servers, upsert_global_mcp_server
+from app.services.memory import create_memory, retrieve_memories, store_iteration_memories
 from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
 
@@ -305,6 +306,45 @@ async def upload_attachment(task_id: UUID, file: UploadFile = File(...), db: Ses
     add_event(db, task.id, "attachment", {"message": f"Изображение прикреплено к контексту: {safe_name}", "path": target_rel})
     db.commit(); db.refresh(artifact)
     return {"id": str(artifact.id), "path": artifact.path, "kind": artifact.kind}
+
+@router.get("/tasks/{task_id}/memory")
+def list_task_memory(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    rows = db.execute(select(MemoryItem).where(MemoryItem.task_id == task_id).order_by(desc(MemoryItem.created_at)).limit(200)).scalars().all()
+    return [
+        {"id": str(row.id), "content": row.content, "metadata": row.metadata_json, "created_at": row.created_at.isoformat()}
+        for row in rows
+    ]
+
+@router.post("/tasks/{task_id}/memory")
+def add_task_memory(task_id: UUID, payload: MemoryCreateRequest, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    item = create_memory(db, payload.content, task_id=None if payload.global_memory else task.id, metadata={**payload.metadata, "source": payload.metadata.get("source", "manual")})
+    add_event(db, task.id, "memory", {"message": "Память добавлена вручную", "memory_id": str(item.id) if item else None})
+    db.commit()
+    return {"id": str(item.id) if item else None, "ok": True}
+
+@router.post("/tasks/{task_id}/memory/search")
+def search_task_memory(task_id: UUID, payload: MemorySearchRequest, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    return {"memories": retrieve_memories(db, payload.query, task_id=task.id, top_k=payload.top_k, include_global=payload.include_global)}
+
+@router.post("/tasks/{task_id}/memory/index-artifacts")
+def index_task_artifacts(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    sync_workspace_artifacts(db, task)
+    created = store_iteration_memories(db, task.id, dict(task.current_state_json or {}), workspace=Path(task.workspace_path))
+    add_event(db, task.id, "memory", {"message": f"Артефакты переиндексированы в память: {len(created)} фрагментов"})
+    db.commit()
+    return {"indexed": len(created)}
 
 @router.get("/tasks/{task_id}/tools", response_model=ToolConfig)
 def get_tools(task_id: UUID, db: Session = Depends(get_db)):

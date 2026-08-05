@@ -157,6 +157,7 @@ UI дополнительно поддерживает:
 - LLM healthcheck в UI/API: `GET /api/llm/test`;
 - MCP diagnostics в UI/API: `GET /api/tasks/{task_id}/mcp/diagnostics`, чтобы видеть все transport/url attempts;
 - workspace audit на Python-шаге: проверяет созданные файлы и CSV, сохраняет `artifacts/workspace_audit.json`;
+- Memory retrieval: embeddings, автоматическая индексация observations/reflections/artifacts, retrieval перед каждой итерацией, UI поиска/ручного добавления памяти;
 - редактирование цели, budget JSON и state JSON в блоке **Настройки агента и состояние**;
 - сохранение выбранной темы день/ночь в `localStorage` и cookie `aethermind.theme`.
 

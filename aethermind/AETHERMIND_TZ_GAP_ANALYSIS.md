@@ -32,6 +32,7 @@
 - [x] LLM healthcheck endpoint и UI-кнопка проверки.
 - [x] MCP diagnostics endpoint и UI-блок диагностики transport/url attempts.
 - [x] Workspace audit на Python-шаге с сохранением artifacts/workspace_audit.json.
+- [x] Memory retrieval: embeddings, автоматическая индексация observations/reflections/artifacts, retrieval перед каждой итерацией, API/UI поиска и ручного добавления памяти.
 - [x] Rollback endpoint и базовый UI выбора checkpoint/iteration.
 - [x] Backend SSE endpoint и надежное frontend polling-обновление Live Trace.
 - [x] Mission Control UI на русском.

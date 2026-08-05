@@ -41,6 +41,7 @@ type MCPTool = {
 }
 type MCPToolsResponse = { enabled: boolean; tools: MCPTool[]; message?: string }
 type MCPCallResponse = { result: any; artifact?: { id: string; path: string; kind: string } }
+type MemorySearchResult = { id: string; content: string; score: number; metadata: any; created_at?: string }
 type AgentSettings = Record<string, string | number | boolean>
 
 type Theme = {
@@ -369,6 +370,9 @@ export default function Home() {
   const [mcpCallResult, setMcpCallResult] = useState<any>(null)
   const [mcpDiagnostics, setMcpDiagnostics] = useState<any>(null)
   const [settings, setSettings] = useState<AgentSettings | null>(null)
+  const [memoryQuery, setMemoryQuery] = useState('')
+  const [memoryResults, setMemoryResults] = useState<MemorySearchResult[]>([])
+  const [manualMemory, setManualMemory] = useState('')
   const [llmStatus, setLlmStatus] = useState<any>(null)
   const [goalDraft, setGoalDraft] = useState('')
   const [budgetDraft, setBudgetDraft] = useState('{}')
@@ -478,6 +482,54 @@ export default function Home() {
     const response = await fetch(`${API_BASE}/api/tasks/${taskId}/attachments`, { method: 'POST', body: form })
     if (!response.ok) throw new Error(await response.text())
     return response.json()
+  }
+
+  async function searchMemory() {
+    if (!selected || !memoryQuery.trim()) return
+    setBusyAction('memory_search')
+    try {
+      const data = await apiFetch<{ memories: MemorySearchResult[] }>(`/api/tasks/${selected.id}/memory/search`, {
+        method: 'POST',
+        body: JSON.stringify({ query: memoryQuery, top_k: 8, include_global: true }),
+      })
+      setMemoryResults(data.memories || [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось найти память')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function addManualMemory() {
+    if (!selected || !manualMemory.trim()) return
+    setBusyAction('memory_add')
+    try {
+      await apiFetch(`/api/tasks/${selected.id}/memory`, {
+        method: 'POST',
+        body: JSON.stringify({ content: manualMemory, metadata: { source: 'manual_ui' }, global_memory: false }),
+      })
+      setManualMemory('')
+      setNotice('Память добавлена.')
+      await searchMemory()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось добавить память')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function indexArtifactsToMemory() {
+    if (!selected) return
+    setBusyAction('memory_index')
+    try {
+      const data = await apiFetch<any>(`/api/tasks/${selected.id}/memory/index-artifacts`, { method: 'POST' })
+      setNotice(`Артефакты проиндексированы: ${data.indexed}`)
+      if (memoryQuery.trim()) await searchMemory()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось индексировать артефакты')
+    } finally {
+      setBusyAction(null)
+    }
   }
 
   async function testLlmConnection() {
@@ -850,6 +902,7 @@ export default function Home() {
             <StrategyPanel plan={plan} theme={theme} />
             <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selectedArtifact={selectedArtifact} artifactViewMode={artifactViewMode} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} onViewModeChange={setArtifactViewMode} onUploadImage={uploadImageAttachment} />
             <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} goalDraft={goalDraft} budgetDraft={budgetDraft} stateDraft={stateDraft} busyAction={busyAction} setGoalDraft={setGoalDraft} setBudgetDraft={setBudgetDraft} setStateDraft={setStateDraft} onSave={saveTaskSettings} />
+            <MemoryPanel theme={theme} selected={selected} query={memoryQuery} results={memoryResults} manualMemory={manualMemory} busyAction={busyAction} setQuery={setMemoryQuery} setManualMemory={setManualMemory} onSearch={searchMemory} onAdd={addManualMemory} onIndex={indexArtifactsToMemory} />
           </section>
           <aside className="grid min-w-0 content-start gap-6">
             <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
@@ -1137,6 +1190,58 @@ function SettingsPanel({
         <pre className={`mt-3 max-h-96 min-w-0 overflow-auto rounded-xl border p-4 text-xs ${theme.code}`}><code className="break-words">{compactJson(statePreview)}</code></pre>
       </details>
     </details>
+  )
+}
+
+function MemoryPanel({
+  theme,
+  selected,
+  query,
+  results,
+  manualMemory,
+  busyAction,
+  setQuery,
+  setManualMemory,
+  onSearch,
+  onAdd,
+  onIndex,
+}: {
+  theme: Theme
+  selected: Task | null
+  query: string
+  results: MemorySearchResult[]
+  manualMemory: string
+  busyAction: string | null
+  setQuery: (value: string) => void
+  setManualMemory: (value: string) => void
+  onSearch: () => void
+  onAdd: () => void
+  onIndex: () => void
+}) {
+  return (
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-semibold">Долгосрочная память</h2>
+        <button disabled={!selected || busyAction === 'memory_index'} onClick={onIndex} className="rounded-lg bg-amber-400/20 px-3 py-1 text-xs text-amber-500 disabled:opacity-50">Индексировать артефакты</button>
+      </div>
+      <div className="grid gap-2">
+        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск по памяти: OpenSCAD параметры, ошибки рендера, выводы..." className={`min-w-0 rounded-lg border px-3 py-2 text-sm ${theme.input}`} />
+          <button disabled={!selected || !query.trim() || busyAction === 'memory_search'} onClick={onSearch} className="rounded-lg bg-sky-400 px-3 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">Найти</button>
+        </div>
+        <textarea value={manualMemory} onChange={(event) => setManualMemory(event.target.value)} placeholder="Добавить важный факт в память задачи..." className={`h-20 rounded-lg border p-3 text-sm ${theme.input}`} />
+        <button disabled={!selected || !manualMemory.trim() || busyAction === 'memory_add'} onClick={onAdd} className="w-fit rounded-lg bg-emerald-400/20 px-3 py-2 text-sm text-emerald-500 disabled:opacity-50">Добавить память</button>
+      </div>
+      <div className="mt-3 max-h-80 space-y-2 overflow-auto pr-1">
+        {results.map((item) => (
+          <div key={item.id} className={`rounded-xl border p-3 text-xs ${theme.soft}`}>
+            <div className="mb-1 flex justify-between gap-2 text-sky-500"><span>{item.metadata?.source || 'memory'}</span><span>{item.score?.toFixed?.(3)}</span></div>
+            <div className="whitespace-pre-wrap break-words">{item.content}</div>
+          </div>
+        ))}
+        {!results.length && <div className={`text-sm ${theme.text}`}>Результатов поиска пока нет. Память автоматически пополняется после итераций.</div>}
+      </div>
+    </div>
   )
 }
 

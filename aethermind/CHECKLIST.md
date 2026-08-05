@@ -40,6 +40,7 @@
 - [x] LLM healthcheck endpoint и UI-кнопка проверки.
 - [x] MCP diagnostics endpoint и UI-блок диагностики transport/url attempts.
 - [x] Workspace audit на Python-шаге с сохранением artifacts/workspace_audit.json.
+- [x] Memory retrieval: embeddings, автоматическая индексация, retrieval в prompt, API/UI поиска и ручного добавления памяти.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
 - [x] MCP SSE discovery через initialize/list_tools.

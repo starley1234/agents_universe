@@ -20,7 +20,14 @@ class Settings(BaseSettings):
     openrouter_api_url: str = "https://openrouter.ai/api/v1"
     openrouter_api_key: str = "sk-or-placeholder"
     openrouter_default_model: str = "google/gemini-2.0-flash-lite:preview"
+    embedding_url: str = ""
+    embedding_model: str = ""
+    embedding_key: str = ""
     embedding_dimensions: int = 1024
+    embedding_fallback_deterministic: bool = True
+    memory_top_k: int = 6
+    memory_chunk_chars: int = 1800
+    memory_max_items_per_iteration: int = 8
     summary_every_iterations: int = 5
     low_confidence_threshold: float = 0.35
     low_confidence_streak_limit: int = 6

@@ -59,6 +59,16 @@ class MCPToolCallRequest(BaseModel):
     tool_name: str = Field(min_length=1, max_length=120)
     arguments: dict = Field(default_factory=dict)
 
+class MemoryCreateRequest(BaseModel):
+    content: str = Field(min_length=1)
+    metadata: dict = Field(default_factory=dict)
+    global_memory: bool = False
+
+class MemorySearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = 6
+    include_global: bool = True
+
 class AgentSettingsRead(BaseModel):
     project_name: str
     environment: str

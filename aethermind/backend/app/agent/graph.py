@@ -354,6 +354,7 @@ class AgentGraph:
     def _build_llm_plan(self, state: dict) -> list[dict]:
         prompt = (
             f"Цель пользователя: {state.get('goal')}\n\n"
+            f"Релевантная долгосрочная память:\n{state.get('memory_context', 'нет релевантных воспоминаний')}\n\n"
             f"Составь производственный план из минимум {settings.planner_min_steps} шагов для автономного агента. "
             "Верни только JSON-массив объектов: id, title, action. "
             "action выбирай из: llm_scratchpad, llm_research, run_python, llm_reflect, llm_final_report, llm_quality_gate. "
@@ -423,6 +424,7 @@ class AgentGraph:
             f"Шаг: {step.get('title')}\n"
             f"Последняя инструкция человека: {latest_human or 'нет'}\n"
             f"Executive summary: {state.get('executive_summary', 'пока отсутствует')}\n"
+            f"Релевантная долгосрочная память:\n{state.get('memory_context', 'нет релевантных воспоминаний')}\n"
             f"Прикрепленные изображения в workspace:\n{attachments_hint}\n"
             f"Доступные внешние MCP серверы:\n{mcp_hint}\n"
             f"Доступные MCP инструменты:\n{mcp_tools_hint}\n"

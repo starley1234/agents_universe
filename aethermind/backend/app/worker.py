@@ -7,6 +7,7 @@ from app.db.models import Artifact, Task, TaskSnapshot, TaskStatus
 from app.agent.graph import AgentGraph
 from app.services.events import add_event
 from app.services.guardrails import route_after_reflection
+from app.services.memory import format_memories_for_prompt, retrieve_memories, store_iteration_memories
 from app.services.workspace import task_workspace
 
 celery_app = Celery("aethermind", broker=settings.celery_broker_url, backend=settings.celery_result_backend)
@@ -28,7 +29,13 @@ def run_agent_iteration(task_id: str) -> dict:
         state.setdefault("task_id", str(task.id))
         state.setdefault("goal", task.goal)
         state.setdefault("iteration", 0)
+        query = f"{task.goal}\n{state.get('executive_summary', '')}\n{state.get('current_step', {})}"
+        memories = retrieve_memories(db, query, task_id=task.id, top_k=settings.memory_top_k)
+        state["retrieved_memories"] = memories
+        state["memory_context"] = format_memories_for_prompt(memories)
         state["events"] = []
+        if memories:
+            state["events"].append({"type": "memory", "message": f"Из памяти извлечено релевантных записей: {len(memories)}"})
         graph = AgentGraph(workspace)
         state = graph.run_one_iteration(state)
         budget = dict(task.budget_json or {})
@@ -44,6 +51,11 @@ def run_agent_iteration(task_id: str) -> dict:
             exists = db.execute(select(Artifact).where(Artifact.task_id == task.id, Artifact.path == artifact["path"])).scalar_one_or_none()
             if not exists:
                 db.add(Artifact(task_id=task.id, path=artifact["path"], kind=artifact.get("kind", "file"), metadata_json=artifact))
+        created_memories = store_iteration_memories(db, task.id, state, workspace=workspace)
+        if created_memories:
+            state["memory_stats"] = {"stored_this_iteration": len(created_memories), "retrieved": len(state.get("retrieved_memories", []))}
+            task.current_state_json = state
+            add_event(db, task.id, "memory", {"message": f"В память записано фрагментов: {len(created_memories)}"})
         for event in state.get("events", []):
             add_event(db, task.id, event.get("type", "event"), event)
         db.commit()
