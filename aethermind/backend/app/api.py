@@ -78,7 +78,7 @@ def get_agent_settings():
 
 @router.post("/tasks", response_model=TaskRead)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
-    task = Task(goal=payload.goal, status=TaskStatus.PENDING, budget_json=(payload.budget.model_dump() if payload.budget else default_budget()), workspace_path="")
+    task = Task(goal=payload.goal, status=TaskStatus.PENDING if payload.autostart else TaskStatus.PAUSED, budget_json=(payload.budget.model_dump() if payload.budget else default_budget()), workspace_path="")
     db.add(task)
     db.flush()
     ws = task_workspace(task.id)
@@ -91,10 +91,11 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
         "artifacts": [],
         "tool_config": default_tools(),
     }
-    add_event(db, task.id, "created", {"message": "Задача создана и поставлена в очередь.", "goal": task.goal})
+    add_event(db, task.id, "created", {"message": "Задача создана и поставлена в очередь." if payload.autostart else "Задача создана на паузе для загрузки стартового контекста.", "goal": task.goal, "autostart": payload.autostart})
     db.commit()
     db.refresh(task)
-    run_agent_iteration.delay(str(task.id))
+    if payload.autostart:
+        run_agent_iteration.delay(str(task.id))
     return task
 
 @router.get("/tasks", response_model=list[TaskRead])
@@ -257,7 +258,7 @@ def sync_workspace_artifacts(db: Session, task: Task) -> None:
         rel = str(path.relative_to(workspace))
         if rel == "scratchpad.md" or rel.startswith("logs/"):
             kind = "log" if rel.startswith("logs/") else "scratchpad"
-        elif rel.startswith("code/") or path.suffix in {".py", ".js", ".ts", ".tsx"}:
+        elif rel.startswith("code/") or path.suffix in {".py", ".js", ".ts", ".tsx", ".scad"}:
             kind = "code"
         elif rel.startswith("data/") or path.suffix in {".json", ".csv", ".xlsx"}:
             kind = "data"

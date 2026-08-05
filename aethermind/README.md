@@ -150,6 +150,9 @@ UI дополнительно поддерживает:
 - внутренние filesystem MCP tools: `__internal__.write_file`, `__internal__.read_file`, `__internal__.list_dir` для создания реальных файлов, кода и данных;
 - устойчивый parser `MCP_CALL_JSON`: поддерживает однострочный JSON, многострочный JSON и массив вызовов;
 - внутренний `__internal__.fetch_many_urls` для fetch pipeline с источниками/цитированием `[1]`, `[2]`;
+- VLM support: прикрепленные изображения отправляются в OpenAI-compatible LLM message как `image_url` data URL, если `VISION_ENABLED=true`;
+- CAD/OpenSCAD workflow hints: для задач по изображению агенту явно предлагается извлечь геометрию, создать `.scad`, вызвать render MCP и итеративно сравнивать рендер;
+- optional native LangGraph facade в `app/agent/langgraph_runtime.py` поверх тех же node-функций, при этом durable checkpoints остаются в PostgreSQL snapshots;
 - LLM healthcheck в UI/API: `GET /api/llm/test`;
 - MCP diagnostics в UI/API: `GET /api/tasks/{task_id}/mcp/diagnostics`, чтобы видеть все transport/url attempts;
 - workspace audit на Python-шаге: проверяет созданные файлы и CSV, сохраняет `artifacts/workspace_audit.json`;

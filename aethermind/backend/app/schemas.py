@@ -15,6 +15,7 @@ class Budget(BaseModel):
 class TaskCreate(BaseModel):
     goal: str = Field(min_length=3)
     budget: Budget | None = None
+    autostart: bool = True
 
 class TaskUpdate(BaseModel):
     goal: str | None = Field(default=None, min_length=3)

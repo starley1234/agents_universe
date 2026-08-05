@@ -5,6 +5,13 @@ from app.agent.graph import AgentGraph
 from app.llm.providers import LLMResult
 
 
+def message_text(message):
+    content = message["content"]
+    if isinstance(content, list):
+        return "\n".join(part.get("text", "") for part in content if part.get("type") == "text")
+    return content
+
+
 class FunctionalLLM:
     """Deterministic LLM for an end-to-end product task.
 
@@ -14,7 +21,7 @@ class FunctionalLLM:
     """
 
     def complete_sync(self, messages, model=None):
-        prompt = messages[-1]["content"]
+        prompt = message_text(messages[-1])
         if "JSON-массив" in prompt:
             return LLMResult(
                 content=json.dumps(

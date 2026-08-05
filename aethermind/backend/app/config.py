@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     mcp_search_url: str = ""
     mcp_agent_toolkit: str = ""
     auto_recovery_attempts: int = 5
+    vision_enabled: bool = True
+    vision_max_images: int = 4
+    vision_max_image_bytes: int = 5_000_000
+    use_langgraph_runtime: bool = False
 
 @lru_cache
 def get_settings() -> Settings:

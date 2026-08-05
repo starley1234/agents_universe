@@ -1,4 +1,6 @@
+import base64
 import json
+import mimetypes
 import re
 from pathlib import Path
 from app.agent.summarizer import summarize_state
@@ -24,6 +26,8 @@ DEFAULT_PLAN = [
 SYSTEM_PROMPT = """Ты — производственный автономный агент AetherMind.
 Работай на русском языке. Не имитируй работу: каждый шаг должен создавать полезный текстовый результат.
 Если данных недостаточно, явно перечисли допущения и следующий проверочный шаг.
+Если в контексте есть изображения, анализируй их как визуальные входные данные, а не как обычные имена файлов.
+Для CAD/OpenSCAD задач: сначала извлеки геометрию с изображения, затем создай .scad файл, запроси render через доступный MCP/OpenSCAD tool или внутренние артефакты, сравни рендер с исходным изображением и итеративно улучшай модель.
 Не раскрывай скрытую chain-of-thought; давай краткое управленческое объяснение решения.
 """
 
@@ -355,7 +359,7 @@ class AgentGraph:
             "action выбирай из: llm_scratchpad, llm_research, run_python, llm_reflect, llm_final_report, llm_quality_gate. "
             "Не завершай задачу слишком быстро: план должен включать исследование, проверку, самокритику и финальный отчет."
         )
-        result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, {"role": "user", "content": prompt}])
+        result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, self._user_message(prompt, state)])
         self._account_llm_usage(state, result)
         parsed = self._extract_json(result.content)
         if not isinstance(parsed, list) or len(parsed) < 3:
@@ -363,6 +367,11 @@ class AgentGraph:
             parsed = [dict(step) for step in DEFAULT_PLAN]
         allowed = {"llm_scratchpad", "llm_research", "run_python", "llm_reflect", "llm_final_report", "llm_quality_gate"}
         plan = []
+        goal_text = str(state.get("goal", "")).lower()
+        if any(marker in goal_text for marker in ["openscad", "open scad", "scad", "cad", "конструкц", "3d", "модель"]):
+            plan.append({"id": "vision_geometry", "title": "Проанализировать изображение и извлечь геометрию", "status": "todo", "action": "llm_research"})
+            plan.append({"id": "openscad_code", "title": "Создать OpenSCAD код модели", "status": "todo", "action": "llm_research"})
+            plan.append({"id": "render_iteration", "title": "Запустить рендер OpenSCAD через MCP и оценить результат", "status": "todo", "action": "llm_research"})
         for index, item in enumerate(parsed[:12], start=1):
             action = item.get("action") if isinstance(item, dict) else None
             plan.append(
@@ -373,7 +382,15 @@ class AgentGraph:
                     "action": action if action in allowed else "llm_research",
                 }
             )
-        return plan
+        deduped = []
+        seen = set()
+        for step in plan:
+            key = step.get("id") or step.get("title")
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(step)
+        return deduped
 
     def _run_llm_step(self, state: dict, step: dict) -> str:
         scratchpad = ""
@@ -420,7 +437,7 @@ class AgentGraph:
             "Можно сделать до 5 MCP вызовов. После вызова инструмента среда добавит результат к артефакту. "
             "Если это финальный отчет — сделай структурированный отчет с разделами и чек-листом проверки."
         )
-        result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, {"role": "user", "content": prompt}])
+        result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, self._user_message(prompt, state)])
         self._account_llm_usage(state, result)
         content = self._execute_mcp_requests_if_any(state, result.content)
         state["events"].append({"type": "llm", "message": f"LLM ответила моделью {result.model}", "tokens": result.tokens_used})
@@ -493,6 +510,35 @@ class AgentGraph:
                     pass
                 search_from = cursor + max(len(line), 1)
         return requests
+
+    def _user_message(self, text: str, state: dict) -> dict:
+        images = self._image_message_parts(state)
+        if not images:
+            return {"role": "user", "content": text}
+        return {"role": "user", "content": [{"type": "text", "text": text}, *images]}
+
+    def _image_message_parts(self, state: dict) -> list[dict]:
+        if not settings.vision_enabled:
+            return []
+        parts = []
+        for item in (state.get("attachments") or [])[: settings.vision_max_images]:
+            rel_path = item.get("path")
+            if not rel_path:
+                continue
+            path = (self.workspace / rel_path).resolve()
+            if not str(path).startswith(str(self.workspace.resolve())) or not path.exists() or not path.is_file():
+                continue
+            if path.stat().st_size > settings.vision_max_image_bytes:
+                state.setdefault("events", []).append({"type": "vision", "message": f"Изображение пропущено из-за размера: {rel_path}"})
+                continue
+            mime = item.get("content_type") or mimetypes.guess_type(path.name)[0] or "image/png"
+            if not str(mime).startswith("image/"):
+                continue
+            data = base64.b64encode(path.read_bytes()).decode("ascii")
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        if parts:
+            state.setdefault("events", []).append({"type": "vision", "message": f"В LLM отправлено изображений: {len(parts)}"})
+        return parts
 
     def _build_workspace_audit_script(self) -> str:
         return r'''

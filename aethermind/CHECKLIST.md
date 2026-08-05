@@ -58,6 +58,9 @@
 - [x] Просмотр артефактов Markdown/HTML с указанием открытого файла.
 - [x] Корректный HTML-рендер Markdown-таблиц в артефактах.
 - [x] Прикрепление изображений к контексту задачи до запуска и после запуска.
+- [x] VLM support: отправка изображений в OpenAI-compatible messages как image_url data URLs.
+- [x] CAD/OpenSCAD prompt workflow для итеративного моделирования по изображению.
+- [x] Optional native LangGraph StateGraph facade.
 - [x] MCP discovery fallback: SSE + Streamable HTTP endpoint candidates.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.
