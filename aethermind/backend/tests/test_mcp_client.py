@@ -1,5 +1,6 @@
 from app.services.mcp_client import (
     INTERNAL_FETCH_TOOL,
+    INTERNAL_FETCH_MANY_TOOL,
     INTERNAL_LIST_DIR_TOOL,
     INTERNAL_PYTHON_TOOL,
     INTERNAL_READ_FILE_TOOL,
@@ -14,6 +15,7 @@ from app.services.mcp_client import (
 def test_internal_mcp_tools_are_discoverable():
     tools = list_mcp_tools_sync([], include_internal=True)
     assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_FETCH_TOOL for tool in tools)
+    assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_FETCH_MANY_TOOL for tool in tools)
     assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_PYTHON_TOOL for tool in tools)
     assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_WRITE_FILE_TOOL for tool in tools)
     assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_READ_FILE_TOOL for tool in tools)
@@ -45,3 +47,25 @@ def test_internal_filesystem_tools(tmp_path):
     assert read["content"][0]["json"]["content"] == "hello"
     listing = call_mcp_tool_sync(server, INTERNAL_LIST_DIR_TOOL, {"path": "artifacts"}, workspace_path=str(tmp_path))
     assert "demo.txt" in listing["content"][0]["json"]["entries"]
+
+
+def test_agent_extracts_multiline_and_array_mcp_calls(tmp_path):
+    from app.agent.graph import AgentGraph
+
+    graph = AgentGraph(tmp_path)
+    content = '''Нужно создать файлы.
+MCP_CALL_JSON:
+{
+  "server_name": "__internal__",
+  "tool_name": "write_file",
+  "arguments": {"path": "artifacts/a.md", "content": "A"}
+}
+Еще вызовы:
+MCP_CALL_JSON: [
+  {"server_name":"__internal__","tool_name":"write_file","arguments":{"path":"artifacts/b.md","content":"B"}},
+  {"server_name":"__internal__","tool_name":"list_dir","arguments":{"path":"artifacts"}}
+]
+'''
+    requests = graph._extract_mcp_call_requests(content)
+    assert [request["tool_name"] for request in requests] == ["write_file", "write_file", "list_dir"]
+    assert requests[1]["arguments"]["path"] == "artifacts/b.md"

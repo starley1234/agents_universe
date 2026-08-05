@@ -13,6 +13,7 @@ from app.tools.code_interpreter import CodeInterpreter
 
 INTERNAL_SERVER_NAME = "__internal__"
 INTERNAL_FETCH_TOOL = "fetch_url"
+INTERNAL_FETCH_MANY_TOOL = "fetch_many_urls"
 INTERNAL_PYTHON_TOOL = "run_python"
 INTERNAL_WRITE_FILE_TOOL = "write_file"
 INTERNAL_READ_FILE_TOOL = "read_file"
@@ -65,6 +66,23 @@ def _internal_tools() -> list[dict[str, Any]]:
                     "max_chars": {"type": "integer", "default": 12000},
                 },
                 "required": ["url"],
+            },
+            "status": "ok",
+            "internal": True,
+        },
+        {
+            "server_name": INTERNAL_SERVER_NAME,
+            "server_url": "builtin://fetch",
+            "name": INTERNAL_FETCH_MANY_TOOL,
+            "title": "Встроенный multi-fetch с цитированием",
+            "description": "Скачивает несколько HTTP/HTTPS страниц и возвращает markdown-блок с источниками [1], [2] и краткими текстовыми excerpts.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "urls": {"type": "array", "items": {"type": "string"}, "description": "Список HTTP/HTTPS URL"},
+                    "max_chars_per_url": {"type": "integer", "default": 6000},
+                },
+                "required": ["urls"],
             },
             "status": "ok",
             "internal": True,
@@ -165,6 +183,8 @@ async def call_mcp_tool(
     if server.get("name") == INTERNAL_SERVER_NAME or str(server.get("url", "")).startswith("builtin://"):
         if tool_name == INTERNAL_FETCH_TOOL:
             return await _call_internal_fetch(arguments)
+        if tool_name == INTERNAL_FETCH_MANY_TOOL:
+            return await _call_internal_fetch_many(arguments)
         if tool_name == INTERNAL_PYTHON_TOOL:
             return await _call_internal_python(arguments, workspace_path=workspace_path)
         if tool_name in {INTERNAL_WRITE_FILE_TOOL, INTERNAL_READ_FILE_TOOL, INTERNAL_LIST_DIR_TOOL}:
@@ -357,6 +377,47 @@ async def _call_internal_fetch(arguments: dict[str, Any]) -> dict[str, Any]:
                     "headers": dict(response.headers),
                 },
             }
+        ],
+    }
+
+
+async def _call_internal_fetch_many(arguments: dict[str, Any]) -> dict[str, Any]:
+    urls = arguments.get("urls") or []
+    if not isinstance(urls, list) or not urls:
+        raise MCPClientError("fetch_many_urls требует непустой массив urls")
+    max_chars = int(arguments.get("max_chars_per_url") or 6000)
+    sources = []
+    markdown_parts = ["# Источники\n"]
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        for index, raw_url in enumerate(urls[:10], start=1):
+            url = str(raw_url)
+            if not re.match(r"^https?://", url):
+                sources.append({"index": index, "url": url, "is_error": True, "error": "URL должен начинаться с http:// или https://"})
+                continue
+            try:
+                response = await client.get(url)
+                text = response.text[:max(1000, min(max_chars, 50000))]
+                item = {
+                    "index": index,
+                    "url": str(response.url),
+                    "status_code": response.status_code,
+                    "is_error": response.is_error,
+                    "excerpt": text,
+                }
+                sources.append(item)
+                markdown_parts.append(f"## [{index}] {response.url}\n\nStatus: {response.status_code}\n\n{text[:3000]}\n")
+            except Exception as exc:  # noqa: BLE001
+                sources.append({"index": index, "url": url, "is_error": True, "error": str(exc)})
+                markdown_parts.append(f"## [{index}] {url}\n\nОшибка: {exc}\n")
+    return {
+        "server_name": INTERNAL_SERVER_NAME,
+        "server_url": "builtin://fetch",
+        "tool_name": INTERNAL_FETCH_MANY_TOOL,
+        "arguments": arguments,
+        "is_error": any(item.get("is_error") for item in sources),
+        "content": [
+            {"type": "json", "json": {"sources": sources}},
+            {"type": "text", "text": "\n".join(markdown_parts)},
         ],
     }
 

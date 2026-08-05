@@ -34,6 +34,8 @@
 - [x] Advisory-mode критика: замечания не блокируют продуктивные шаги с артефактами.
 - [x] Умные быстрые варианты HITL ответа на основе причины критика.
 - [x] Внутренние filesystem MCP tools: write_file/read_file/list_dir.
+- [x] Устойчивый parser MCP_CALL_JSON: multiline JSON и массивы вызовов.
+- [x] Внутренний fetch_many_urls для source/citation pipeline.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
 - [x] MCP SSE discovery через initialize/list_tools.

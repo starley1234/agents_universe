@@ -26,6 +26,8 @@
 - [x] Наглядная обратная связь критика: причина, confidence, observation, problem events, умные быстрые варианты ответа.
 - [x] Advisory-mode критика: замечания не блокируют продуктивные шаги с артефактами.
 - [x] Внутренние filesystem MCP tools: write_file/read_file/list_dir.
+- [x] Устойчивый parser MCP_CALL_JSON: multiline JSON и массивы вызовов.
+- [x] Внутренний fetch_many_urls для source/citation pipeline.
 - [x] Rollback endpoint и базовый UI выбора checkpoint/iteration.
 - [x] Backend SSE endpoint и надежное frontend polling-обновление Live Trace.
 - [x] Mission Control UI на русском.

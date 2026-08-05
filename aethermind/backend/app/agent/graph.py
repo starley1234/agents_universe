@@ -415,11 +415,11 @@ class AgentGraph:
             "ВАЖНО: выполняй только текущий шаг из поля `Шаг`, а scratchpad используй только как справочный фон. "
             "Выполни этот шаг автономно и результативно. Не ограничивайся подготовкой среды. "
             "Если задача требует код, таблицу, JSON, CSV, отчет или иной файл — создай файл через MCP_CALL_JSON с __internal__.write_file. "
-            "Если нужно проверить код/вычисления — вызови __internal__.run_python. Если нужны внешние данные — вызови fetch или внешний MCP. "
+            "Если нужно проверить код/вычисления — вызови __internal__.run_python. Если нужны внешние данные — вызови __internal__.fetch_url, __internal__.fetch_many_urls или внешний MCP. "
             "Сформируй содержательный Markdown-результат на русском: что сделал, какие файлы создал, что проверил, какие следующие действия. "
-            "Формат инструментального вызова: отдельная строка MCP_CALL_JSON: "
-            "{\"server_name\":\"__internal__\",\"tool_name\":\"write_file\",\"arguments\":{\"path\":\"artifacts/result.md\",\"content\":\"...\"}}. "
-            "Можно сделать до 3 MCP_CALL_JSON строк. После вызова инструмента среда добавит результат к артефакту. "
+            "Формат инструментального вызова: MCP_CALL_JSON: {\"server_name\":\"__internal__\",\"tool_name\":\"write_file\",\"arguments\":{\"path\":\"artifacts/result.md\",\"content\":\"...\"}}. "
+            "Можно использовать однострочный JSON, многострочный JSON-блок или массив таких объектов. "
+            "Можно сделать до 5 MCP вызовов. После вызова инструмента среда добавит результат к артефакту. "
             "Если это финальный отчет — сделай структурированный отчет с разделами и чек-листом проверки."
         )
         result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, {"role": "user", "content": prompt}])
@@ -432,16 +432,12 @@ class AgentGraph:
         tool_config = self._merged_tool_config(state)
         if not tool_config.get("mcp"): 
             return content
-        matches = []
-        for line in content.splitlines():
-            if "MCP_CALL_JSON:" in line:
-                matches.append(line.split("MCP_CALL_JSON:", 1)[1].strip())
-        if not matches:
+        requests = self._extract_mcp_call_requests(content)
+        if not requests:
             return content
         additions = []
-        for raw in matches[:3]:
+        for request in requests[:5]:
             try:
-                request = json.loads(raw)
                 server_name = request.get("server_name")
                 tool_name = request.get("tool_name")
                 arguments = request.get("arguments") or {}
@@ -459,6 +455,42 @@ class AgentGraph:
                 state["events"].append({"type": "mcp_error", "message": "Ошибка автоматического MCP вызова", "error": str(exc)})
                 additions.append(f"\n\n> Ошибка MCP вызова: {exc}\n")
         return content + "".join(additions)
+
+    def _extract_mcp_call_requests(self, content: str) -> list[dict]:
+        decoder = json.JSONDecoder()
+        requests: list[dict] = []
+        marker = "MCP_CALL_JSON:"
+        search_from = 0
+        while True:
+            marker_index = content.find(marker, search_from)
+            if marker_index == -1:
+                break
+            cursor = marker_index + len(marker)
+            while cursor < len(content) and content[cursor].isspace():
+                cursor += 1
+            if content.startswith("```json", cursor):
+                cursor += len("```json")
+            elif content.startswith("```", cursor):
+                cursor += len("```")
+            while cursor < len(content) and content[cursor].isspace():
+                cursor += 1
+            try:
+                value, offset = decoder.raw_decode(content[cursor:])
+                if isinstance(value, list):
+                    requests.extend(item for item in value if isinstance(item, dict))
+                elif isinstance(value, dict):
+                    requests.append(value)
+                search_from = cursor + max(offset, 1)
+            except json.JSONDecodeError:
+                line = content[cursor:].splitlines()[0] if content[cursor:].splitlines() else ""
+                try:
+                    value = json.loads(line.strip().strip("`"))
+                    if isinstance(value, dict):
+                        requests.append(value)
+                except json.JSONDecodeError:
+                    pass
+                search_from = cursor + max(len(line), 1)
+        return requests
 
     def _target_file_for_action(self, action: str | None) -> str:
         mapping = {
