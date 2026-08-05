@@ -159,11 +159,15 @@ class AgentGraph:
         result = observation.get("result", {})
         failed = bool(result.get("exit_code", 0)) or bool(observation.get("blocked")) or bool(observation.get("failed"))
 
+        latest_human = self._latest_human_intervention(state)
         reflection_prompt = (
             f"Цель: {state.get('goal')}\n"
             f"Текущий шаг: {state.get('current_step', {}).get('title')}\n"
+            f"Последняя инструкция человека: {latest_human or 'нет'}\n"
             f"Наблюдение: {json.dumps(observation, ensure_ascii=False)[:3000]}\n\n"
-            "Оцени качество результата. Верни JSON строго вида: "
+            "Оцени качество результата. Если человек явно принял риск или разрешил продолжить, "
+            "не блокируй шаг повторно без фатальной ошибки выполнения. "
+            "Верни JSON строго вида: "
             "{\"confidence\": 0.0-1.0, \"accepted\": true/false, \"reason\": \"...\"}."
         )
         llm_result = self.llm.complete_sync(
@@ -172,6 +176,10 @@ class AgentGraph:
         verdict = self._extract_json(llm_result.content) or {}
         confidence = float(verdict.get("confidence", 0.35 if failed else 0.75))
         accepted = bool(verdict.get("accepted", not failed and confidence >= settings.low_confidence_threshold))
+        if self._human_accepts_risk(latest_human) and not failed:
+            accepted = True
+            confidence = max(confidence, 0.65)
+            verdict["reason"] = f"Человек явно разрешил продолжить/принял риск. {verdict.get('reason', '')}".strip()
 
         state["confidence"] = max(0.0, min(1.0, confidence))
         state["low_confidence_streak"] = (
@@ -278,6 +286,27 @@ class AgentGraph:
         config = self._merged_tool_config(state)
         return bool(config.get(tool_name, False))
 
+    def _latest_human_intervention(self, state: dict) -> str:
+        interventions = state.get("human_interventions") or []
+        if not interventions:
+            return ""
+        latest = interventions[-1]
+        return str(latest.get("message", latest) if isinstance(latest, dict) else latest)
+
+    def _human_accepts_risk(self, message: str) -> bool:
+        text = (message or "").lower()
+        return any(
+            marker in text
+            for marker in [
+                "принять текущий риск",
+                "принять риск",
+                "риск как допустимый",
+                "игнорировать риск",
+                "accept_risk",
+                "продолжить выполнение следующего шага",
+            ]
+        )
+
     def _build_llm_plan(self, state: dict) -> list[dict]:
         prompt = (
             f"Цель пользователя: {state.get('goal')}\n\n"
@@ -330,10 +359,12 @@ class AgentGraph:
             f"- {item.get('path')} ({item.get('content_type', 'image')})"
             for item in state.get("attachments", [])
         ) or "нет прикрепленных изображений"
+        latest_human = self._latest_human_intervention(state)
         prompt = (
             f"Цель: {state.get('goal')}\n"
             f"Итерация: {state.get('iteration', 0) + 1}\n"
             f"Шаг: {step.get('title')}\n"
+            f"Последняя инструкция человека: {latest_human or 'нет'}\n"
             f"Executive summary: {state.get('executive_summary', 'пока отсутствует')}\n"
             f"Прикрепленные изображения в workspace:\n{attachments_hint}\n"
             f"Доступные внешние MCP серверы:\n{mcp_hint}\n"

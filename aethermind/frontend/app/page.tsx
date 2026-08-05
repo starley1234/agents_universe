@@ -748,8 +748,8 @@ function HumanGatePanel({
       </div>
 
       <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-          <div className="font-semibold text-red-400">Что не понравилось критику</div>
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700">
+          <div className="font-semibold text-red-600">Что не понравилось критику</div>
           <div className="mt-2 whitespace-pre-wrap break-words">{feedback.criticReason}</div>
         </div>
         <details className={`rounded-xl border p-3 text-sm ${theme.soft}`}>

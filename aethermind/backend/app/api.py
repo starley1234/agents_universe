@@ -162,9 +162,41 @@ def intervene(task_id: UUID, payload: InterveneRequest, db: Session = Depends(ge
     interventions = state.setdefault("human_interventions", [])
     interventions.append({"message": payload.message})
     state["awaiting_user"] = False
+    state["human_request"] = None
+    state["low_confidence_streak"] = 0
+    state["auto_recovery_attempts"] = 0
+
+    message_lower = payload.message.lower()
+    accept_risk = (
+        "принять текущий риск" in message_lower
+        or "принять риск" in message_lower
+        or "риск как допустимый" in message_lower
+        or "игнорировать риск" in message_lower
+        or "accept_risk" in message_lower
+    )
+    if state.get("current_step"):
+        state["current_step"].pop("retry_count", None)
+        state["current_step"].pop("retry_reason", None)
+        if accept_risk:
+            state["current_step"]["status"] = "done"
+            state["current_step"]["human_accepted_risk"] = True
+            current_id = state["current_step"].get("id")
+            for step in state.get("plan", []):
+                if step.get("id") == current_id or step.get("title") == state["current_step"].get("title"):
+                    step["status"] = "done"
+                    step["human_accepted_risk"] = True
+            state["reflection"] = {
+                **dict(state.get("reflection") or {}),
+                "accepted": True,
+                "confidence": max(float(state.get("confidence") or 0), 0.65),
+                "reason": f"Человек принял риск и разрешил продолжить: {payload.message}",
+                "human_override": True,
+            }
+            state["confidence"] = state["reflection"]["confidence"]
+
     task.current_state_json = state
     task.status = TaskStatus.RUNNING if payload.resume else TaskStatus.PAUSED
-    add_event(db, task.id, "intervention", {"message": payload.message, "resume": payload.resume})
+    add_event(db, task.id, "intervention", {"message": payload.message, "resume": payload.resume, "accept_risk": accept_risk})
     db.commit(); db.refresh(task)
     if payload.resume:
         run_agent_iteration.delay(str(task.id))

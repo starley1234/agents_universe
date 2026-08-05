@@ -30,6 +30,7 @@
 - [x] API и UI для управления инструментами агента.
 - [x] Human-in-the-loop UI для `AWAITING_USER`.
 - [x] Наглядная обратная связь критика: reason, confidence, observation, problem events, suggested replies.
+- [x] Human override для варианта «принять риск»: сброс блокировок, завершение текущего шага, продолжение процесса.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
 - [x] MCP SSE discovery через initialize/list_tools.
