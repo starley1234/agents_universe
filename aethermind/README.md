@@ -187,6 +187,21 @@ print(r.content)
 PY
 ```
 
+## Функциональное тестирование
+
+Добавлен end-to-end pytest-сценарий:
+
+```bash
+PYTHONPATH=backend pytest backend/tests/test_functional_autonomy.py -q
+```
+
+Сценарий ставит агенту задачу: подготовить mini market intelligence отчет по 3 конкурентам с CSV, Markdown-таблицей, sandbox-проверкой и финальной рекомендацией. Ожидаемый результат:
+
+- задача завершается без `AWAITING_USER`;
+- создаются `data/competitors.csv`, `artifacts/comparison.md`, `artifacts/final_market_report.md`;
+- агент использует внутренние MCP tools;
+- финальный отчет содержит проверяемый вывод.
+
 ## Основной поток
 
 1. Пользователь создает задачу через UI/API.

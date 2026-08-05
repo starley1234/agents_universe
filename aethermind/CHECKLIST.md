@@ -60,6 +60,7 @@
 - [x] Docker Compose.
 - [x] `.env.example` без реальных секретов.
 - [x] Базовые тесты.
+- [x] Функциональный end-to-end тест автономного выполнения market intelligence задачи с CSV, markdown-таблицей, MCP tools и финальным отчетом.
 
 ## Рекомендуемое production-hardening
 
