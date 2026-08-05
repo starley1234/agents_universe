@@ -36,6 +36,8 @@
 - [x] Встроенный внутренний tool `__internal__.fetch_url`.
 - [x] Встроенный внутренний tool `__internal__.run_python`.
 - [x] Глобальный registry MCP серверов для новых задач.
+- [x] Слияние global MCP registry с tool_config при запуске/работе агента.
+- [x] UI-шаблоны аргументов MCP tools из input_schema.
 - [x] Сохранение MCP результатов как artifacts.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.

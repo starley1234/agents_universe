@@ -98,6 +98,30 @@ function compactJson(value: unknown) {
   return JSON.stringify(value, null, 2)
 }
 
+function templateFromSchema(schema: any): Record<string, unknown> {
+  const props = schema?.properties || {}
+  const required: string[] = schema?.required || Object.keys(props)
+  const template: Record<string, unknown> = {}
+  for (const key of required.length ? required : Object.keys(props)) {
+    const prop = props[key] || {}
+    if (prop.default !== undefined) template[key] = prop.default
+    else if (prop.type === 'integer' || prop.type === 'number') template[key] = key === 'max_chars' ? 12000 : 1
+    else if (prop.type === 'boolean') template[key] = true
+    else if (prop.type === 'array') template[key] = []
+    else if (prop.type === 'object') template[key] = {}
+    else if (key.toLowerCase().includes('url')) template[key] = 'https://example.com'
+    else if (key.toLowerCase().includes('query')) template[key] = 'AetherMind autonomous agent'
+    else if (key.toLowerCase().includes('code')) template[key] = 'print(2 + 2)'
+    else template[key] = ''
+  }
+  return template
+}
+
+function missingRequiredArgs(schema: any, args: any): string[] {
+  const required: string[] = schema?.required || []
+  return required.filter((key) => args?.[key] === undefined || args?.[key] === '')
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -390,11 +414,17 @@ export default function Home() {
     if (!selected || !tool.name) return
     setBusyAction(`mcp_call:${tool.server_name}:${tool.name}`)
     try {
-      let args = {}
+      let args: any = {}
       try {
         args = mcpCallArgs.trim() ? JSON.parse(mcpCallArgs) : {}
       } catch {
         throw new Error('Аргументы MCP должны быть валидным JSON объектом')
+      }
+      const missing = missingRequiredArgs(tool.input_schema, args)
+      if (missing.length) {
+        const template = templateFromSchema(tool.input_schema)
+        setMcpCallArgs(compactJson(template))
+        throw new Error(`Для ${tool.server_name}.${tool.name} не хватает обязательных аргументов: ${missing.join(', ')}. Я подставил шаблон — проверьте и нажмите «Выполнить» еще раз.`)
       }
       const response = await apiFetch<MCPCallResponse>(`/api/tasks/${selected.id}/mcp/call`, {
         method: 'POST',
@@ -721,7 +751,10 @@ function ToolsPanel({
                   <summary className="cursor-pointer opacity-70">input schema</summary>
                   <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words">{compactJson(tool.input_schema || {})}</pre>
                 </details>
-                <button disabled={busyAction === `mcp_call:${tool.server_name}:${tool.name}`} onClick={() => onCallMcpTool(tool)} className="mt-2 rounded-lg bg-emerald-400/20 px-3 py-1 text-emerald-500 disabled:opacity-50">Выполнить</button>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setMcpCallArgs(compactJson(templateFromSchema(tool.input_schema)))} className="rounded-lg bg-sky-400/20 px-3 py-1 text-sky-500">Подставить JSON</button>
+                  <button disabled={busyAction === `mcp_call:${tool.server_name}:${tool.name}`} onClick={() => onCallMcpTool(tool)} className="rounded-lg bg-emerald-400/20 px-3 py-1 text-emerald-500 disabled:opacity-50">Выполнить с JSON выше</button>
+                </div>
               </div>
             ))}
             {errorTools.map((tool) => (

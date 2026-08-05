@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     planner_min_steps: int = 8
     mcp_search_url: str = ""
     mcp_agent_toolkit: str = ""
+    auto_recovery_attempts: int = 2
 
 @lru_cache
 def get_settings() -> Settings:

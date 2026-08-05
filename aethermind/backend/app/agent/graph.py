@@ -6,6 +6,7 @@ from app.config import settings
 from app.llm.providers import LLMProvider, get_llm_provider
 from app.services.guardrails import needs_human_for_action
 from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
+from app.services.mcp_registry import load_global_mcp_servers
 from app.tools.code_interpreter import CodeInterpreter
 from app.tools.filesystem import FileSystemTools
 
@@ -50,18 +51,35 @@ class AgentGraph:
             state["artifacts"] = self._dedupe_artifacts(state.get("artifacts", []))
             return state
         except Exception as exc:  # noqa: BLE001 - ошибка должна стать состоянием, а не молчаливым успехом
-            state["awaiting_user"] = True
+            recovery_attempts = state.get("auto_recovery_attempts", 0) + 1
+            state["auto_recovery_attempts"] = recovery_attempts
             state["confidence"] = 0.0
             state["low_confidence_streak"] = state.get("low_confidence_streak", 0) + 1
             state["fatal_error"] = None
             state["observation"] = {"failed": True, "reason": "llm_or_runtime_error", "error": str(exc)}
-            state["events"].append(
-                {
-                    "type": "error",
-                    "message": "LLM или runtime недоступен. Работа остановлена, требуется вмешательство.",
-                    "error": str(exc),
-                }
-            )
+            state["iteration"] = state.get("iteration", 0) + 1
+            if recovery_attempts <= settings.auto_recovery_attempts:
+                state["awaiting_user"] = False
+                if state.get("current_step"):
+                    state["current_step"]["status"] = "todo"
+                    state["current_step"]["retry_reason"] = str(exc)[:500]
+                state["events"].append(
+                    {
+                        "type": "auto_recovery",
+                        "message": "Ошибка перехвачена. Агент автоматически откатил текущий шаг в todo и попробует перепланировать/повторить без участия человека.",
+                        "attempt": recovery_attempts,
+                        "error": str(exc),
+                    }
+                )
+            else:
+                state["awaiting_user"] = True
+                state["events"].append(
+                    {
+                        "type": "error",
+                        "message": "Автовосстановление исчерпано. Требуется вмешательство человека.",
+                        "error": str(exc),
+                    }
+                )
             return state
 
     def plan(self, state: dict) -> dict:
@@ -162,9 +180,24 @@ class AgentGraph:
 
         if accepted and state.get("current_step"):
             state["current_step"]["status"] = "done"
+            state["current_step"].pop("retry_count", None)
+            state["auto_recovery_attempts"] = 0
         elif state.get("current_step"):
+            retry_count = int(state["current_step"].get("retry_count", 0)) + 1
+            state["current_step"]["retry_count"] = retry_count
             state["current_step"]["status"] = "todo"
-            state["awaiting_user"] = state.get("low_confidence_streak", 0) >= settings.low_confidence_streak_limit
+            if retry_count <= settings.auto_recovery_attempts:
+                state["awaiting_user"] = False
+                state["events"].append(
+                    {
+                        "type": "auto_recovery",
+                        "message": "Критик отклонил шаг. Агент автоматически откатил шаг в todo и повторит его с учетом замечаний.",
+                        "retry_count": retry_count,
+                        "reason": state["reflection"]["reason"],
+                    }
+                )
+            else:
+                state["awaiting_user"] = state.get("low_confidence_streak", 0) >= settings.low_confidence_streak_limit
 
         state["events"].append(
             {
@@ -209,11 +242,22 @@ class AgentGraph:
             "headless_browser": False,
             "mcp": True,
             "dangerous_actions": False,
-            "mcp_servers": [],
+            "mcp_servers": load_global_mcp_servers(),
         }
 
+    def _merged_tool_config(self, state: dict) -> dict:
+        base = self._default_tool_config()
+        current = dict(state.get("tool_config", {}) or {})
+        global_servers = {server.get("name"): server for server in base.get("mcp_servers", []) if server.get("name")}
+        local_servers = {server.get("name"): server for server in current.get("mcp_servers", []) if server.get("name")}
+        merged = {**base, **current}
+        merged["mcp_servers"] = list({**global_servers, **local_servers}.values())
+        merged["mcp"] = bool(merged.get("mcp", True))
+        state["tool_config"] = merged
+        return merged
+
     def _tool_enabled(self, state: dict, tool_name: str) -> bool:
-        config = {**self._default_tool_config(), **state.get("tool_config", {})}
+        config = self._merged_tool_config(state)
         return bool(config.get(tool_name, False))
 
     def _build_llm_plan(self, state: dict) -> list[dict]:
@@ -250,7 +294,7 @@ class AgentGraph:
             scratchpad = self.fs.read_file("scratchpad.md")["content"][-8000:]
         except Exception:
             scratchpad = ""
-        tool_config = {**self._default_tool_config(), **state.get("tool_config", {})}
+        tool_config = self._merged_tool_config(state)
         mcp_servers = [server for server in tool_config.get("mcp_servers", []) if server.get("enabled")]
         mcp_tools_hint = "MCP выключен"
         if tool_config.get("mcp"):
@@ -286,8 +330,8 @@ class AgentGraph:
         return content
 
     def _execute_mcp_requests_if_any(self, state: dict, content: str) -> str:
-        tool_config = {**self._default_tool_config(), **state.get("tool_config", {})}
-        if not tool_config.get("mcp"):
+        tool_config = self._merged_tool_config(state)
+        if not tool_config.get("mcp"): 
             return content
         matches = re.findall(r"MCP_CALL_JSON:\s*(\{.*?\})(?:\n|$)", content, flags=re.DOTALL)
         if not matches:

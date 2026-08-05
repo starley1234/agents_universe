@@ -38,6 +38,8 @@
 - [x] Встроенный внутренний MCP-like инструмент `__internal__.fetch_url`.
 - [x] Встроенный внутренний MCP-like инструмент `__internal__.run_python` для выполнения Python-кода.
 - [x] Глобальный registry MCP серверов: ранее подключенные MCP автоматически попадают в новые задачи.
+- [x] Слияние global MCP registry с tool_config при запуске/работе агента.
+- [x] UI-шаблоны аргументов MCP tools из input_schema и frontend validation required-полей.
 - [x] Агент получает discovered MCP tools в prompt и может запросить MCP вызов через `MCP_CALL_JSON`.
 - [x] Валидация MCP name/url на frontend и backend.
 - [x] Укрепленный responsive UI без горизонтального разъезда при длинном плане/JSON/URL.

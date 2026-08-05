@@ -33,6 +33,16 @@ def default_tools() -> dict:
     config["mcp"] = True
     return config
 
+def merged_tool_config(state: dict) -> dict:
+    base = default_tools()
+    current = dict(state.get("tool_config", {}) or {})
+    global_servers = {server.get("name"): server for server in base.get("mcp_servers", []) if server.get("name")}
+    local_servers = {server.get("name"): server for server in current.get("mcp_servers", []) if server.get("name")}
+    merged = {**base, **current}
+    merged["mcp_servers"] = list({**global_servers, **local_servers}.values())
+    merged["mcp"] = bool(merged.get("mcp", True))
+    return merged
+
 @router.get("/health")
 def health():
     return {"status": "ok", "project": settings.project_name}
@@ -179,7 +189,13 @@ def get_tools(task_id: UUID, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(404, "Задача не найдена")
     state = dict(task.current_state_json or {})
-    return ToolConfig(**{**default_tools(), **state.get("tool_config", {})})
+    config = merged_tool_config(state)
+    for server in config.get("mcp_servers", []):
+        upsert_global_mcp_server(server)
+    state["tool_config"] = config
+    task.current_state_json = state
+    db.commit()
+    return ToolConfig(**config)
 
 @router.put("/tasks/{task_id}/tools", response_model=ToolConfig)
 def update_tools(task_id: UUID, payload: ToolConfig, db: Session = Depends(get_db)):
@@ -199,7 +215,7 @@ def add_mcp_server(task_id: UUID, payload: MCPServerConfig, db: Session = Depend
     if not task:
         raise HTTPException(404, "Задача не найдена")
     state = dict(task.current_state_json or {})
-    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    config = ToolConfig(**merged_tool_config(state)).model_dump()
     servers = [server for server in config.get("mcp_servers", []) if server.get("name") != payload.name]
     server_payload = payload.model_dump()
     servers.append(server_payload)
@@ -218,7 +234,7 @@ def delete_mcp_server(task_id: UUID, server_name: str, db: Session = Depends(get
     if not task:
         raise HTTPException(404, "Задача не найдена")
     state = dict(task.current_state_json or {})
-    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    config = ToolConfig(**merged_tool_config(state)).model_dump()
     config["mcp_servers"] = [server for server in config.get("mcp_servers", []) if server.get("name") != server_name]
     delete_global_mcp_server(server_name)
     config["mcp"] = True
@@ -234,7 +250,7 @@ def list_task_mcp_tools(task_id: UUID, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(404, "Задача не найдена")
     state = dict(task.current_state_json or {})
-    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    config = ToolConfig(**merged_tool_config(state)).model_dump()
     if not config.get("mcp"):
         return {"enabled": False, "tools": [], "message": "MCP выключен в настройках инструментов."}
     tools = list_mcp_tools_sync(config.get("mcp_servers", []), include_internal=True)
@@ -246,7 +262,7 @@ def call_task_mcp_tool(task_id: UUID, payload: MCPToolCallRequest, db: Session =
     if not task:
         raise HTTPException(404, "Задача не найдена")
     state = dict(task.current_state_json or {})
-    config = ToolConfig(**{**default_tools(), **state.get("tool_config", {})}).model_dump()
+    config = ToolConfig(**merged_tool_config(state)).model_dump()
     if not config.get("mcp"):
         raise HTTPException(409, "MCP выключен в настройках инструментов задачи")
 
@@ -260,9 +276,14 @@ def call_task_mcp_tool(task_id: UUID, payload: MCPToolCallRequest, db: Session =
     try:
         result = call_mcp_tool_sync(server, payload.tool_name, payload.arguments, workspace_path=task.workspace_path)
     except Exception as exc:  # noqa: BLE001
+        result = {
+            "server_name": payload.server_name,
+            "tool_name": payload.tool_name,
+            "arguments": payload.arguments,
+            "is_error": True,
+            "content": [{"type": "text", "text": str(exc)}],
+        }
         add_event(db, task.id, "mcp_error", {"message": f"Ошибка MCP tool call: {payload.server_name}.{payload.tool_name}", "error": str(exc)})
-        db.commit()
-        raise HTTPException(502, str(exc)) from exc
 
     calls = state.setdefault("mcp_calls", [])
     calls.append({"server_name": payload.server_name, "tool_name": payload.tool_name, "arguments": payload.arguments, "result": result})
