@@ -218,6 +218,7 @@ async def call_mcp_tool(
     workspace_path: str | None = None,
 ) -> dict[str, Any]:
     if server.get("name") == INTERNAL_SERVER_NAME or str(server.get("url", "")).startswith("builtin://"):
+        arguments = _normalize_internal_arguments(tool_name, arguments, workspace_path)
         if tool_name == INTERNAL_FETCH_TOOL:
             return await _call_internal_fetch(arguments)
         if tool_name == INTERNAL_FETCH_MANY_TOOL:
@@ -231,7 +232,105 @@ async def call_mcp_tool(
     mcp_server = MCPServer(**server)
     if not mcp_server.enabled:
         raise MCPClientError(f"MCP сервер выключен: {mcp_server.name}")
+    arguments = await _normalize_external_arguments(mcp_server, tool_name, arguments, workspace_path)
     return await _call_tool_auto(mcp_server, tool_name, arguments)
+
+
+def _tool_schema_from_internal(tool_name: str) -> dict[str, Any] | None:
+    for tool in _internal_tools():
+        if tool.get("name") == tool_name:
+            return tool.get("input_schema") or {}
+    return None
+
+
+def _normalize_internal_arguments(tool_name: str, arguments: dict[str, Any], workspace_path: str | None) -> dict[str, Any]:
+    schema = _tool_schema_from_internal(tool_name)
+    if not schema:
+        return dict(arguments or {})
+    return _coerce_arguments_for_schema(schema, arguments or {}, workspace_path, tool_name)
+
+
+async def _normalize_external_arguments(
+    server: MCPServer,
+    tool_name: str,
+    arguments: dict[str, Any],
+    workspace_path: str | None,
+) -> dict[str, Any]:
+    args = dict(arguments or {})
+    try:
+        tools = await _list_tools_auto(server)
+        tool = next((item for item in tools if item.get("name") == tool_name), None)
+        if not tool:
+            return args
+        schema = tool.get("input_schema") or {}
+        return _coerce_arguments_for_schema(schema, args, workspace_path, f"{server.name}.{tool_name}")
+    except MCPClientError:
+        raise
+    except Exception:
+        # If discovery is flaky but direct call might work, do not block solely on normalization.
+        return args
+
+
+def _coerce_arguments_for_schema(
+    schema: dict[str, Any],
+    arguments: dict[str, Any],
+    workspace_path: str | None,
+    tool_label: str,
+) -> dict[str, Any]:
+    args = dict(arguments or {})
+    properties = schema.get("properties") or {}
+    required = schema.get("required") or []
+
+    # Fill defaults and enum first values when the schema provides them.
+    for key, prop in properties.items():
+        if key in args and args[key] not in (None, ""):
+            continue
+        if "default" in prop:
+            args[key] = prop["default"]
+        elif prop.get("enum"):
+            args[key] = prop["enum"][0]
+
+    # Common repair: many CAD/render MCP servers require `code`, while an LLM
+    # naturally sends `{path: "code/model.scad"}`. Convert file path to code.
+    if "code" in properties and not args.get("code"):
+        for path_key in ["path", "file", "filename", "scad_path", "model_path", "source_path"]:
+            if args.get(path_key):
+                try:
+                    target = _safe_workspace_path(workspace_path, str(args[path_key]))
+                    if target.exists() and target.is_file():
+                        args["code"] = target.read_text(encoding="utf-8", errors="replace")
+                        args.setdefault("source_path", str(args[path_key]))
+                        break
+                except Exception:
+                    pass
+
+    # Common repair: schema expects urls[], model sends url.
+    if "urls" in properties and not args.get("urls") and args.get("url"):
+        args["urls"] = [args["url"]]
+
+    # Lightweight scalar coercion.
+    for key, prop in properties.items():
+        if key not in args or args[key] is None:
+            continue
+        try:
+            if prop.get("type") == "integer" and not isinstance(args[key], int):
+                args[key] = int(args[key])
+            elif prop.get("type") == "number" and not isinstance(args[key], (int, float)):
+                args[key] = float(args[key])
+            elif prop.get("type") == "string" and not isinstance(args[key], str):
+                args[key] = str(args[key])
+            elif prop.get("type") == "array" and not isinstance(args[key], list):
+                args[key] = [args[key]]
+        except (TypeError, ValueError):
+            pass
+
+    missing = [key for key in required if args.get(key) in (None, "")]
+    if missing:
+        raise MCPClientError(
+            f"Аргументы MCP tool {tool_label} не соответствуют input_schema: отсутствуют обязательные поля {missing}. "
+            f"Переданные аргументы: {arguments}. Ожидаемая schema: {schema}"
+        )
+    return args
 
 
 def _replace_host(url: str, host: str) -> str:

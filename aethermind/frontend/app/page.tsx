@@ -111,7 +111,7 @@ function templateFromSchema(schema: any): Record<string, unknown> {
     else if (prop.type === 'object') template[key] = {}
     else if (key.toLowerCase().includes('url')) template[key] = 'https://example.com'
     else if (key.toLowerCase().includes('query')) template[key] = 'AetherMind autonomous agent'
-    else if (key.toLowerCase().includes('code')) template[key] = 'print(2 + 2)'
+    else if (key.toLowerCase().includes('code')) template[key] = '/* Вставьте сюда код, который ожидает MCP tool. Для OpenSCAD render нужен именно code, не path. */\nprint(2 + 2)'
     else template[key] = ''
   }
   return template

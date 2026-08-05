@@ -79,3 +79,35 @@ def test_mcp_diagnostics_reports_disabled_server():
     ])
     assert diagnostics[0]["summary"] == "disabled"
     assert diagnostics[0]["attempts"] == []
+
+
+def test_mcp_argument_normalization_reads_code_from_path(tmp_path):
+    from app.services.mcp_client import _coerce_arguments_for_schema
+
+    scad = tmp_path / "code" / "model.scad"
+    scad.parent.mkdir()
+    scad.write_text("cube([1,2,3]);", encoding="utf-8")
+    schema = {
+        "type": "object",
+        "properties": {
+            "code": {"type": "string"},
+            "quality": {"type": "string", "enum": ["low", "medium", "high"], "default": "low"},
+        },
+        "required": ["code"],
+    }
+    args = _coerce_arguments_for_schema(schema, {"path": "code/model.scad"}, str(tmp_path), "openscad.render")
+    assert args["code"] == "cube([1,2,3]);"
+    assert args["quality"] == "low"
+    assert args["source_path"] == "code/model.scad"
+
+
+def test_mcp_argument_normalization_reports_missing_required():
+    from app.services.mcp_client import MCPClientError, _coerce_arguments_for_schema
+
+    schema = {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}
+    try:
+        _coerce_arguments_for_schema(schema, {"path": "missing.scad"}, None, "openscad.render")
+    except MCPClientError as exc:
+        assert "отсутствуют обязательные поля" in str(exc)
+    else:
+        raise AssertionError("Expected MCPClientError")
