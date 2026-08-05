@@ -499,16 +499,20 @@ export default function Home() {
     setError(null)
     setNotice('Задача создается и ставится в очередь Celery...')
     try {
-      const task = await apiFetch<Task>('/api/tasks', { method: 'POST', body: JSON.stringify({ goal }) })
+      const hasStartupImages = pendingImages.length > 0
+      const task = await apiFetch<Task>('/api/tasks', { method: 'POST', body: JSON.stringify({ goal, autostart: !hasStartupImages }) })
       for (const image of pendingImages) {
         await uploadImageToTask(task.id, image)
+      }
+      if (hasStartupImages) {
+        await apiFetch<Task>(`/api/tasks/${task.id}/resume`, { method: 'POST' })
       }
       setPendingImages([])
       setSelected(task)
       setEvents([])
       setArtifacts([])
       setArtifactContent(null)
-      setNotice(pendingImages.length ? `Задача запущена, изображений прикреплено: ${pendingImages.length}.` : 'Задача запущена. Следите за индикатором работы и Live Trace.')
+      setNotice(hasStartupImages ? `Задача запущена после загрузки изображений: ${pendingImages.length}.` : 'Задача запущена. Следите за индикатором работы и Live Trace.')
       await refreshTasks()
       await refreshSelected(task.id)
     } catch (err) {

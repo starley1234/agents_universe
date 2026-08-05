@@ -274,11 +274,12 @@ async def _normalize_external_tool_call(
 
 def _choose_tool_name(requested_tool_name: str, tools: list[dict[str, Any]], server_name: str = "") -> str:
     names = [str(tool.get("name")) for tool in tools if tool.get("name")]
-    if requested_tool_name in names and not _should_prefer_openscad_render_alias(requested_tool_name, names, server_name):
-        return requested_tool_name
+    normalized_requested = requested_tool_name.split(".")[-1]
+    if normalized_requested in names and not _should_prefer_openscad_render_alias(normalized_requested, names, server_name):
+        return normalized_requested
 
     lower_server = server_name.lower()
-    lower_requested = requested_tool_name.lower()
+    lower_requested = normalized_requested.lower()
     if "openscad" in lower_server or "scad" in lower_requested or lower_requested == "render":
         for candidate in ["render_2d_png", "generate_and_analyze", "render_png", "render"]:
             if candidate in names:
@@ -286,7 +287,10 @@ def _choose_tool_name(requested_tool_name: str, tools: list[dict[str, Any]], ser
         for name in names:
             if "render" in name or "analyze" in name:
                 return name
-    return requested_tool_name
+    for name in names:
+        if name.endswith(f".{normalized_requested}") or normalized_requested.endswith(f".{name}"):
+            return name
+    return normalized_requested
 
 
 def _should_prefer_openscad_render_alias(requested_tool_name: str, names: list[str], server_name: str) -> bool:
@@ -330,19 +334,27 @@ def _coerce_arguments_for_schema(
         elif prop.get("enum"):
             args[key] = prop["enum"][0]
 
-    # Common repair: many CAD/render MCP servers require `code`, while an LLM
-    # naturally sends `{path: "code/model.scad"}`. Convert file path to code.
-    if "code" in properties and not args.get("code"):
-        for path_key in ["path", "file", "filename", "scad_path", "model_path", "source_path"]:
-            if args.get(path_key):
-                try:
-                    target = _safe_workspace_path(workspace_path, str(args[path_key]))
-                    if target.exists() and target.is_file():
-                        args["code"] = target.read_text(encoding="utf-8", errors="replace")
-                        args.setdefault("source_path", str(args[path_key]))
-                        break
-                except Exception:
-                    pass
+    # Common repair: many tools require a string payload (`code`, `content`,
+    # `text`, `source`) while an LLM naturally sends `{path: "..."}`.
+    path_value = next((args.get(key) for key in ["path", "file", "filename", "scad_path", "model_path", "source_path"] if args.get(key)), None)
+    file_text: str | None = None
+    if path_value:
+        try:
+            target = _safe_workspace_path(workspace_path, str(path_value))
+            if target.exists() and target.is_file():
+                file_text = target.read_text(encoding="utf-8", errors="replace")
+                args.setdefault("source_path", str(path_value))
+        except Exception:
+            file_text = None
+
+    payload_like_names = {"code", "content", "text", "source", "input", "openscad", "scad", "model"}
+    for key, prop in properties.items():
+        if args.get(key) not in (None, ""):
+            continue
+        if prop.get("type") == "string" and file_text is not None:
+            key_lower = key.lower()
+            if key_lower in payload_like_names or key in required or any(marker in key_lower for marker in ["code", "content", "source", "scad", "model"]):
+                args[key] = file_text
 
     # Common repair: schema expects urls[], model sends url.
     if "urls" in properties and not args.get("urls") and args.get("url"):
@@ -519,13 +531,16 @@ def _tool_description(server: MCPServer, tool: Any) -> dict[str, Any]:
 
 
 def _tool_call_response(server: MCPServer, tool_name: str, arguments: dict[str, Any], response: Any) -> dict[str, Any]:
+    content = _content_to_jsonable(getattr(response, "content", []))
+    text_blob = json.dumps(content, ensure_ascii=False).lower()
+    validation_error = any(marker in text_blob for marker in ["ошибка валидации", "validation error", "missing required", "отсутствует"])
     return {
         "server_name": server.name,
         "server_url": server.url,
         "tool_name": tool_name,
         "arguments": arguments,
-        "is_error": bool(getattr(response, "isError", False) or getattr(response, "is_error", False)),
-        "content": _content_to_jsonable(getattr(response, "content", [])),
+        "is_error": bool(getattr(response, "isError", False) or getattr(response, "is_error", False) or validation_error),
+        "content": content,
     }
 
 

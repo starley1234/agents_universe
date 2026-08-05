@@ -149,7 +149,7 @@ UI дополнительно поддерживает:
 - автономный advisory-mode критика: обычные продуктивные шаги с файлами/артефактами не возвращаются человеку, замечания критика сохраняются как improvement notes, а агент продолжает работу;
 - внутренние filesystem MCP tools: `__internal__.write_file`, `__internal__.read_file`, `__internal__.list_dir` для создания реальных файлов, кода и данных;
 - устойчивый parser `MCP_CALL_JSON`: поддерживает однострочный JSON, многострочный JSON и массив вызовов;
-- schema-aware MCP argument normalization: если внешний tool требует `code`, а агент дал `path`, runtime подставит содержимое файла; также заполняются defaults/enum values; для OpenSCAD generic `render` автоматически резолвится в `render_2d_png`/`generate_and_analyze`, если такие tools доступны;
+- schema-aware MCP argument normalization: если внешний tool требует `code`/`source`/`content`, а агент дал `path`, runtime подставит содержимое файла; также заполняются defaults/enum values; для OpenSCAD generic `render` автоматически резолвится в `render_2d_png`/`generate_and_analyze`, если такие tools доступны; validation-error текст от MCP помечается как `is_error=true`;
 - внутренний `__internal__.fetch_many_urls` для fetch pipeline с источниками/цитированием `[1]`, `[2]`;
 - VLM support: прикрепленные изображения отправляются в OpenAI-compatible LLM message как `image_url` data URL, если `VISION_ENABLED=true`;
 - CAD/OpenSCAD workflow hints: для задач по изображению агенту явно предлагается извлечь геометрию, создать `.scad`, вызвать render MCP и итеративно сравнивать рендер;

@@ -133,3 +133,32 @@ def test_synthetic_schema_repairs_render_path_to_code(tmp_path):
     args = _coerce_arguments_for_schema(_synthetic_schema_for_tool("render"), {"path": "code/model.scad"}, str(tmp_path), "openscad.render")
     assert args["code"] == "sphere(5);"
     assert args["quality"] == "low"
+
+
+def test_mcp_tool_name_accepts_server_prefixed_name():
+    from app.services.mcp_client import _choose_tool_name
+
+    tools = [{"name": "render_2d_png"}]
+    assert _choose_tool_name("openscad.render_2d_png", tools, "openscad") == "render_2d_png"
+
+
+def test_mcp_argument_normalization_general_payload_field_from_path(tmp_path):
+    from app.services.mcp_client import _coerce_arguments_for_schema
+
+    source = tmp_path / "data" / "payload.txt"
+    source.parent.mkdir()
+    source.write_text("payload", encoding="utf-8")
+    schema = {"type": "object", "properties": {"source": {"type": "string"}}, "required": ["source"]}
+    args = _coerce_arguments_for_schema(schema, {"path": "data/payload.txt"}, str(tmp_path), "server.tool")
+    assert args["source"] == "payload"
+
+
+def test_mcp_tool_response_marks_validation_text_as_error():
+    from app.services.mcp_client import MCPServer, _tool_call_response
+
+    class Response:
+        isError = False
+        content = [{"type": "text", "text": "❌ Ошибка валидации: Отсутствует OpenSCAD код."}]
+
+    result = _tool_call_response(MCPServer("openscad", "http://x/sse"), "render", {"path": "code/model.scad"}, Response())
+    assert result["is_error"] is True

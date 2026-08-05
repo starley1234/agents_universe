@@ -27,7 +27,7 @@
 - [x] Advisory-mode критика: замечания не блокируют продуктивные шаги с артефактами.
 - [x] Внутренние filesystem MCP tools: write_file/read_file/list_dir.
 - [x] Устойчивый parser MCP_CALL_JSON: multiline JSON и массивы вызовов.
-- [x] Schema-aware MCP argument normalization для внешних tools: path→code, defaults, enum values, required validation, OpenSCAD render alias resolution.
+- [x] Schema-aware MCP argument normalization для внешних tools: path→code/source/content, defaults, enum values, required validation, OpenSCAD render alias resolution, validation-error detection.
 - [x] Внутренний fetch_many_urls для source/citation pipeline.
 - [x] LLM healthcheck endpoint и UI-кнопка проверки.
 - [x] MCP diagnostics endpoint и UI-блок диагностики transport/url attempts.
