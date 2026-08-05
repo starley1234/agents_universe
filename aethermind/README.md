@@ -150,6 +150,9 @@ UI дополнительно поддерживает:
 - внутренние filesystem MCP tools: `__internal__.write_file`, `__internal__.read_file`, `__internal__.list_dir` для создания реальных файлов, кода и данных;
 - устойчивый parser `MCP_CALL_JSON`: поддерживает однострочный JSON, многострочный JSON и массив вызовов;
 - внутренний `__internal__.fetch_many_urls` для fetch pipeline с источниками/цитированием `[1]`, `[2]`;
+- LLM healthcheck в UI/API: `GET /api/llm/test`;
+- MCP diagnostics в UI/API: `GET /api/tasks/{task_id}/mcp/diagnostics`, чтобы видеть все transport/url attempts;
+- workspace audit на Python-шаге: проверяет созданные файлы и CSV, сохраняет `artifacts/workspace_audit.json`;
 - редактирование цели, budget JSON и state JSON в блоке **Настройки агента и состояние**;
 - сохранение выбранной темы день/ночь в `localStorage` и cookie `aethermind.theme`.
 

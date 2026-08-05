@@ -123,14 +123,12 @@ class AgentGraph:
                 state["awaiting_user"] = True
                 state["observation"] = {"blocked": True, "reason": "Инструмент Code Interpreter выключен пользователем"}
                 return state
-            result = self.code.run_python(
-                "from pathlib import Path\n"
-                "print('Проверка sandbox: OK')\n"
-                "print('Рабочая директория:', Path.cwd())\n"
-            )
+            audit_script = self._build_workspace_audit_script()
+            result = self.code.run_python(audit_script)
             report_path = f"artifacts/python_run_iteration_{state.get('iteration', 0) + 1}.json"
             self.fs.write_file(report_path, json.dumps(result, ensure_ascii=False, indent=2))
             self._remember_artifact(state, report_path, "code_result")
+            self._remember_artifact(state, "artifacts/workspace_audit.json", "code_result")
             self._remember_artifact(state, "code/run.py", "code")
         else:
             if not self._tool_enabled(state, "filesystem"):
@@ -448,8 +446,12 @@ class AgentGraph:
                 if not server or not tool_name:
                     raise ValueError(f"MCP server/tool не найден: {server_name}.{tool_name}")
                 result = call_mcp_tool_sync(server, tool_name, arguments, workspace_path=str(self.workspace))
-                state.setdefault("mcp_calls", []).append({"request": request, "result": result})
-                state["events"].append({"type": "mcp_call", "message": f"Агент вызвал MCP инструмент: {server_name}.{tool_name}", "arguments": arguments})
+                calls = state.setdefault("mcp_calls", [])
+                calls.append({"request": request, "result": result})
+                artifact_path = f"artifacts/mcp_auto_{len(calls)}_{server_name}_{tool_name}.json".replace("/", "_")
+                self.fs.write_file(artifact_path, json.dumps({"request": request, "result": result}, ensure_ascii=False, indent=2, default=str))
+                self._remember_artifact(state, artifact_path, "mcp_result")
+                state["events"].append({"type": "mcp_call", "message": f"Агент вызвал MCP инструмент: {server_name}.{tool_name}", "arguments": arguments, "artifact": artifact_path})
                 additions.append(f"\n\n## Результат MCP: {server_name}.{tool_name}\n\n```json\n{json.dumps(result, ensure_ascii=False, indent=2, default=str)[:12000]}\n```\n")
             except Exception as exc:  # noqa: BLE001
                 state["events"].append({"type": "mcp_error", "message": "Ошибка автоматического MCP вызова", "error": str(exc)})
@@ -491,6 +493,38 @@ class AgentGraph:
                     pass
                 search_from = cursor + max(len(line), 1)
         return requests
+
+    def _build_workspace_audit_script(self) -> str:
+        return r'''
+from pathlib import Path
+import csv
+import json
+
+root = Path.cwd()
+files = []
+csv_summaries = {}
+for path in sorted(root.rglob('*')):
+    if path.is_file() and '.git' not in path.parts:
+        rel = str(path.relative_to(root))
+        files.append({'path': rel, 'size': path.stat().st_size})
+        if path.suffix.lower() == '.csv':
+            try:
+                with path.open(newline='', encoding='utf-8') as f:
+                    rows = list(csv.DictReader(f))
+                csv_summaries[rel] = {'rows': len(rows), 'columns': list(rows[0].keys()) if rows else []}
+            except Exception as exc:
+                csv_summaries[rel] = {'error': str(exc)}
+
+report = {
+    'workspace': str(root),
+    'file_count': len(files),
+    'files': files,
+    'csv_summaries': csv_summaries,
+}
+Path('artifacts').mkdir(exist_ok=True)
+Path('artifacts/workspace_audit.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+print(json.dumps(report, ensure_ascii=False, indent=2))
+'''
 
     def _target_file_for_action(self, action: str | None) -> str:
         mapping = {

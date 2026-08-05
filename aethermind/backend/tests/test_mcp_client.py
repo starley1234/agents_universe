@@ -69,3 +69,13 @@ MCP_CALL_JSON: [
     requests = graph._extract_mcp_call_requests(content)
     assert [request["tool_name"] for request in requests] == ["write_file", "write_file", "list_dir"]
     assert requests[1]["arguments"]["path"] == "artifacts/b.md"
+
+
+def test_mcp_diagnostics_reports_disabled_server():
+    from app.services.mcp_client import diagnose_mcp_servers_sync
+
+    diagnostics = diagnose_mcp_servers_sync([
+        {"name": "disabled", "url": "http://localhost:9999/sse", "transport": "sse", "enabled": False}
+    ])
+    assert diagnostics[0]["summary"] == "disabled"
+    assert diagnostics[0]["attempts"] == []

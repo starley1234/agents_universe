@@ -140,6 +140,10 @@ def list_mcp_tools_sync(servers: list[dict[str, Any]], include_internal: bool = 
     return asyncio.run(list_mcp_tools(servers, include_internal=include_internal))
 
 
+def diagnose_mcp_servers_sync(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return asyncio.run(diagnose_mcp_servers(servers))
+
+
 def call_mcp_tool_sync(
     server: dict[str, Any],
     tool_name: str,
@@ -172,6 +176,39 @@ async def list_mcp_tools(servers: list[dict[str, Any]], include_internal: bool =
                 }
             )
     return result
+
+
+async def diagnose_mcp_servers(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for raw in servers:
+        server = MCPServer(**raw)
+        server_report = {
+            "server_name": server.name,
+            "configured_url": server.url,
+            "configured_transport": server.transport,
+            "enabled": server.enabled,
+            "attempts": [],
+        }
+        if not server.enabled:
+            server_report["summary"] = "disabled"
+            diagnostics.append(server_report)
+            continue
+        ok_count = 0
+        transports = [server.transport] if server.transport in {"sse", "streamable_http"} else ["sse", "streamable_http"]
+        if server.transport == "sse":
+            transports.append("streamable_http")
+        for transport in dict.fromkeys(transports):
+            for url in _url_candidates(server.url):
+                trial = MCPServer(server.name, url, transport, server.enabled)
+                try:
+                    tools = await (_list_sse_tools(trial) if transport == "sse" else _list_streamable_tools(trial))
+                    ok_count += 1
+                    server_report["attempts"].append({"transport": transport, "url": url, "ok": True, "tool_count": len(tools), "tools": [tool.get("name") for tool in tools]})
+                except Exception as exc:  # noqa: BLE001
+                    server_report["attempts"].append({"transport": transport, "url": url, "ok": False, "error": _format_exception(exc)})
+        server_report["summary"] = "ok" if ok_count else "failed"
+        diagnostics.append(server_report)
+    return diagnostics
 
 
 async def call_mcp_tool(

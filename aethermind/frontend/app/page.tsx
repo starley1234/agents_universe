@@ -367,7 +367,9 @@ export default function Home() {
   const [mcpTools, setMcpTools] = useState<MCPTool[]>([])
   const [mcpCallArgs, setMcpCallArgs] = useState('{\n  "url": "https://example.com",\n  "max_chars": 12000\n}')
   const [mcpCallResult, setMcpCallResult] = useState<any>(null)
+  const [mcpDiagnostics, setMcpDiagnostics] = useState<any>(null)
   const [settings, setSettings] = useState<AgentSettings | null>(null)
+  const [llmStatus, setLlmStatus] = useState<any>(null)
   const [goalDraft, setGoalDraft] = useState('')
   const [budgetDraft, setBudgetDraft] = useState('{}')
   const [stateDraft, setStateDraft] = useState('{}')
@@ -476,6 +478,19 @@ export default function Home() {
     const response = await fetch(`${API_BASE}/api/tasks/${taskId}/attachments`, { method: 'POST', body: form })
     if (!response.ok) throw new Error(await response.text())
     return response.json()
+  }
+
+  async function testLlmConnection() {
+    setBusyAction('llm_test')
+    try {
+      const result = await apiFetch<any>('/api/llm/test')
+      setLlmStatus(result)
+      setNotice(result.ok ? `LLM доступна: ${result.model}` : `LLM недоступна: ${result.error}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось проверить LLM')
+    } finally {
+      setBusyAction(null)
+    }
   }
 
   async function createTask() {
@@ -690,6 +705,20 @@ export default function Home() {
     }
   }
 
+  async function diagnoseMcpServers() {
+    if (!selected) return
+    setBusyAction('mcp_diagnostics')
+    try {
+      const data = await apiFetch<any>(`/api/tasks/${selected.id}/mcp/diagnostics`)
+      setMcpDiagnostics(data)
+      setNotice('MCP диагностика обновлена.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось выполнить MCP диагностику')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
   async function refreshMcpTools() {
     if (!selected) return
     setBusyAction('mcp_tools')
@@ -753,6 +782,9 @@ export default function Home() {
             <p className={`${theme.text} truncate`}>Автономный итерационный движок</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
+            <button disabled={busyAction === 'llm_test'} onClick={testLlmConnection} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`} title={llmStatus ? compactJson(llmStatus) : 'Проверить LLM'}>
+              {llmStatus?.ok ? 'LLM ✅' : 'LLM?'}
+            </button>
             <button onClick={() => setThemePersistent(!isDark)} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`}>
               {isDark ? '☀️ День' : '🌙 Ночь'}
             </button>
@@ -818,7 +850,7 @@ export default function Home() {
           <aside className="grid min-w-0 content-start gap-6">
             <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
             <TracePanel theme={theme} events={events} />
-            <ToolsPanel theme={theme} tools={tools} mcpTools={mcpTools} mcpCallArgs={mcpCallArgs} mcpCallResult={mcpCallResult} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} setMcpCallArgs={setMcpCallArgs} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} onRefreshMcpTools={refreshMcpTools} onCallMcpTool={callMcpTool} />
+            <ToolsPanel theme={theme} tools={tools} mcpTools={mcpTools} mcpCallArgs={mcpCallArgs} mcpCallResult={mcpCallResult} mcpDiagnostics={mcpDiagnostics} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} setMcpCallArgs={setMcpCallArgs} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} onRefreshMcpTools={refreshMcpTools} onDiagnoseMcp={diagnoseMcpServers} onCallMcpTool={callMcpTool} />
             <SnapshotsPanel theme={theme} snapshots={snapshots} setRollbackIteration={setRollbackIteration} />
           </aside>
         </div>
@@ -1145,6 +1177,7 @@ function ToolsPanel({
   mcpTools,
   mcpCallArgs,
   mcpCallResult,
+  mcpDiagnostics,
   busyAction,
   mcpName,
   mcpUrl,
@@ -1155,6 +1188,7 @@ function ToolsPanel({
   onAddMcp,
   onDeleteMcp,
   onRefreshMcpTools,
+  onDiagnoseMcp,
   onCallMcpTool,
 }: {
   theme: Theme
@@ -1162,6 +1196,7 @@ function ToolsPanel({
   mcpTools: MCPTool[]
   mcpCallArgs: string
   mcpCallResult: any
+  mcpDiagnostics: any
   busyAction: string | null
   mcpName: string
   mcpUrl: string
@@ -1172,6 +1207,7 @@ function ToolsPanel({
   onAddMcp: () => void
   onDeleteMcp: (name: string) => void
   onRefreshMcpTools: () => void
+  onDiagnoseMcp: () => void
   onCallMcpTool: (tool: MCPTool) => void
 }) {
   const okTools = mcpTools.filter((tool) => tool.status === 'ok' && tool.name)
@@ -1181,9 +1217,14 @@ function ToolsPanel({
     <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <div className="mb-4 flex items-center justify-between gap-2">
         <h2 className="font-semibold">Инструменты агента</h2>
-        <button disabled={busyAction === 'mcp_tools'} onClick={onRefreshMcpTools} className="rounded-lg bg-sky-400/20 px-3 py-1 text-xs text-sky-500 disabled:opacity-50">
-          Обновить tools
-        </button>
+        <div className="flex gap-2">
+          <button disabled={busyAction === 'mcp_diagnostics'} onClick={onDiagnoseMcp} className="rounded-lg bg-amber-400/20 px-3 py-1 text-xs text-amber-500 disabled:opacity-50">
+            Диагностика
+          </button>
+          <button disabled={busyAction === 'mcp_tools'} onClick={onRefreshMcpTools} className="rounded-lg bg-sky-400/20 px-3 py-1 text-xs text-sky-500 disabled:opacity-50">
+            Обновить tools
+          </button>
+        </div>
       </div>
       <div className="space-y-3">
         {(Object.keys(TOOL_LABELS) as Array<keyof Omit<ToolConfig, 'mcp_servers'>>).map((key) => (
@@ -1251,6 +1292,12 @@ function ToolsPanel({
             ))}
             {!mcpTools.length && <div className="text-xs opacity-70">Нажмите «Обновить tools», чтобы получить список инструментов. Если MCP выключен — включите переключатель MCP выше.</div>}
           </div>
+          {mcpDiagnostics && (
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs font-medium">MCP diagnostics</summary>
+              <pre className={`mt-2 max-h-64 overflow-auto rounded-lg border p-2 text-xs ${theme.code}`}>{compactJson(mcpDiagnostics)}</pre>
+            </details>
+          )}
           {mcpCallResult && (
             <details className="mt-3" open>
               <summary className="cursor-pointer text-xs font-medium">Последний результат MCP call</summary>

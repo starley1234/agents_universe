@@ -36,6 +36,9 @@
 - [x] Внутренние filesystem MCP tools: write_file/read_file/list_dir.
 - [x] Устойчивый parser MCP_CALL_JSON: multiline JSON и массивы вызовов.
 - [x] Внутренний fetch_many_urls для source/citation pipeline.
+- [x] LLM healthcheck endpoint и UI-кнопка проверки.
+- [x] MCP diagnostics endpoint и UI-блок диагностики transport/url attempts.
+- [x] Workspace audit на Python-шаге с сохранением artifacts/workspace_audit.json.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
 - [x] MCP SSE discovery через initialize/list_tools.

@@ -11,8 +11,9 @@ from app.config import settings
 from app.db.models import Artifact, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
 from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
+from app.llm.providers import get_llm_provider
 from app.services.events import add_event
-from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
+from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, diagnose_mcp_servers_sync, list_mcp_tools_sync
 from app.services.mcp_registry import delete_global_mcp_server, load_global_mcp_servers, upsert_global_mcp_server
 from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
@@ -46,6 +47,17 @@ def merged_tool_config(state: dict) -> dict:
 @router.get("/health")
 def health():
     return {"status": "ok", "project": settings.project_name}
+
+@router.get("/llm/test")
+def test_llm_connection():
+    try:
+        result = get_llm_provider().complete_sync([
+            {"role": "user", "content": "Ответь коротко по-русски: LLM подключена."}
+        ])
+        return {"ok": True, "model": result.model, "tokens_used": result.tokens_used, "content": result.content[:1000]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
 
 @router.get("/settings", response_model=AgentSettingsRead)
 def get_agent_settings():
@@ -365,6 +377,16 @@ def list_task_mcp_tools(task_id: UUID, db: Session = Depends(get_db)):
         return {"enabled": False, "tools": [], "message": "MCP выключен в настройках инструментов."}
     tools = list_mcp_tools_sync(config.get("mcp_servers", []), include_internal=True)
     return {"enabled": True, "tools": tools}
+
+@router.get("/tasks/{task_id}/mcp/diagnostics")
+def diagnose_task_mcp(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    state = dict(task.current_state_json or {})
+    config = ToolConfig(**merged_tool_config(state)).model_dump()
+    return {"diagnostics": diagnose_mcp_servers_sync(config.get("mcp_servers", []))}
+
 
 @router.post("/tasks/{task_id}/mcp/call")
 def call_task_mcp_tool(task_id: UUID, payload: MCPToolCallRequest, db: Session = Depends(get_db)):
