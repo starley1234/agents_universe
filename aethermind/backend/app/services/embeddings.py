@@ -43,7 +43,7 @@ def embed_text(text: str) -> EmbeddingResult:
             headers = {}
             if settings.embedding_key:
                 headers["Authorization"] = f"Bearer {settings.embedding_key}"
-            with httpx.Client(timeout=60) as client:
+            with httpx.Client(timeout=settings.embedding_timeout_seconds) as client:
                 response = client.post(f"{settings.embedding_url.rstrip('/')}/embeddings", json=payload, headers=headers)
                 response.raise_for_status()
                 data = response.json()

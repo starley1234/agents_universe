@@ -1,6 +1,7 @@
 from celery import Celery
 from sqlalchemy import select
 from uuid import UUID
+from datetime import datetime, timezone
 from app.config import settings
 from app.db.session import SessionLocal
 from app.db.models import Artifact, Task, TaskSnapshot, TaskStatus
@@ -29,11 +30,16 @@ def run_agent_iteration(task_id: str) -> dict:
         state.setdefault("task_id", str(task.id))
         state.setdefault("goal", task.goal)
         state.setdefault("iteration", 0)
+        state["worker_started_at"] = datetime.now(timezone.utc).isoformat()
+        state["events"] = [{"type": "worker", "message": "Worker начал итерацию", "started_at": state["worker_started_at"]}]
         query = f"{task.goal}\n{state.get('executive_summary', '')}\n{state.get('current_step', {})}"
-        memories = retrieve_memories(db, query, task_id=task.id, top_k=settings.memory_top_k)
+        try:
+            memories = retrieve_memories(db, query, task_id=task.id, top_k=settings.memory_top_k)
+        except Exception as exc:  # noqa: BLE001
+            memories = []
+            state["events"].append({"type": "memory_error", "message": "Retrieval памяти не удался, продолжаю без памяти", "error": str(exc)})
         state["retrieved_memories"] = memories
         state["memory_context"] = format_memories_for_prompt(memories)
-        state["events"] = []
         if memories:
             state["events"].append({"type": "memory", "message": f"Из памяти извлечено релевантных записей: {len(memories)}"})
         graph = AgentGraph(workspace)
@@ -43,6 +49,10 @@ def run_agent_iteration(task_id: str) -> dict:
         budget["tokens_used"] = int(llm_usage.get("tokens_used", budget.get("tokens_used", 0)) or 0)
         budget["cost_used_usd"] = float(llm_usage.get("cost_used_usd", budget.get("cost_used_usd", 0.0)) or 0.0)
         budget["llm_calls"] = int(llm_usage.get("calls", budget.get("llm_calls", 0)) or 0)
+        if state.get("plan") and all(step.get("status") == "done" for step in state.get("plan", [])):
+            state["goal_completed"] = True
+        state["last_iteration_finished_at"] = datetime.now(timezone.utc).isoformat()
+        state["worker_finished_at"] = state["last_iteration_finished_at"]
         task.budget_json = budget
         task.current_state_json = state
         task.status = route_after_reflection(state, budget)
@@ -51,7 +61,11 @@ def run_agent_iteration(task_id: str) -> dict:
             exists = db.execute(select(Artifact).where(Artifact.task_id == task.id, Artifact.path == artifact["path"])).scalar_one_or_none()
             if not exists:
                 db.add(Artifact(task_id=task.id, path=artifact["path"], kind=artifact.get("kind", "file"), metadata_json=artifact))
-        created_memories = store_iteration_memories(db, task.id, state, workspace=workspace)
+        try:
+            created_memories = store_iteration_memories(db, task.id, state, workspace=workspace)
+        except Exception as exc:  # noqa: BLE001
+            created_memories = []
+            add_event(db, task.id, "memory_error", {"message": "Запись памяти не удалась, итерация сохранена без блокировки", "error": str(exc)})
         if created_memories:
             state["memory_stats"] = {"stored_this_iteration": len(created_memories), "retrieved": len(state.get("retrieved_memories", []))}
             task.current_state_json = state

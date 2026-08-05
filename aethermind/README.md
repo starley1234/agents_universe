@@ -158,6 +158,7 @@ UI дополнительно поддерживает:
 - MCP diagnostics в UI/API: `GET /api/tasks/{task_id}/mcp/diagnostics`, чтобы видеть все transport/url attempts;
 - workspace audit на Python-шаге: проверяет созданные файлы и CSV, сохраняет `artifacts/workspace_audit.json`;
 - Memory retrieval: embeddings, автоматическая индексация observations/reflections/artifacts, retrieval перед каждой итерацией, UI поиска/ручного добавления памяти;
+- защита от подвисания: embedding timeout/fallback, лимит записи памяти за итерацию, worker heartbeat, endpoint/UI-кнопка `Пнуть` для возврата stale RUNNING задач в очередь;
 - редактирование цели, budget JSON и state JSON в блоке **Настройки агента и состояние**;
 - сохранение выбранной темы день/ночь в `localStorage` и cookie `aethermind.theme`.
 

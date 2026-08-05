@@ -905,7 +905,7 @@ export default function Home() {
             <MemoryPanel theme={theme} selected={selected} query={memoryQuery} results={memoryResults} manualMemory={manualMemory} busyAction={busyAction} setQuery={setMemoryQuery} setManualMemory={setManualMemory} onSearch={searchMemory} onAdd={addManualMemory} onIndex={indexArtifactsToMemory} />
           </section>
           <aside className="grid min-w-0 content-start gap-6">
-            <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
+            <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} onKick={() => runTaskAction('kick')} />
             <TracePanel theme={theme} events={events} />
             <ToolsPanel theme={theme} tools={tools} mcpTools={mcpTools} mcpCallArgs={mcpCallArgs} mcpCallResult={mcpCallResult} mcpDiagnostics={mcpDiagnostics} busyAction={busyAction} mcpName={mcpName} mcpUrl={mcpUrl} setMcpName={setMcpName} setMcpUrl={setMcpUrl} setMcpCallArgs={setMcpCallArgs} onToggle={toggleTool} onAddMcp={addMcpServer} onDeleteMcp={deleteMcpServer} onRefreshMcpTools={refreshMcpTools} onDiagnoseMcp={diagnoseMcpServers} onCallMcpTool={callMcpTool} />
             <SnapshotsPanel theme={theme} snapshots={snapshots} setRollbackIteration={setRollbackIteration} />
@@ -1245,7 +1245,7 @@ function MemoryPanel({
   )
 }
 
-function ControlPanel({ theme, confidence, contextFill, iter, budget, llmCalls, tokensUsed, busyAction, onPause, onResume }: { theme: Theme; confidence: number; contextFill: number; iter: number; budget: any; llmCalls: number; tokensUsed: number; busyAction: string | null; onPause: () => void; onResume: () => void }) {
+function ControlPanel({ theme, confidence, contextFill, iter, budget, llmCalls, tokensUsed, busyAction, onPause, onResume, onKick }: { theme: Theme; confidence: number; contextFill: number; iter: number; budget: any; llmCalls: number; tokensUsed: number; busyAction: string | null; onPause: () => void; onResume: () => void; onKick: () => void }) {
   return (
     <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-4 font-semibold">Контроль и ограничения</h2>
@@ -1254,9 +1254,10 @@ function ControlPanel({ theme, confidence, contextFill, iter, budget, llmCalls, 
         <Meter label="Заполнение контекста" value={contextFill} color="bg-amberMind" />
         <Meter label="Бюджет итераций" value={(iter / (budget.max_iterations || 25)) * 100} />
         <div className={`min-w-0 rounded-xl border p-3 text-xs ${theme.soft}`}>LLM вызовы: {llmCalls} · токены: {tokensUsed}</div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <button disabled={busyAction === 'pause'} onClick={onPause} className="rounded-lg bg-amberMind/20 px-3 py-2 text-amberMind disabled:opacity-50">Пауза</button>
           <button disabled={busyAction === 'resume'} onClick={onResume} className="rounded-lg bg-emerald-400/20 px-3 py-2 text-emerald-500 disabled:opacity-50">Продолжить</button>
+          <button disabled={busyAction === 'kick'} onClick={onKick} className="rounded-lg bg-sky-400/20 px-3 py-2 text-sky-500 disabled:opacity-50" title="Вернуть RUNNING/зависшую задачу в очередь worker">Пнуть</button>
         </div>
       </div>
     </div>

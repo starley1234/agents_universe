@@ -143,7 +143,11 @@ def store_iteration_memories(db: Session, task_id: UUID, state: dict, workspace:
                 candidates.append((chunk, {"source": "artifact", "path": rel, "chunk": chunk_index, "iteration": iteration}))
 
     for content, metadata in candidates[: settings.memory_max_items_per_iteration * 2]:
+        if len(created) >= settings.memory_max_items_per_iteration:
+            break
         for chunk in chunk_text(content):
+            if len(created) >= settings.memory_max_items_per_iteration:
+                break
             item = create_memory(db, chunk, task_id=task_id, metadata=metadata)
             if item:
                 created.append(item)

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import mimetypes
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
@@ -137,8 +138,56 @@ def delete_task(task_id: UUID, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "deleted_task_id": str(task_id)}
 
+def task_is_stale(task: Task) -> bool:
+    if task.status != TaskStatus.RUNNING:
+        return False
+    state = dict(task.current_state_json or {})
+    stamp = state.get("worker_finished_at") or state.get("last_iteration_finished_at") or task.updated_at.isoformat()
+    try:
+        dt = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() > settings.stale_task_seconds
+    except Exception:
+        return False
+
+
+@router.post("/tasks/{task_id}/kick", response_model=TaskRead)
+def kick_task(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+        raise HTTPException(409, f"Нельзя перезапустить задачу в статусе {task.status}")
+    state = dict(task.current_state_json or {})
+    state["awaiting_user"] = False
+    state["kicked_at"] = datetime.now(timezone.utc).isoformat()
+    task.current_state_json = state
+    task.status = TaskStatus.RUNNING
+    add_event(db, task.id, "worker", {"message": "Задача вручную возвращена в очередь worker", "kicked_at": state["kicked_at"]})
+    db.commit(); db.refresh(task)
+    run_agent_iteration.delay(str(task.id))
+    return task
+
+
+@router.post("/tasks/recover-stale")
+def recover_stale_tasks(db: Session = Depends(get_db)):
+    tasks = db.execute(select(Task).where(Task.status == TaskStatus.RUNNING)).scalars().all()
+    recovered = []
+    for task in tasks:
+        if task_is_stale(task):
+            state = dict(task.current_state_json or {})
+            state["recovered_at"] = datetime.now(timezone.utc).isoformat()
+            task.current_state_json = state
+            add_event(db, task.id, "worker", {"message": "Stale RUNNING задача автоматически возвращена в очередь", "recovered_at": state["recovered_at"]})
+            run_agent_iteration.delay(str(task.id))
+            recovered.append(str(task.id))
+    db.commit()
+    return {"recovered": recovered}
+
+
 @router.post("/tasks/{task_id}/pause", response_model=TaskRead)
-def pause_task(task_id: UUID, db: Session = Depends(get_db)):
+def pause_task(task_id: UUID, db: Session = Depends(get_db)): 
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(404, "Задача не найдена")

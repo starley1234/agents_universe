@@ -25,9 +25,11 @@ class Settings(BaseSettings):
     embedding_key: str = ""
     embedding_dimensions: int = 1024
     embedding_fallback_deterministic: bool = True
+    embedding_timeout_seconds: float = 8.0
     memory_top_k: int = 6
     memory_chunk_chars: int = 1800
-    memory_max_items_per_iteration: int = 8
+    memory_max_items_per_iteration: int = 6
+    stale_task_seconds: int = 120
     summary_every_iterations: int = 5
     low_confidence_threshold: float = 0.35
     low_confidence_streak_limit: int = 6
