@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Artifact, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
-from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, ToolConfig
+from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
 from app.services.events import add_event
 from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
 from app.services.mcp_registry import delete_global_mcp_server, load_global_mcp_servers, upsert_global_mcp_server
@@ -95,6 +95,33 @@ def get_task(task_id: UUID, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(404, "Задача не найдена")
     return task
+
+@router.patch("/tasks/{task_id}", response_model=TaskRead)
+def update_task(task_id: UUID, payload: TaskUpdate, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    if payload.goal is not None:
+        task.goal = payload.goal
+    if payload.status is not None:
+        task.status = payload.status
+    if payload.current_state_json is not None:
+        task.current_state_json = payload.current_state_json
+    if payload.budget_json is not None:
+        task.budget_json = payload.budget_json
+    add_event(db, task.id, "settings", {"message": "Настройки/состояние задачи обновлены пользователем."})
+    db.commit(); db.refresh(task)
+    return task
+
+@router.delete("/tasks/{task_id}")
+def delete_task(task_id: UUID, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    add_event(db, task.id, "deleted", {"message": "Задача удалена пользователем."})
+    db.delete(task)
+    db.commit()
+    return {"ok": True, "deleted_task_id": str(task_id)}
 
 @router.post("/tasks/{task_id}/pause", response_model=TaskRead)
 def pause_task(task_id: UUID, db: Session = Depends(get_db)):

@@ -16,6 +16,12 @@ class TaskCreate(BaseModel):
     goal: str = Field(min_length=3)
     budget: Budget | None = None
 
+class TaskUpdate(BaseModel):
+    goal: str | None = Field(default=None, min_length=3)
+    status: TaskStatus | None = None
+    current_state_json: dict | None = None
+    budget_json: dict | None = None
+
 class InterveneRequest(BaseModel):
     message: str = Field(min_length=1)
     resume: bool = True

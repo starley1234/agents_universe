@@ -38,6 +38,10 @@
 - [x] Глобальный registry MCP серверов для новых задач.
 - [x] Слияние global MCP registry с tool_config при запуске/работе агента.
 - [x] UI-шаблоны аргументов MCP tools из input_schema.
+- [x] UI-кнопки удаления MCP сервера и обновления списка tools.
+- [x] UI/API удаления задач.
+- [x] UI/API редактирования цели, budget JSON и state JSON задачи.
+- [x] Сохранение выбранной темы день/ночь в localStorage/cookie.
 - [x] Сохранение MCP результатов как artifacts.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.

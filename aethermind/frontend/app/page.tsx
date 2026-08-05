@@ -171,6 +171,9 @@ export default function Home() {
   const [mcpCallArgs, setMcpCallArgs] = useState('{\n  "url": "https://example.com",\n  "max_chars": 12000\n}')
   const [mcpCallResult, setMcpCallResult] = useState<any>(null)
   const [settings, setSettings] = useState<AgentSettings | null>(null)
+  const [goalDraft, setGoalDraft] = useState('')
+  const [budgetDraft, setBudgetDraft] = useState('{}')
+  const [stateDraft, setStateDraft] = useState('{}')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -183,6 +186,18 @@ export default function Home() {
   const [goal, setGoal] = useState('Подготовьте самостоятельный исследовательский отчет об архитектуре AetherMind.')
 
   const theme = getTheme(isDark)
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem('aethermind.theme')
+    if (saved === 'light') setIsDark(false)
+    if (saved === 'dark') setIsDark(true)
+  }, [])
+
+  function setThemePersistent(nextDark: boolean) {
+    setIsDark(nextDark)
+    window.localStorage.setItem('aethermind.theme', nextDark ? 'dark' : 'light')
+    document.cookie = `aethermind.theme=${nextDark ? 'dark' : 'light'}; path=/; max-age=31536000; SameSite=Lax`
+  }
 
   const refreshTasks = useCallback(async () => {
     const [taskList, appSettings] = await Promise.all([
@@ -250,6 +265,13 @@ export default function Home() {
     return () => window.clearInterval(interval)
   }, [selected?.id, selected?.status, safeRefreshSelected])
 
+  useEffect(() => {
+    if (!selected) return
+    setGoalDraft(selected.goal)
+    setBudgetDraft(compactJson(selected.budget_json || {}))
+    setStateDraft(compactJson(selected.current_state_json || {}))
+  }, [selected?.id])
+
   async function createTask() {
     if (isLaunching || !goal.trim()) return
     setIsLaunching(true)
@@ -280,6 +302,53 @@ export default function Home() {
       await refreshSelected(selected.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : `Не удалось выполнить действие ${name}`)
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function deleteTask(task: Task) {
+    if (!window.confirm(`Удалить задачу «${task.goal}»? Это удалит события, снапшоты и записи артефактов.`)) return
+    setBusyAction(`delete_task:${task.id}`)
+    try {
+      await apiFetch<{ ok: boolean }>(`/api/tasks/${task.id}`, { method: 'DELETE' })
+      setNotice('Задача удалена.')
+      if (selected?.id === task.id) {
+        setSelected(null)
+        setEvents([])
+        setArtifacts([])
+        setArtifactContent(null)
+      }
+      await refreshTasks()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось удалить задачу')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function saveTaskSettings() {
+    if (!selected) return
+    setBusyAction('save_settings')
+    try {
+      let parsedBudget: any
+      let parsedState: any
+      try {
+        parsedBudget = JSON.parse(budgetDraft)
+        parsedState = JSON.parse(stateDraft)
+      } catch {
+        throw new Error('Budget и State должны быть валидными JSON объектами')
+      }
+      const updated = await apiFetch<Task>(`/api/tasks/${selected.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ goal: goalDraft, budget_json: parsedBudget, current_state_json: parsedState }),
+      })
+      setSelected(updated)
+      setNotice('Настройки агента и состояние сохранены.')
+      await refreshSelected(updated.id)
+      await refreshTasks()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось сохранить настройки')
     } finally {
       setBusyAction(null)
     }
@@ -458,7 +527,7 @@ export default function Home() {
             <p className={`${theme.text} truncate`}>Автономный итерационный движок</p>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <button onClick={() => setIsDark((value) => !value)} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`}>
+            <button onClick={() => setThemePersistent(!isDark)} className={`rounded-full border px-4 py-2 text-sm ${theme.soft}`}>
               {isDark ? '☀️ День' : '🌙 Ночь'}
             </button>
             <div className="rounded-full border border-sky-400/50 px-4 py-2 text-sky-500">
@@ -499,11 +568,11 @@ export default function Home() {
         </section>
 
         <div className="grid min-w-0 gap-6 xl:grid-cols-[260px_minmax(0,1fr)_380px] 2xl:grid-cols-[280px_minmax(0,1fr)_420px]">
-          <TasksPanel tasks={tasks} selected={selected} theme={theme} onSelect={(task) => { setSelected(task); setArtifactContent(null) }} />
+          <TasksPanel tasks={tasks} selected={selected} theme={theme} busyAction={busyAction} onSelect={(task) => { setSelected(task); setArtifactContent(null) }} onDelete={deleteTask} />
           <section className="grid min-w-0 content-start gap-6">
             <StrategyPanel plan={plan} theme={theme} />
             <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} />
-            <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} />
+            <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} goalDraft={goalDraft} budgetDraft={budgetDraft} stateDraft={stateDraft} busyAction={busyAction} setGoalDraft={setGoalDraft} setBudgetDraft={setBudgetDraft} setStateDraft={setStateDraft} onSave={saveTaskSettings} />
           </section>
           <aside className="grid min-w-0 content-start gap-6">
             <ControlPanel theme={theme} confidence={confidence} contextFill={contextFill} iter={iter} budget={budget} llmCalls={llmCalls} tokensUsed={tokensUsed} busyAction={busyAction} onPause={() => runTaskAction('pause')} onResume={() => runTaskAction('resume')} />
@@ -543,16 +612,21 @@ function HumanGatePanel({ theme, intervention, setIntervention, rollbackIteratio
   )
 }
 
-function TasksPanel({ tasks, selected, theme, onSelect }: { tasks: Task[]; selected: Task | null; theme: Theme; onSelect: (task: Task) => void }) {
+function TasksPanel({ tasks, selected, theme, busyAction, onSelect, onDelete }: { tasks: Task[]; selected: Task | null; theme: Theme; busyAction: string | null; onSelect: (task: Task) => void; onDelete: (task: Task) => void }) {
   return (
     <aside className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <h2 className="mb-3 font-semibold">Задачи</h2>
       <div className="max-h-[70vh] space-y-2 overflow-auto pr-1">
         {tasks.map((task) => (
-          <button key={task.id} onClick={() => onSelect(task)} className={`block w-full min-w-0 rounded-xl border p-3 text-left text-sm ${selected?.id === task.id ? 'border-sky-400 bg-sky-400/15 text-sky-500' : theme.soft}`}>
-            <div className="truncate">{task.goal}</div>
-            <div className="text-xs opacity-70">{statusLabel(task.status)}</div>
-          </button>
+          <div key={task.id} className={`min-w-0 rounded-xl border p-3 text-sm ${selected?.id === task.id ? 'border-sky-400 bg-sky-400/15 text-sky-500' : theme.soft}`}>
+            <button onClick={() => onSelect(task)} className="block w-full min-w-0 text-left">
+              <div className="truncate">{task.goal}</div>
+              <div className="text-xs opacity-70">{statusLabel(task.status)}</div>
+            </button>
+            <button disabled={busyAction === `delete_task:${task.id}`} onClick={() => onDelete(task)} className="mt-2 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-500 disabled:opacity-50">
+              🗑 Удалить
+            </button>
+          </div>
         ))}
         {!tasks.length && <div className={`text-sm ${theme.text}`}>Задач пока нет.</div>}
       </div>
@@ -606,17 +680,61 @@ function ArtifactsPanel({ artifacts, artifactContent, selected, theme, busyActio
   )
 }
 
-function SettingsPanel({ settings, selected, budget, tools, theme }: { settings: AgentSettings | null; selected: Task | null; budget: any; tools: ToolConfig; theme: Theme }) {
-  const statePreview = {
-    app: settings,
-    task_budget: budget,
-    task_state: selected?.current_state_json,
-    tools,
-  }
+function SettingsPanel({
+  settings,
+  selected,
+  budget,
+  tools,
+  theme,
+  goalDraft,
+  budgetDraft,
+  stateDraft,
+  busyAction,
+  setGoalDraft,
+  setBudgetDraft,
+  setStateDraft,
+  onSave,
+}: {
+  settings: AgentSettings | null
+  selected: Task | null
+  budget: any
+  tools: ToolConfig
+  theme: Theme
+  goalDraft: string
+  budgetDraft: string
+  stateDraft: string
+  busyAction: string | null
+  setGoalDraft: (value: string) => void
+  setBudgetDraft: (value: string) => void
+  setStateDraft: (value: string) => void
+  onSave: () => void
+}) {
+  const statePreview = { app: settings, task_budget: budget, task_state: selected?.current_state_json, tools }
   return (
     <details className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
       <summary className="cursor-pointer font-semibold">Настройки агента и состояние</summary>
-      <pre className={`mt-3 max-h-96 min-w-0 overflow-auto rounded-xl border p-4 text-xs ${theme.code}`}><code className="break-words">{compactJson(statePreview)}</code></pre>
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-1 text-xs font-medium">
+          Цель задачи
+          <input value={goalDraft} onChange={(event) => setGoalDraft(event.target.value)} className={`rounded-lg border px-3 py-2 text-sm ${theme.input}`} disabled={!selected} />
+        </label>
+        <label className="grid gap-1 text-xs font-medium">
+          Budget JSON
+          <textarea value={budgetDraft} onChange={(event) => setBudgetDraft(event.target.value)} className={`h-36 rounded-lg border p-3 font-mono text-xs ${theme.input}`} disabled={!selected} />
+        </label>
+        <label className="grid gap-1 text-xs font-medium">
+          State JSON
+          <textarea value={stateDraft} onChange={(event) => setStateDraft(event.target.value)} className={`h-64 rounded-lg border p-3 font-mono text-xs ${theme.input}`} disabled={!selected} />
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <button disabled={!selected || busyAction === 'save_settings'} onClick={onSave} className="rounded-lg bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">💾 Сохранить настройки</button>
+          <button disabled={!selected} onClick={() => { setGoalDraft(selected?.goal || ''); setBudgetDraft(compactJson(selected?.budget_json || {})); setStateDraft(compactJson(selected?.current_state_json || {})) }} className={`rounded-lg border px-4 py-2 text-sm ${theme.soft}`}>↩ Сбросить</button>
+        </div>
+      </div>
+      <details className="mt-4">
+        <summary className="cursor-pointer text-sm opacity-80">Текущий read-only preview</summary>
+        <pre className={`mt-3 max-h-96 min-w-0 overflow-auto rounded-xl border p-4 text-xs ${theme.code}`}><code className="break-words">{compactJson(statePreview)}</code></pre>
+      </details>
     </details>
   )
 }
@@ -729,7 +847,10 @@ function ToolsPanel({
               <div key={server.name} className="min-w-0 rounded-lg border border-current/10 p-2 text-xs">
                 <div className="font-medium">{server.name} · {server.transport} · {server.enabled ? 'enabled' : 'disabled'}</div>
                 <div className="break-all opacity-70">{server.url}</div>
-                <button disabled={busyAction === 'mcp'} onClick={() => onDeleteMcp(server.name)} className="mt-1 text-red-500 disabled:opacity-50">удалить</button>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" disabled={busyAction === 'mcp_tools'} onClick={onRefreshMcpTools} title="Обновить список инструментов этого сервера" className="rounded-lg bg-sky-400/20 px-2 py-1 text-sky-500 disabled:opacity-50">🔄 tools</button>
+                  <button type="button" disabled={busyAction === 'mcp'} onClick={() => onDeleteMcp(server.name)} title="Удалить MCP сервер" className="rounded-lg bg-red-500/10 px-2 py-1 text-red-500 disabled:opacity-50">🗑 удалить</button>
+                </div>
               </div>
             ))}
             {!tools.mcp_servers?.length && <div className="text-xs opacity-70">Внешние MCP серверы еще не подключены. Встроенный fetch доступен после включения MCP.</div>}
