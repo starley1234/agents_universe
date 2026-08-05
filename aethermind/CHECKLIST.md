@@ -51,7 +51,8 @@
 - [x] Автосинхронизация workspace-файлов в artifacts.
 - [x] Последние trace events и artifacts сверху.
 - [x] Просмотр артефактов Markdown/HTML с указанием открытого файла.
-- [x] Прикрепление изображений к контексту задачи.
+- [x] Корректный HTML-рендер Markdown-таблиц в артефактах.
+- [x] Прикрепление изображений к контексту задачи до запуска и после запуска.
 - [x] MCP discovery fallback: SSE + Streamable HTTP endpoint candidates.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.

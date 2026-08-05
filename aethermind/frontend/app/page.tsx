@@ -126,16 +126,112 @@ function escapeHtml(value: string) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-function markdownToHtml(markdown: string) {
-  const escaped = escapeHtml(markdown)
-  return escaped
-    .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-    .replace(/^### (.*)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.*)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+function renderInlineMarkdown(value: string) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^- (.*)$/gm, '<li>$1</li>')
-    .replace(/\n/g, '<br />')
+    .replace(/\[(.*?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+}
+
+function isMarkdownTableSeparator(line: string) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line)
+}
+
+function splitMarkdownTableRow(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+function markdownToHtml(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  const html: string[] = []
+  let inCode = false
+  let codeBuffer: string[] = []
+  let inList = false
+
+  const closeList = () => {
+    if (inList) {
+      html.push('</ul>')
+      inList = false
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (line.trim().startsWith('```')) {
+      if (inCode) {
+        html.push(`<pre><code>${escapeHtml(codeBuffer.join('\n'))}</code></pre>`)
+        codeBuffer = []
+        inCode = false
+      } else {
+        closeList()
+        inCode = true
+      }
+      continue
+    }
+
+    if (inCode) {
+      codeBuffer.push(line)
+      continue
+    }
+
+    if (index + 1 < lines.length && line.includes('|') && isMarkdownTableSeparator(lines[index + 1])) {
+      closeList()
+      const headers = splitMarkdownTableRow(line)
+      const rows: string[][] = []
+      index += 2
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+        rows.push(splitMarkdownTableRow(lines[index]))
+        index += 1
+      }
+      index -= 1
+      html.push('<div class="overflow-auto"><table><thead><tr>')
+      html.push(headers.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join(''))
+      html.push('</tr></thead><tbody>')
+      for (const row of rows) {
+        html.push('<tr>')
+        html.push(headers.map((_, cellIndex) => `<td>${renderInlineMarkdown(row[cellIndex] || '')}</td>`).join(''))
+        html.push('</tr>')
+      }
+      html.push('</tbody></table></div>')
+      continue
+    }
+
+    if (!line.trim()) {
+      closeList()
+      html.push('<br />')
+      continue
+    }
+
+    const heading = line.match(/^(#{1,4})\s+(.*)$/)
+    if (heading) {
+      closeList()
+      const level = heading[1].length
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
+      continue
+    }
+
+    const listItem = line.match(/^\s*[-*]\s+(.*)$/)
+    if (listItem) {
+      if (!inList) {
+        html.push('<ul>')
+        inList = true
+      }
+      html.push(`<li>${renderInlineMarkdown(listItem[1])}</li>`)
+      continue
+    }
+
+    closeList()
+    html.push(`<p>${renderInlineMarkdown(line)}</p>`)
+  }
+  closeList()
+  if (inCode) html.push(`<pre><code>${escapeHtml(codeBuffer.join('\n'))}</code></pre>`)
+  return html.join('\n')
 }
 
 type HumanFeedback = {
@@ -285,6 +381,7 @@ export default function Home() {
   const [mcpName, setMcpName] = useState('search')
   const [mcpUrl, setMcpUrl] = useState('http://your-mcp-server:8001/sse')
   const [goal, setGoal] = useState('Подготовьте самостоятельный исследовательский отчет об архитектуре AetherMind.')
+  const [pendingImages, setPendingImages] = useState<File[]>([])
 
   const theme = getTheme(isDark)
 
@@ -373,6 +470,14 @@ export default function Home() {
     setStateDraft(compactJson(selected.current_state_json || {}))
   }, [selected?.id])
 
+  async function uploadImageToTask(taskId: string, file: File) {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await fetch(`${API_BASE}/api/tasks/${taskId}/attachments`, { method: 'POST', body: form })
+    if (!response.ok) throw new Error(await response.text())
+    return response.json()
+  }
+
   async function createTask() {
     if (isLaunching || !goal.trim()) return
     setIsLaunching(true)
@@ -380,11 +485,15 @@ export default function Home() {
     setNotice('Задача создается и ставится в очередь Celery...')
     try {
       const task = await apiFetch<Task>('/api/tasks', { method: 'POST', body: JSON.stringify({ goal }) })
+      for (const image of pendingImages) {
+        await uploadImageToTask(task.id, image)
+      }
+      setPendingImages([])
       setSelected(task)
       setEvents([])
       setArtifacts([])
       setArtifactContent(null)
-      setNotice('Задача запущена. Следите за индикатором работы и Live Trace.')
+      setNotice(pendingImages.length ? `Задача запущена, изображений прикреплено: ${pendingImages.length}.` : 'Задача запущена. Следите за индикатором работы и Live Trace.')
       await refreshTasks()
       await refreshSelected(task.id)
     } catch (err) {
@@ -511,10 +620,7 @@ export default function Home() {
     if (!selected) return
     setBusyAction('upload_image')
     try {
-      const form = new FormData()
-      form.append('file', file)
-      const response = await fetch(`${API_BASE}/api/tasks/${selected.id}/attachments`, { method: 'POST', body: form })
-      if (!response.ok) throw new Error(await response.text())
+      await uploadImageToTask(selected.id, file)
       setNotice(`Изображение прикреплено к контексту: ${file.name}`)
       await refreshSelected(selected.id)
     } catch (err) {
@@ -680,11 +786,26 @@ export default function Home() {
           <HumanGatePanel theme={theme} feedback={humanFeedback} intervention={intervention} setIntervention={setIntervention} rollbackIteration={rollbackIteration} setRollbackIteration={setRollbackIteration} busyAction={busyAction} onSend={sendIntervention} onRollback={rollback} />
         )}
 
-        <section className={`grid min-w-0 gap-3 rounded-2xl border p-4 md:grid-cols-[minmax(0,1fr)_auto] ${theme.card}`}>
-          <input value={goal} onChange={(event) => setGoal(event.target.value)} className={`min-w-0 rounded-xl border px-4 py-3 outline-none focus:border-sky-400 ${theme.input}`} />
-          <button disabled={isLaunching || !goal.trim()} onClick={createTask} className={`rounded-xl px-5 py-3 font-semibold text-slate-950 ${isLaunching || !goal.trim() ? 'cursor-not-allowed bg-slate-400 opacity-60' : 'bg-sky-400 hover:bg-sky-300'}`}>
-            {isLaunching ? 'Запускаю...' : 'Запустить агента'}
-          </button>
+        <section className={`grid min-w-0 gap-3 rounded-2xl border p-4 ${theme.card}`}>
+          <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <input value={goal} onChange={(event) => setGoal(event.target.value)} className={`min-w-0 rounded-xl border px-4 py-3 outline-none focus:border-sky-400 ${theme.input}`} />
+            <button disabled={isLaunching || !goal.trim()} onClick={createTask} className={`rounded-xl px-5 py-3 font-semibold text-slate-950 ${isLaunching || !goal.trim() ? 'cursor-not-allowed bg-slate-400 opacity-60' : 'bg-sky-400 hover:bg-sky-300'}`}>
+              {isLaunching ? 'Запускаю...' : 'Запустить агента'}
+            </button>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <label className="cursor-pointer rounded-lg bg-sky-400/20 px-3 py-2 text-xs text-sky-500">
+              📎 Изображения к стартовому контексту
+              <input type="file" accept="image/*" multiple className="hidden" onChange={(event) => { const files = Array.from(event.target.files || []); setPendingImages((current) => [...current, ...files]); event.currentTarget.value = '' }} />
+            </label>
+            {pendingImages.map((file, index) => (
+              <span key={`${file.name}-${index}`} className={`rounded-lg border px-2 py-1 text-xs ${theme.soft}`}>
+                {file.name}
+                <button onClick={() => setPendingImages((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="ml-2 text-red-500">×</button>
+              </span>
+            ))}
+            {!pendingImages.length && <span className={`text-xs ${theme.text}`}>Можно прикрепить изображения до запуска задачи — они попадут в контекст агента.</span>}
+          </div>
         </section>
 
         <div className="grid min-w-0 gap-6 xl:grid-cols-[260px_minmax(0,1fr)_380px] 2xl:grid-cols-[280px_minmax(0,1fr)_420px]">

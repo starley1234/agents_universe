@@ -50,7 +50,8 @@
 - [x] Автосинхронизация workspace-файлов в artifacts.
 - [x] Последние trace events и artifacts сверху.
 - [x] Просмотр артефактов Markdown/HTML с указанием открытого файла.
-- [x] Прикрепление изображений к контексту задачи.
+- [x] Корректный HTML-рендер Markdown-таблиц в артефактах.
+- [x] Прикрепление изображений к контексту задачи до запуска и после запуска.
 - [x] MCP discovery fallback: SSE + Streamable HTTP endpoint candidates.
 - [x] Агент получает discovered MCP tools в prompt и может запросить MCP вызов через `MCP_CALL_JSON`.
 - [x] Валидация MCP name/url на frontend и backend.

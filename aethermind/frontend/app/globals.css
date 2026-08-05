@@ -1,4 +1,20 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
 body { background: #070b16; color: #e5eefb; }
+
+.artifact-html h1 { font-size: 1.5rem; font-weight: 800; margin: 0.75rem 0 0.5rem; }
+.artifact-html h2 { font-size: 1.25rem; font-weight: 750; margin: 0.7rem 0 0.45rem; }
+.artifact-html h3 { font-size: 1.1rem; font-weight: 700; margin: 0.6rem 0 0.35rem; }
+.artifact-html h4 { font-size: 1rem; font-weight: 700; margin: 0.5rem 0 0.3rem; }
+.artifact-html p { margin: 0.4rem 0; }
+.artifact-html ul { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
+.artifact-html li { margin: 0.2rem 0; }
+.artifact-html pre { overflow: auto; border: 1px solid rgba(148, 163, 184, 0.35); border-radius: 0.75rem; padding: 0.75rem; margin: 0.75rem 0; background: rgba(15, 23, 42, 0.75); }
+.artifact-html code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.artifact-html table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.875rem; }
+.artifact-html th, .artifact-html td { border: 1px solid rgba(148, 163, 184, 0.45); padding: 0.5rem 0.625rem; vertical-align: top; }
+.artifact-html th { font-weight: 700; background: rgba(56, 189, 248, 0.14); }
+.artifact-html tr:nth-child(even) td { background: rgba(148, 163, 184, 0.08); }
+.artifact-html a { color: #0284c7; text-decoration: underline; }
