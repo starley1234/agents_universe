@@ -31,6 +31,9 @@
 - [x] Human-in-the-loop UI для `AWAITING_USER`.
 - [x] Наглядная обратная связь критика: reason, confidence, observation, problem events, suggested replies.
 - [x] Human override для варианта «принять риск»: сброс блокировок, завершение текущего шага, продолжение процесса.
+- [x] Advisory-mode критика: замечания не блокируют продуктивные шаги с артефактами.
+- [x] Умные быстрые варианты HITL ответа на основе причины критика.
+- [x] Внутренние filesystem MCP tools: write_file/read_file/list_dir.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.
 - [x] MCP SSE discovery через initialize/list_tools.

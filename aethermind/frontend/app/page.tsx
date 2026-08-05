@@ -172,27 +172,40 @@ function buildHumanFeedback(task: Task | null, events: TaskEvent[]): HumanFeedba
     ? `Автовосстановление уже пробовало исправить ситуацию: ${recoveryAttempts} попытк(и).`
     : 'Автовосстановление еще не исчерпано или не запускалось.'
 
+  const lowerReason = criticReason.toLowerCase()
+  const wantsFiles = /файл|код|excel|word|pdf|csv|json|артефакт|директор/.test(lowerReason)
+  const wantsSources = /url|ссыл|источник|данн|поиск|http|fetch/.test(lowerReason)
   const suggestions = [
+    wantsFiles
+      ? {
+          label: 'Создать недостающие файлы',
+          text: `Продолжай автономно. Для текущего шага «${currentStep}» создай реальные файлы через MCP_CALL_JSON с __internal__.write_file: минимум artifacts/result.md и при необходимости code/ или data/ файлы. Затем проверь их через __internal__.list_dir и __internal__.read_file. Замечание критика: ${criticReason}.`,
+        }
+      : {
+          label: 'Повторить шаг строже',
+          text: `Продолжай автономно и повтори текущий шаг «${currentStep}». Учти замечание критика: ${criticReason}. Создай проверяемый артефакт через __internal__.write_file и не возвращайся к человеку без фатальной ошибки инструмента.`,
+        },
+    wantsSources
+      ? {
+          label: 'Проверить источники',
+          text: `Продолжай автономно. Используй MCP/fetch для проверки источников или URL, затем сохрани найденные данные в artifacts/sources.md или data/sources.json через __internal__.write_file. Замечание критика: ${criticReason}.`,
+        }
+      : {
+          label: 'Перепланировать локально',
+          text: `Не спрашивай человека повторно. Перепланируй текущий шаг «${currentStep}» на 2-3 внутренних действия, выполни их и создай артефакт результата. Причина: ${criticReason}.`,
+        },
     {
-      label: 'Повторить шаг строже',
-      text: `Повтори текущий шаг «${currentStep}». Учти замечание критика: ${criticReason}. Проверь результат через доступные MCP/tools и не завершай шаг, пока не появятся проверяемые артефакты.`,
+      label: 'Принять риск и идти дальше',
+      text: `Принять текущий риск как допустимый, зафиксировать допущение в scratchpad, пометить текущий шаг выполненным и продолжить выполнение следующего шага. Не блокируй этот же шаг повторно. Причина риска: ${criticReason}.`,
     },
     {
-      label: 'Перепланировать',
-      text: `Перепланируй задачу с учетом проблемы: ${criticReason}. Разбей текущий шаг «${currentStep}» на более мелкие проверяемые действия и продолжай автономно.`,
-    },
-    {
-      label: 'Игнорировать риск и продолжить',
-      text: `Принять текущий риск как допустимый, зафиксировать допущение в scratchpad и продолжить выполнение следующего шага. Причина риска: ${criticReason}.`,
+      label: 'Проверить инструменты',
+      text: `Продолжай автономно. Проверь доступность инструментов: __internal__.list_dir, __internal__.write_file, __internal__.run_python, MCP discovery/call. Если внешний MCP недоступен, используй внутренние инструменты. Затем повтори шаг «${currentStep}».`,
     },
     {
       label: 'Откатиться на шаг назад',
       rollback: true,
       text: `Выполни rollback на предыдущую устойчивую итерацию и запусти альтернативный план. Ошибка/сомнение критика: ${criticReason}.`,
-    },
-    {
-      label: 'Проверить инструменты',
-      text: `Проверь доступность инструментов: LLM, filesystem, code_interpreter, MCP discovery и MCP call. Если внешний MCP недоступен, используй внутренние __internal__.fetch_url и __internal__.run_python. Затем повтори шаг «${currentStep}».`,
     },
   ]
 

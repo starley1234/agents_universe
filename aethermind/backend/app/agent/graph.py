@@ -174,24 +174,53 @@ class AgentGraph:
             [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": reflection_prompt}]
         )
         verdict = self._extract_json(llm_result.content) or {}
-        confidence = float(verdict.get("confidence", 0.35 if failed else 0.75))
-        accepted = bool(verdict.get("accepted", not failed and confidence >= settings.low_confidence_threshold))
-        if self._human_accepts_risk(latest_human) and not failed:
+        critic_confidence = float(verdict.get("confidence", 0.35 if failed else 0.75))
+        critic_accepted = bool(verdict.get("accepted", not failed and critic_confidence >= settings.low_confidence_threshold))
+        critic_reason = verdict.get("reason", llm_result.content[:500])
+
+        material_output = self._step_has_material_output(state, observation)
+        action = observation.get("action") or state.get("current_step", {}).get("action")
+        quality_gate = action == "llm_quality_gate"
+        fatal_failure = bool(observation.get("blocked")) or bool(result.get("exit_code", 0))
+
+        accepted = critic_accepted and not fatal_failure
+        confidence = critic_confidence
+
+        # Production mode: critic is advisory for normal productive steps.
+        # It should not bounce routine work to the user just because it wanted
+        # a richer result. If a file/artifact/tool result exists, continue and
+        # carry the critique forward as an improvement note.
+        if not fatal_failure and material_output and not quality_gate:
+            if not critic_accepted:
+                state.setdefault("critic_advisories", []).append(
+                    {
+                        "step": state.get("current_step", {}).get("title"),
+                        "reason": critic_reason,
+                        "iteration": state.get("iteration", 0) + 1,
+                    }
+                )
+                critic_reason = f"Критик дал замечание, но шаг принят как продуктивный и не блокирующий: {critic_reason}"
             accepted = True
-            confidence = max(confidence, 0.65)
-            verdict["reason"] = f"Человек явно разрешил продолжить/принял риск. {verdict.get('reason', '')}".strip()
+            confidence = max(confidence, 0.72)
+
+        if self._human_accepts_risk(latest_human) and not fatal_failure:
+            accepted = True
+            confidence = max(confidence, 0.70)
+            critic_reason = f"Человек явно разрешил продолжить/принял риск. {critic_reason}".strip()
 
         state["confidence"] = max(0.0, min(1.0, confidence))
         state["low_confidence_streak"] = (
             state.get("low_confidence_streak", 0) + 1
-            if state["confidence"] < settings.low_confidence_threshold or not accepted
+            if state["confidence"] < settings.low_confidence_threshold or (not accepted and fatal_failure)
             else 0
         )
         state["iteration"] = state.get("iteration", 0) + 1
         state["reflection"] = {
             "confidence": state["confidence"],
             "accepted": accepted,
-            "reason": verdict.get("reason", llm_result.content[:500]),
+            "critic_accepted": critic_accepted,
+            "advisory_mode": bool(not fatal_failure and material_output and not quality_gate),
+            "reason": critic_reason,
             "model": llm_result.model,
         }
         self._account_llm_usage(state, llm_result)
@@ -304,8 +333,21 @@ class AgentGraph:
                 "игнорировать риск",
                 "accept_risk",
                 "продолжить выполнение следующего шага",
+                "продолжай автономно",
             ]
         )
+
+    def _step_has_material_output(self, state: dict, observation: dict) -> bool:
+        result = observation.get("result") or {}
+        if result.get("path") or result.get("bytes") or result.get("stdout") or result.get("exit_code") == 0:
+            return True
+        if state.get("artifacts") or state.get("mcp_calls") or state.get("attachments"):
+            return True
+        current = state.get("current_step") or {}
+        action = current.get("action")
+        if action in {"llm_scratchpad", "llm_research", "llm_reflect", "llm_final_report", "run_python"}:
+            return True
+        return False
 
     def _build_llm_plan(self, state: dict) -> list[dict]:
         prompt = (
@@ -370,11 +412,13 @@ class AgentGraph:
             f"Доступные внешние MCP серверы:\n{mcp_hint}\n"
             f"Доступные MCP инструменты:\n{mcp_tools_hint}\n"
             f"Scratchpad:\n{scratchpad}\n\n"
-            "Выполни этот шаг как автономный исследователь. "
-            "Сформируй содержательный Markdown-результат на русском: факты, выводы, риски, следующие действия. "
-            "Если нужен инструмент, добавь отдельную строку MCP_CALL_JSON: "
-            "{\"server_name\":\"__internal__\",\"tool_name\":\"fetch_url\",\"arguments\":{\"url\":\"https://example.com\"}}. "
-            "После вызова инструмента среда добавит результат к артефакту. "
+            "Выполни этот шаг автономно и результативно. Не ограничивайся подготовкой среды. "
+            "Если задача требует код, таблицу, JSON, CSV, отчет или иной файл — создай файл через MCP_CALL_JSON с __internal__.write_file. "
+            "Если нужно проверить код/вычисления — вызови __internal__.run_python. Если нужны внешние данные — вызови fetch или внешний MCP. "
+            "Сформируй содержательный Markdown-результат на русском: что сделал, какие файлы создал, что проверил, какие следующие действия. "
+            "Формат инструментального вызова: отдельная строка MCP_CALL_JSON: "
+            "{\"server_name\":\"__internal__\",\"tool_name\":\"write_file\",\"arguments\":{\"path\":\"artifacts/result.md\",\"content\":\"...\"}}. "
+            "Можно сделать до 3 MCP_CALL_JSON строк. После вызова инструмента среда добавит результат к артефакту. "
             "Если это финальный отчет — сделай структурированный отчет с разделами и чек-листом проверки."
         )
         result = self.llm.complete_sync([{ "role": "system", "content": SYSTEM_PROMPT }, {"role": "user", "content": prompt}])
@@ -387,7 +431,10 @@ class AgentGraph:
         tool_config = self._merged_tool_config(state)
         if not tool_config.get("mcp"): 
             return content
-        matches = re.findall(r"MCP_CALL_JSON:\s*(\{.*?\})(?:\n|$)", content, flags=re.DOTALL)
+        matches = []
+        for line in content.splitlines():
+            if "MCP_CALL_JSON:" in line:
+                matches.append(line.split("MCP_CALL_JSON:", 1)[1].strip())
         if not matches:
             return content
         additions = []

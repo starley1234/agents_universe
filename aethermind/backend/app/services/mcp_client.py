@@ -14,6 +14,9 @@ from app.tools.code_interpreter import CodeInterpreter
 INTERNAL_SERVER_NAME = "__internal__"
 INTERNAL_FETCH_TOOL = "fetch_url"
 INTERNAL_PYTHON_TOOL = "run_python"
+INTERNAL_WRITE_FILE_TOOL = "write_file"
+INTERNAL_READ_FILE_TOOL = "read_file"
+INTERNAL_LIST_DIR_TOOL = "list_dir"
 
 
 @dataclass
@@ -82,6 +85,36 @@ def _internal_tools() -> list[dict[str, Any]]:
             "status": "ok",
             "internal": True,
         },
+        {
+            "server_name": INTERNAL_SERVER_NAME,
+            "server_url": "builtin://filesystem",
+            "name": INTERNAL_WRITE_FILE_TOOL,
+            "title": "Записать файл в workspace",
+            "description": "Создает или перезаписывает файл в workspace задачи. Используй для кода, отчетов, CSV/JSON и других deliverables.",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
+            "status": "ok",
+            "internal": True,
+        },
+        {
+            "server_name": INTERNAL_SERVER_NAME,
+            "server_url": "builtin://filesystem",
+            "name": INTERNAL_READ_FILE_TOOL,
+            "title": "Прочитать файл из workspace",
+            "description": "Читает текстовый файл из workspace задачи.",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            "status": "ok",
+            "internal": True,
+        },
+        {
+            "server_name": INTERNAL_SERVER_NAME,
+            "server_url": "builtin://filesystem",
+            "name": INTERNAL_LIST_DIR_TOOL,
+            "title": "Список файлов workspace",
+            "description": "Показывает файлы и директории внутри workspace задачи.",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string", "default": "."}}, "required": []},
+            "status": "ok",
+            "internal": True,
+        },
     ]
 
 
@@ -134,6 +167,8 @@ async def call_mcp_tool(
             return await _call_internal_fetch(arguments)
         if tool_name == INTERNAL_PYTHON_TOOL:
             return await _call_internal_python(arguments, workspace_path=workspace_path)
+        if tool_name in {INTERNAL_WRITE_FILE_TOOL, INTERNAL_READ_FILE_TOOL, INTERNAL_LIST_DIR_TOOL}:
+            return await _call_internal_filesystem(tool_name, arguments, workspace_path=workspace_path)
         raise MCPClientError(f"Неизвестный внутренний инструмент: {tool_name}")
 
     mcp_server = MCPServer(**server)
@@ -345,4 +380,41 @@ async def _call_internal_python(arguments: dict[str, Any], workspace_path: str |
                 "json": result,
             }
         ],
+    }
+
+
+def _safe_workspace_path(workspace_path: str | None, relative: str) -> Path:
+    workspace = Path(workspace_path or "/tmp/aethermind-mcp-workspace").resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = (workspace / str(relative or ".")).resolve()
+    if not str(target).startswith(str(workspace)):
+        raise MCPClientError("Путь выходит за пределы workspace задачи")
+    return target
+
+
+async def _call_internal_filesystem(tool_name: str, arguments: dict[str, Any], workspace_path: str | None = None) -> dict[str, Any]:
+    rel = str(arguments.get("path") or ".")
+    target = _safe_workspace_path(workspace_path, rel)
+    if tool_name == INTERNAL_WRITE_FILE_TOOL:
+        content = str(arguments.get("content") or "")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        payload = {"path": rel, "bytes": len(content.encode("utf-8")), "created": True}
+    elif tool_name == INTERNAL_READ_FILE_TOOL:
+        if not target.exists() or not target.is_file():
+            raise MCPClientError(f"Файл не найден: {rel}")
+        payload = {"path": rel, "content": target.read_text(encoding="utf-8", errors="replace")}
+    elif tool_name == INTERNAL_LIST_DIR_TOOL:
+        if not target.exists() or not target.is_dir():
+            raise MCPClientError(f"Директория не найдена: {rel}")
+        payload = {"path": rel, "entries": [p.name + ("/" if p.is_dir() else "") for p in sorted(target.iterdir())]}
+    else:
+        raise MCPClientError(f"Неизвестный filesystem инструмент: {tool_name}")
+    return {
+        "server_name": INTERNAL_SERVER_NAME,
+        "server_url": "builtin://filesystem",
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "is_error": False,
+        "content": [{"type": "json", "json": payload}],
     }

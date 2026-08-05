@@ -1,7 +1,10 @@
 from app.services.mcp_client import (
     INTERNAL_FETCH_TOOL,
+    INTERNAL_LIST_DIR_TOOL,
     INTERNAL_PYTHON_TOOL,
+    INTERNAL_READ_FILE_TOOL,
     INTERNAL_SERVER_NAME,
+    INTERNAL_WRITE_FILE_TOOL,
     _url_candidates,
     call_mcp_tool_sync,
     list_mcp_tools_sync,
@@ -12,6 +15,9 @@ def test_internal_mcp_tools_are_discoverable():
     tools = list_mcp_tools_sync([], include_internal=True)
     assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_FETCH_TOOL for tool in tools)
     assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_PYTHON_TOOL for tool in tools)
+    assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_WRITE_FILE_TOOL for tool in tools)
+    assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_READ_FILE_TOOL for tool in tools)
+    assert any(tool["server_name"] == INTERNAL_SERVER_NAME and tool["name"] == INTERNAL_LIST_DIR_TOOL for tool in tools)
 
 
 def test_internal_python_tool_runs(tmp_path):
@@ -29,3 +35,13 @@ def test_mcp_url_candidates_rewrite_localhost_for_docker():
     candidates = _url_candidates("http://localhost:8090/sse/group/files")
     assert "http://host.docker.internal:8090/sse/group/files" in candidates
     assert "http://host.docker.internal:8090/mcp/group/files" in candidates
+
+
+def test_internal_filesystem_tools(tmp_path):
+    server = {"name": INTERNAL_SERVER_NAME, "url": "builtin://filesystem", "enabled": True}
+    write = call_mcp_tool_sync(server, INTERNAL_WRITE_FILE_TOOL, {"path": "artifacts/demo.txt", "content": "hello"}, workspace_path=str(tmp_path))
+    assert write["is_error"] is False
+    read = call_mcp_tool_sync(server, INTERNAL_READ_FILE_TOOL, {"path": "artifacts/demo.txt"}, workspace_path=str(tmp_path))
+    assert read["content"][0]["json"]["content"] == "hello"
+    listing = call_mcp_tool_sync(server, INTERNAL_LIST_DIR_TOOL, {"path": "artifacts"}, workspace_path=str(tmp_path))
+    assert "demo.txt" in listing["content"][0]["json"]["entries"]

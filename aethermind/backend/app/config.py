@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     openrouter_default_model: str = "google/gemini-2.0-flash-lite:preview"
     embedding_dimensions: int = 1024
     summary_every_iterations: int = 5
-    low_confidence_threshold: float = 0.5
-    low_confidence_streak_limit: int = 3
+    low_confidence_threshold: float = 0.35
+    low_confidence_streak_limit: int = 6
     default_max_iterations: int = 25
     default_token_budget: int = 100000
     default_cost_budget_usd: float = 25
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     planner_min_steps: int = 8
     mcp_search_url: str = ""
     mcp_agent_toolkit: str = ""
-    auto_recovery_attempts: int = 2
+    auto_recovery_attempts: int = 5
 
 @lru_cache
 def get_settings() -> Settings:
