@@ -44,6 +44,11 @@
 - [x] UI/API удаления задач.
 - [x] UI/API редактирования цели, budget JSON и state JSON задачи.
 - [x] Сохранение выбранной темы день/ночь в localStorage/cookie.
+- [x] Автосинхронизация workspace-файлов в artifacts.
+- [x] Последние trace events и artifacts сверху.
+- [x] Просмотр артефактов Markdown/HTML с указанием открытого файла.
+- [x] Прикрепление изображений к контексту задачи.
+- [x] MCP discovery fallback: SSE + Streamable HTTP endpoint candidates.
 - [x] Агент получает discovered MCP tools в prompt и может запросить MCP вызов через `MCP_CALL_JSON`.
 - [x] Валидация MCP name/url на frontend и backend.
 - [x] Укрепленный responsive UI без горизонтального разъезда при длинном плане/JSON/URL.

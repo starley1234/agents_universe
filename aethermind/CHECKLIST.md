@@ -43,6 +43,11 @@
 - [x] UI/API редактирования цели, budget JSON и state JSON задачи.
 - [x] Сохранение выбранной темы день/ночь в localStorage/cookie.
 - [x] Сохранение MCP результатов как artifacts.
+- [x] Автосинхронизация workspace-файлов в artifacts.
+- [x] Последние trace events и artifacts сверху.
+- [x] Просмотр артефактов Markdown/HTML с указанием открытого файла.
+- [x] Прикрепление изображений к контексту задачи.
+- [x] MCP discovery fallback: SSE + Streamable HTTP endpoint candidates.
 - [x] Frontend/backend validation для MCP name/url.
 - [x] Надежное polling-обновление Live Trace; backend SSE endpoint сохранен.
 - [x] Responsive UI hardening без горизонтального разъезда.

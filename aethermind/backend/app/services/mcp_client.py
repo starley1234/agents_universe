@@ -108,18 +108,8 @@ async def list_mcp_tools(servers: list[dict[str, Any]], include_internal: bool =
             continue
         if server.name == INTERNAL_SERVER_NAME:
             continue
-        if server.transport != "sse":
-            result.append(
-                {
-                    "server_name": server.name,
-                    "server_url": server.url,
-                    "status": "error",
-                    "error": f"Транспорт {server.transport!r} пока не поддержан. Поддерживается sse.",
-                }
-            )
-            continue
         try:
-            result.extend(await _list_sse_tools(server))
+            result.extend(await _list_tools_auto(server))
         except Exception as exc:  # noqa: BLE001 - нужно вернуть ошибку по серверу, не роняя весь UI
             result.append(
                 {
@@ -148,9 +138,47 @@ async def call_mcp_tool(
     mcp_server = MCPServer(**server)
     if not mcp_server.enabled:
         raise MCPClientError(f"MCP сервер выключен: {mcp_server.name}")
-    if mcp_server.transport != "sse":
-        raise MCPClientError(f"Транспорт {mcp_server.transport!r} пока не поддержан. Поддерживается sse.")
-    return await _call_sse_tool(mcp_server, tool_name, arguments)
+    return await _call_tool_auto(mcp_server, tool_name, arguments)
+
+
+def _url_candidates(url: str) -> list[str]:
+    candidates = [url]
+    if url.rstrip('/').endswith('/sse'):
+        base = url.rstrip('/')[:-4]
+        candidates.extend([base, f"{base}/mcp"])
+    elif not url.rstrip('/').endswith('/mcp'):
+        candidates.append(f"{url.rstrip('/')}/mcp")
+    return list(dict.fromkeys(candidates))
+
+
+async def _list_tools_auto(server: MCPServer) -> list[dict[str, Any]]:
+    errors: list[str] = []
+    transports = [server.transport] if server.transport in {"sse", "streamable_http"} else ["sse", "streamable_http"]
+    if server.transport == "sse":
+        transports.append("streamable_http")
+    for transport in dict.fromkeys(transports):
+        for url in _url_candidates(server.url):
+            trial = MCPServer(server.name, url, transport, server.enabled)
+            try:
+                return await (_list_sse_tools(trial) if transport == "sse" else _list_streamable_tools(trial))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{transport} {url}: {exc}")
+    raise MCPClientError("; ".join(errors[-4:]))
+
+
+async def _call_tool_auto(server: MCPServer, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    transports = [server.transport] if server.transport in {"sse", "streamable_http"} else ["sse", "streamable_http"]
+    if server.transport == "sse":
+        transports.append("streamable_http")
+    for transport in dict.fromkeys(transports):
+        for url in _url_candidates(server.url):
+            trial = MCPServer(server.name, url, transport, server.enabled)
+            try:
+                return await (_call_sse_tool(trial, tool_name, arguments) if transport == "sse" else _call_streamable_tool(trial, tool_name, arguments))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{transport} {url}: {exc}")
+    raise MCPClientError("; ".join(errors[-4:]))
 
 
 async def _list_sse_tools(server: MCPServer) -> list[dict[str, Any]]:
@@ -164,21 +192,7 @@ async def _list_sse_tools(server: MCPServer) -> list[dict[str, Any]]:
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             response = await session.list_tools()
-            tools = []
-            for tool in response.tools:
-                tools.append(
-                    {
-                        "server_name": server.name,
-                        "server_url": server.url,
-                        "name": tool.name,
-                        "title": getattr(tool, "title", None) or tool.name,
-                        "description": getattr(tool, "description", None) or "",
-                        "input_schema": _jsonable(getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None) or {}),
-                        "status": "ok",
-                        "internal": False,
-                    }
-                )
-            return tools
+            return [_tool_description(server, tool) for tool in response.tools]
 
 
 async def _call_sse_tool(server: MCPServer, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -192,14 +206,60 @@ async def _call_sse_tool(server: MCPServer, tool_name: str, arguments: dict[str,
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             response = await session.call_tool(tool_name, arguments=arguments)
-            return {
-                "server_name": server.name,
-                "server_url": server.url,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "is_error": bool(getattr(response, "isError", False) or getattr(response, "is_error", False)),
-                "content": _content_to_jsonable(getattr(response, "content", [])),
-            }
+            return _tool_call_response(server, tool_name, arguments, response)
+
+
+async def _list_streamable_tools(server: MCPServer) -> list[dict[str, Any]]:
+    try:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+    except ImportError as exc:
+        raise MCPClientError("Python пакет `mcp` не поддерживает streamable_http. Пересоберите образ: docker compose up --build") from exc
+
+    async with streamable_http_client(server.url) as (read_stream, write_stream, *_):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            response = await session.list_tools()
+            return [_tool_description(server, tool) for tool in response.tools]
+
+
+async def _call_streamable_tool(server: MCPServer, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+    except ImportError as exc:
+        raise MCPClientError("Python пакет `mcp` не поддерживает streamable_http. Пересоберите образ: docker compose up --build") from exc
+
+    async with streamable_http_client(server.url) as (read_stream, write_stream, *_):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            response = await session.call_tool(tool_name, arguments=arguments)
+            return _tool_call_response(server, tool_name, arguments, response)
+
+
+def _tool_description(server: MCPServer, tool: Any) -> dict[str, Any]:
+    return {
+        "server_name": server.name,
+        "server_url": server.url,
+        "name": tool.name,
+        "title": getattr(tool, "title", None) or tool.name,
+        "description": getattr(tool, "description", None) or "",
+        "input_schema": _jsonable(getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None) or {}),
+        "status": "ok",
+        "internal": False,
+        "transport": server.transport,
+    }
+
+
+def _tool_call_response(server: MCPServer, tool_name: str, arguments: dict[str, Any], response: Any) -> dict[str, Any]:
+    return {
+        "server_name": server.name,
+        "server_url": server.url,
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "is_error": bool(getattr(response, "isError", False) or getattr(response, "is_error", False)),
+        "content": _content_to_jsonable(getattr(response, "content", [])),
+    }
 
 
 async def _call_internal_fetch(arguments: dict[str, Any]) -> dict[str, Any]:

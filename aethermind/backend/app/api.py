@@ -3,7 +3,7 @@ import json
 import mimetypes
 from pathlib import Path
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -202,13 +202,64 @@ def get_events(task_id: UUID, db: Session = Depends(get_db)):
 def get_snapshots(task_id: UUID, db: Session = Depends(get_db)):
     return db.execute(select(TaskSnapshot).where(TaskSnapshot.task_id == task_id).order_by(TaskSnapshot.iteration)).scalars().all()
 
+def sync_workspace_artifacts(db: Session, task: Task) -> None:
+    workspace = Path(task.workspace_path)
+    if not workspace.exists():
+        return
+    existing = {row.path for row in db.execute(select(Artifact).where(Artifact.task_id == task.id)).scalars().all()}
+    for path in workspace.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = str(path.relative_to(workspace))
+        if rel == "scratchpad.md" or rel.startswith("logs/"):
+            kind = "log" if rel.startswith("logs/") else "scratchpad"
+        elif rel.startswith("code/") or path.suffix in {".py", ".js", ".ts", ".tsx"}:
+            kind = "code"
+        elif rel.startswith("data/") or path.suffix in {".json", ".csv", ".xlsx"}:
+            kind = "data"
+        elif rel.startswith("artifacts/"):
+            kind = "artifact"
+        else:
+            kind = "file"
+        if rel not in existing:
+            db.add(Artifact(task_id=task.id, path=rel, kind=kind, metadata_json={"synced": True, "size": path.stat().st_size}))
+            existing.add(rel)
+    db.flush()
+
 @router.get("/tasks/{task_id}/artifacts")
 def get_artifacts(task_id: UUID, db: Session = Depends(get_db)):
-    artifacts = db.execute(select(Artifact).where(Artifact.task_id == task_id).order_by(Artifact.created_at)).scalars().all()
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    sync_workspace_artifacts(db, task)
+    db.commit()
+    artifacts = db.execute(select(Artifact).where(Artifact.task_id == task_id).order_by(desc(Artifact.created_at))).scalars().all()
     return [
         {"id": str(a.id), "task_id": str(a.task_id), "path": a.path, "kind": a.kind, "metadata_json": a.metadata_json, "created_at": a.created_at.isoformat()}
         for a in artifacts
     ]
+
+@router.post("/tasks/{task_id}/attachments")
+async def upload_attachment(task_id: UUID, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "Сейчас поддерживаются только изображения")
+    workspace = Path(task.workspace_path)
+    safe_name = Path(file.filename or "image").name.replace("/", "_")
+    target_rel = f"attachments/{safe_name}"
+    target = safe_path(workspace, target_rel)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(await file.read())
+    artifact = Artifact(task_id=task.id, path=target_rel, kind="image", metadata_json={"content_type": file.content_type, "attached_to_context": True})
+    db.add(artifact)
+    state = dict(task.current_state_json or {})
+    state.setdefault("attachments", []).append({"path": target_rel, "content_type": file.content_type, "filename": safe_name})
+    task.current_state_json = state
+    add_event(db, task.id, "attachment", {"message": f"Изображение прикреплено к контексту: {safe_name}", "path": target_rel})
+    db.commit(); db.refresh(artifact)
+    return {"id": str(artifact.id), "path": artifact.path, "kind": artifact.kind}
 
 @router.get("/tasks/{task_id}/tools", response_model=ToolConfig)
 def get_tools(task_id: UUID, db: Session = Depends(get_db)):

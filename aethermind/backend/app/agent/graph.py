@@ -122,6 +122,10 @@ class AgentGraph:
                 "print('Проверка sandbox: OK')\n"
                 "print('Рабочая директория:', Path.cwd())\n"
             )
+            report_path = f"artifacts/python_run_iteration_{state.get('iteration', 0) + 1}.json"
+            self.fs.write_file(report_path, json.dumps(result, ensure_ascii=False, indent=2))
+            self._remember_artifact(state, report_path, "code_result")
+            self._remember_artifact(state, "code/run.py", "code")
         else:
             if not self._tool_enabled(state, "filesystem"):
                 state["awaiting_user"] = True
@@ -308,11 +312,16 @@ class AgentGraph:
             except Exception as exc:  # noqa: BLE001
                 mcp_tools_hint = f"Ошибка discovery MCP tools: {exc}"
         mcp_hint = "\n".join(f"- {server.get('name')}: {server.get('url')} ({server.get('transport', 'sse')})" for server in mcp_servers) or "нет подключенных внешних MCP серверов"
+        attachments_hint = "\n".join(
+            f"- {item.get('path')} ({item.get('content_type', 'image')})"
+            for item in state.get("attachments", [])
+        ) or "нет прикрепленных изображений"
         prompt = (
             f"Цель: {state.get('goal')}\n"
             f"Итерация: {state.get('iteration', 0) + 1}\n"
             f"Шаг: {step.get('title')}\n"
             f"Executive summary: {state.get('executive_summary', 'пока отсутствует')}\n"
+            f"Прикрепленные изображения в workspace:\n{attachments_hint}\n"
             f"Доступные внешние MCP серверы:\n{mcp_hint}\n"
             f"Доступные MCP инструменты:\n{mcp_tools_hint}\n"
             f"Scratchpad:\n{scratchpad}\n\n"

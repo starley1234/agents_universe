@@ -122,6 +122,22 @@ function missingRequiredArgs(schema: any, args: any): string[] {
   return required.filter((key) => args?.[key] === undefined || args?.[key] === '')
 }
 
+function escapeHtml(value: string) {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+function markdownToHtml(markdown: string) {
+  const escaped = escapeHtml(markdown)
+  return escaped
+    .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+    .replace(/^### (.*)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.*)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.*)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^- (.*)$/gm, '<li>$1</li>')
+    .replace(/\n/g, '<br />')
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -165,6 +181,8 @@ export default function Home() {
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [artifactContent, setArtifactContent] = useState<ArtifactContent | null>(null)
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null)
+  const [artifactViewMode, setArtifactViewMode] = useState<'markdown' | 'html'>('markdown')
   const [tools, setTools] = useState<ToolConfig>(DEFAULT_TOOLS)
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [mcpTools, setMcpTools] = useState<MCPTool[]>([])
@@ -222,8 +240,8 @@ export default function Home() {
       apiFetch<MCPToolsResponse>(`/api/tasks/${id}/mcp/tools`).catch(() => ({ enabled: false, tools: [] })),
     ])
     setSelected(task)
-    setEvents(taskEvents)
-    setArtifacts(taskArtifacts)
+      setEvents([...taskEvents].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)))
+      setArtifacts([...taskArtifacts].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)))
     setTools({ ...DEFAULT_TOOLS, ...taskTools, mcp_servers: taskTools.mcp_servers || [] })
     setSnapshots(taskSnapshots)
     setMcpTools(taskMcpTools.tools || [])
@@ -397,9 +415,27 @@ export default function Home() {
     setBusyAction(`artifact:${artifact.id}`)
     try {
       const content = await apiFetch<ArtifactContent>(`/api/tasks/${selected.id}/artifacts/${artifact.id}/content`)
+      setSelectedArtifact(artifact)
       setArtifactContent(content)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось открыть артефакт')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  async function uploadImageAttachment(file: File) {
+    if (!selected) return
+    setBusyAction('upload_image')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await fetch(`${API_BASE}/api/tasks/${selected.id}/attachments`, { method: 'POST', body: form })
+      if (!response.ok) throw new Error(await response.text())
+      setNotice(`Изображение прикреплено к контексту: ${file.name}`)
+      await refreshSelected(selected.id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось прикрепить изображение')
     } finally {
       setBusyAction(null)
     }
@@ -571,7 +607,7 @@ export default function Home() {
           <TasksPanel tasks={tasks} selected={selected} theme={theme} busyAction={busyAction} onSelect={(task) => { setSelected(task); setArtifactContent(null) }} onDelete={deleteTask} />
           <section className="grid min-w-0 content-start gap-6">
             <StrategyPanel plan={plan} theme={theme} />
-            <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} />
+            <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selectedArtifact={selectedArtifact} artifactViewMode={artifactViewMode} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} onViewModeChange={setArtifactViewMode} onUploadImage={uploadImageAttachment} />
             <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} goalDraft={goalDraft} budgetDraft={budgetDraft} stateDraft={stateDraft} busyAction={busyAction} setGoalDraft={setGoalDraft} setBudgetDraft={setBudgetDraft} setStateDraft={setStateDraft} onSave={saveTaskSettings} />
           </section>
           <aside className="grid min-w-0 content-start gap-6">
@@ -651,19 +687,48 @@ function StrategyPanel({ plan, theme }: { plan: any[]; theme: Theme }) {
   )
 }
 
-function ArtifactsPanel({ artifacts, artifactContent, selected, theme, busyAction, onView }: { artifacts: Artifact[]; artifactContent: ArtifactContent | null; selected: Task | null; theme: Theme; busyAction: string | null; onView: (artifact: Artifact) => void }) {
+function ArtifactsPanel({
+  artifacts,
+  artifactContent,
+  selectedArtifact,
+  artifactViewMode,
+  selected,
+  theme,
+  busyAction,
+  onView,
+  onViewModeChange,
+  onUploadImage,
+}: {
+  artifacts: Artifact[]
+  artifactContent: ArtifactContent | null
+  selectedArtifact: Artifact | null
+  artifactViewMode: 'markdown' | 'html'
+  selected: Task | null
+  theme: Theme
+  busyAction: string | null
+  onView: (artifact: Artifact) => void
+  onViewModeChange: (mode: 'markdown' | 'html') => void
+  onUploadImage: (file: File) => void
+}) {
+  const html = artifactContent?.content ? markdownToHtml(artifactContent.content) : ''
   return (
     <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
-      <div className="mb-4 flex items-center justify-between gap-2">
-        <h2 className="font-semibold">Артефакты</h2>
-        <span className={`shrink-0 text-xs ${theme.text}`}>{artifacts.length} файлов</span>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-semibold">Артефакты</h2>
+          <div className={`text-xs ${theme.text}`}>Последние файлы сверху · {artifacts.length} всего</div>
+        </div>
+        <label className="cursor-pointer rounded-lg bg-sky-400/20 px-3 py-2 text-xs text-sky-500">
+          📎 Прикрепить изображение
+          <input type="file" accept="image/*" className="hidden" disabled={!selected || busyAction === 'upload_image'} onChange={(event) => { const file = event.target.files?.[0]; if (file) onUploadImage(file); event.currentTarget.value = '' }} />
+        </label>
       </div>
-      <div className="grid min-w-0 gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="max-h-72 min-w-0 space-y-2 overflow-auto pr-1">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-[300px_minmax(0,1fr)]">
+        <div className="max-h-[30rem] min-w-0 space-y-2 overflow-auto pr-1">
           {artifacts.map((artifact) => (
-            <div key={artifact.id} className={`min-w-0 rounded-xl border p-3 text-sm ${theme.soft}`}>
+            <div key={artifact.id} className={`min-w-0 rounded-xl border p-3 text-sm ${selectedArtifact?.id === artifact.id ? 'border-sky-400 bg-sky-400/10' : theme.soft}`}>
               <div className="truncate font-medium" title={artifact.path}>{artifact.path}</div>
-              <div className="mb-2 text-xs opacity-70">{artifact.kind}</div>
+              <div className="mb-2 text-xs opacity-70">{artifact.kind} · {new Date(artifact.created_at).toLocaleString()}</div>
               <div className="flex flex-wrap gap-2">
                 <button disabled={busyAction === `artifact:${artifact.id}`} onClick={() => onView(artifact)} className="rounded-lg bg-sky-400/20 px-3 py-1 text-sky-500 disabled:opacity-50">Просмотр</button>
                 {selected && <a href={`${API_BASE}/api/tasks/${selected.id}/artifacts/${artifact.id}/download`} className="rounded-lg bg-emerald-400/20 px-3 py-1 text-emerald-500">Скачать</a>}
@@ -672,8 +737,23 @@ function ArtifactsPanel({ artifacts, artifactContent, selected, theme, busyActio
           ))}
           {!artifacts.length && <div className={`text-sm ${theme.text}`}>Артефактов пока нет.</div>}
         </div>
-        <div className={`min-h-64 min-w-0 overflow-auto rounded-xl border p-4 text-sm ${theme.code}`}>
-          {artifactContent ? artifactContent.binary ? <div>{artifactContent.message}</div> : <pre className="max-w-full whitespace-pre-wrap break-words">{artifactContent.content}</pre> : <div className={theme.text}>Выберите артефакт для просмотра.</div>}
+        <div className="min-w-0">
+          <div className={`mb-2 rounded-xl border p-3 text-xs ${theme.soft}`}>
+            {selectedArtifact ? <span>Открыт: <strong>{selectedArtifact.path}</strong></span> : 'Выберите артефакт для просмотра.'}
+            <div className="mt-2 flex gap-2">
+              <button onClick={() => onViewModeChange('markdown')} className={`rounded-lg px-2 py-1 ${artifactViewMode === 'markdown' ? 'bg-sky-400 text-slate-950' : 'bg-sky-400/10 text-sky-500'}`}>Markdown</button>
+              <button onClick={() => onViewModeChange('html')} className={`rounded-lg px-2 py-1 ${artifactViewMode === 'html' ? 'bg-sky-400 text-slate-950' : 'bg-sky-400/10 text-sky-500'}`}>HTML</button>
+            </div>
+          </div>
+          <div className={`min-h-80 min-w-0 overflow-auto rounded-xl border p-4 text-sm ${theme.code}`}>
+            {artifactContent ? artifactContent.binary ? (
+              <div>{artifactContent.message}</div>
+            ) : artifactViewMode === 'html' ? (
+              <div className="prose prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: html }} />
+            ) : (
+              <pre className="max-w-full whitespace-pre-wrap break-words">{artifactContent.content}</pre>
+            ) : <div className={theme.text}>Выберите артефакт для просмотра.</div>}
+          </div>
         </div>
       </div>
     </div>
