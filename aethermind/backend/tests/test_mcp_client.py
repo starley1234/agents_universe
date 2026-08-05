@@ -111,3 +111,25 @@ def test_mcp_argument_normalization_reports_missing_required():
         assert "отсутствуют обязательные поля" in str(exc)
     else:
         raise AssertionError("Expected MCPClientError")
+
+
+def test_openscad_render_alias_prefers_schema_tool():
+    from app.services.mcp_client import _choose_tool_name
+
+    tools = [
+        {"name": "render"},
+        {"name": "render_2d_png"},
+        {"name": "generate_and_analyze"},
+    ]
+    assert _choose_tool_name("render", tools, "openscad") == "render_2d_png"
+
+
+def test_synthetic_schema_repairs_render_path_to_code(tmp_path):
+    from app.services.mcp_client import _coerce_arguments_for_schema, _synthetic_schema_for_tool
+
+    scad = tmp_path / "code" / "model.scad"
+    scad.parent.mkdir()
+    scad.write_text("sphere(5);", encoding="utf-8")
+    args = _coerce_arguments_for_schema(_synthetic_schema_for_tool("render"), {"path": "code/model.scad"}, str(tmp_path), "openscad.render")
+    assert args["code"] == "sphere(5);"
+    assert args["quality"] == "low"

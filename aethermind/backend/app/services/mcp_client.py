@@ -232,7 +232,7 @@ async def call_mcp_tool(
     mcp_server = MCPServer(**server)
     if not mcp_server.enabled:
         raise MCPClientError(f"MCP сервер выключен: {mcp_server.name}")
-    arguments = await _normalize_external_arguments(mcp_server, tool_name, arguments, workspace_path)
+    tool_name, arguments = await _normalize_external_tool_call(mcp_server, tool_name, arguments, workspace_path)
     return await _call_tool_auto(mcp_server, tool_name, arguments)
 
 
@@ -250,25 +250,65 @@ def _normalize_internal_arguments(tool_name: str, arguments: dict[str, Any], wor
     return _coerce_arguments_for_schema(schema, arguments or {}, workspace_path, tool_name)
 
 
-async def _normalize_external_arguments(
+async def _normalize_external_tool_call(
     server: MCPServer,
-    tool_name: str,
+    requested_tool_name: str,
     arguments: dict[str, Any],
     workspace_path: str | None,
-) -> dict[str, Any]:
+) -> tuple[str, dict[str, Any]]:
     args = dict(arguments or {})
+    tools: list[dict[str, Any]] = []
     try:
         tools = await _list_tools_auto(server)
-        tool = next((item for item in tools if item.get("name") == tool_name), None)
-        if not tool:
-            return args
-        schema = tool.get("input_schema") or {}
-        return _coerce_arguments_for_schema(schema, args, workspace_path, f"{server.name}.{tool_name}")
-    except MCPClientError:
-        raise
     except Exception:
-        # If discovery is flaky but direct call might work, do not block solely on normalization.
-        return args
+        # If discovery is flaky but direct call might work, still apply generic CAD/code repair.
+        return requested_tool_name, _coerce_arguments_for_schema(
+            _synthetic_schema_for_tool(requested_tool_name), args, workspace_path, f"{server.name}.{requested_tool_name}"
+        )
+
+    tool_name = _choose_tool_name(requested_tool_name, tools, server.name)
+    tool = next((item for item in tools if item.get("name") == tool_name), None)
+    schema = (tool or {}).get("input_schema") or _synthetic_schema_for_tool(tool_name)
+    return tool_name, _coerce_arguments_for_schema(schema, args, workspace_path, f"{server.name}.{tool_name}")
+
+
+def _choose_tool_name(requested_tool_name: str, tools: list[dict[str, Any]], server_name: str = "") -> str:
+    names = [str(tool.get("name")) for tool in tools if tool.get("name")]
+    if requested_tool_name in names and not _should_prefer_openscad_render_alias(requested_tool_name, names, server_name):
+        return requested_tool_name
+
+    lower_server = server_name.lower()
+    lower_requested = requested_tool_name.lower()
+    if "openscad" in lower_server or "scad" in lower_requested or lower_requested == "render":
+        for candidate in ["render_2d_png", "generate_and_analyze", "render_png", "render"]:
+            if candidate in names:
+                return candidate
+        for name in names:
+            if "render" in name or "analyze" in name:
+                return name
+    return requested_tool_name
+
+
+def _should_prefer_openscad_render_alias(requested_tool_name: str, names: list[str], server_name: str) -> bool:
+    if requested_tool_name != "render":
+        return False
+    if "openscad" not in server_name.lower() and "scad" not in server_name.lower():
+        return False
+    return any(name in names for name in ["render_2d_png", "generate_and_analyze", "render_png"])
+
+
+def _synthetic_schema_for_tool(tool_name: str) -> dict[str, Any]:
+    lower = tool_name.lower()
+    if "render" in lower or "openscad" in lower or "scad" in lower or "analyze" in lower:
+        return {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string"},
+                "quality": {"type": "string", "enum": ["low", "medium", "high"], "default": "low"},
+            },
+            "required": ["code"],
+        }
+    return {"type": "object", "properties": {}, "required": []}
 
 
 def _coerce_arguments_for_schema(
