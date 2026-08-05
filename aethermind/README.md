@@ -156,6 +156,7 @@ UI дополнительно поддерживает:
 - optional native LangGraph facade в `app/agent/langgraph_runtime.py` поверх тех же node-функций, при этом durable checkpoints остаются в PostgreSQL snapshots;
 - LLM healthcheck в UI/API: `GET /api/llm/test`;
 - MCP diagnostics в UI/API: `GET /api/tasks/{task_id}/mcp/diagnostics`, чтобы видеть все transport/url attempts;
+- Agent-toolkit/meta MCP support: серверы с `find_tools`/`call_tool` автоматически раскрывают скрытые инструменты под задачу; прямой вызов найденного virtual tool оборачивается в `call_tool` по его schema;
 - workspace audit на Python-шаге: проверяет созданные файлы и CSV, сохраняет `artifacts/workspace_audit.json`;
 - Memory retrieval: embeddings, автоматическая индексация observations/reflections/artifacts, retrieval перед каждой итерацией, UI поиска/ручного добавления памяти;
 - Q&A с агентом во время выполнения или после завершения: `POST /api/tasks/{task_id}/ask`, UI-блок **Спросить агента**, история вопросов в state;

@@ -144,6 +144,10 @@ def diagnose_mcp_servers_sync(servers: list[dict[str, Any]]) -> list[dict[str, A
     return asyncio.run(diagnose_mcp_servers(servers))
 
 
+def find_relevant_mcp_tools_sync(servers: list[dict[str, Any]], query: str, limit: int = 20) -> list[dict[str, Any]]:
+    return asyncio.run(find_relevant_mcp_tools(servers, query=query, limit=limit))
+
+
 def call_mcp_tool_sync(
     server: dict[str, Any],
     tool_name: str,
@@ -176,6 +180,40 @@ async def list_mcp_tools(servers: list[dict[str, Any]], include_internal: bool =
                 }
             )
     return result
+
+
+async def find_relevant_mcp_tools(servers: list[dict[str, Any]], query: str, limit: int = 20) -> list[dict[str, Any]]:
+    """Discover hidden tools behind meta MCP servers like agent-toolkit.
+
+    Some MCP servers expose only find_tools/call_tool/list_groups. This helper
+    calls find_tools with the task description and normalizes its response into
+    tool descriptions that can be shown to the agent/UI.
+    """
+    discovered: list[dict[str, Any]] = []
+    for raw in servers:
+        server = MCPServer(**raw)
+        if not server.enabled:
+            continue
+        try:
+            visible_tools = await _list_tools_auto(server)
+        except Exception:
+            continue
+        find_tool = next((tool for tool in visible_tools if _short_tool_name(tool.get("name")) == "find_tools"), None)
+        if not find_tool:
+            continue
+        try:
+            args = _arguments_for_intent(find_tool.get("input_schema") or {}, query=query, limit=limit)
+            response = await _call_tool_auto(server, find_tool["name"], args)
+            for tool in _extract_tool_descriptions_from_result(response, server):
+                tool["status"] = "ok"
+                tool["server_name"] = server.name
+                tool["server_url"] = server.url
+                tool["virtual"] = True
+                tool["via_tool"] = "call_tool"
+                discovered.append(tool)
+        except Exception as exc:  # noqa: BLE001
+            discovered.append({"server_name": server.name, "server_url": server.url, "status": "error", "virtual": True, "error": _format_exception(exc)})
+    return discovered[:limit]
 
 
 async def diagnose_mcp_servers(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -257,7 +295,6 @@ async def _normalize_external_tool_call(
     workspace_path: str | None,
 ) -> tuple[str, dict[str, Any]]:
     args = dict(arguments or {})
-    tools: list[dict[str, Any]] = []
     try:
         tools = await _list_tools_auto(server)
     except Exception:
@@ -268,8 +305,134 @@ async def _normalize_external_tool_call(
 
     tool_name = _choose_tool_name(requested_tool_name, tools, server.name)
     tool = next((item for item in tools if item.get("name") == tool_name), None)
-    schema = (tool or {}).get("input_schema") or _synthetic_schema_for_tool(tool_name)
-    return tool_name, _coerce_arguments_for_schema(schema, args, workspace_path, f"{server.name}.{tool_name}")
+    if tool:
+        schema = tool.get("input_schema") or _synthetic_schema_for_tool(tool_name)
+        return tool_name, _coerce_arguments_for_schema(schema, args, workspace_path, f"{server.name}.{tool_name}")
+
+    # Meta MCP servers often expose only call_tool. If the agent asks for a
+    # hidden tool found through find_tools, wrap it into call_tool according to
+    # the call_tool input schema.
+    call_tool = next((item for item in tools if _short_tool_name(item.get("name")) == "call_tool"), None)
+    if call_tool:
+        wrapped = _wrap_call_tool_arguments(call_tool.get("input_schema") or {}, requested_tool_name, args)
+        return call_tool["name"], _coerce_arguments_for_schema(call_tool.get("input_schema") or {}, wrapped, workspace_path, f"{server.name}.{call_tool['name']}")
+
+    schema = _synthetic_schema_for_tool(requested_tool_name)
+    return requested_tool_name, _coerce_arguments_for_schema(schema, args, workspace_path, f"{server.name}.{requested_tool_name}")
+
+
+def _short_tool_name(name: Any) -> str:
+    return str(name or "").split(".")[-1]
+
+
+def _arguments_for_intent(schema: dict[str, Any], query: str, limit: int = 20) -> dict[str, Any]:
+    props = schema.get("properties") or {}
+    args: dict[str, Any] = {}
+    if not props:
+        return {"query": query, "limit": limit}
+    for key, prop in props.items():
+        lower = key.lower()
+        if any(marker in lower for marker in ["query", "task", "description", "prompt", "request", "goal", "text"]):
+            args[key] = query
+        elif any(marker in lower for marker in ["limit", "top", "max", "count"]):
+            args[key] = limit
+        elif "default" in prop:
+            args[key] = prop["default"]
+        elif prop.get("enum"):
+            args[key] = prop["enum"][0]
+    for key in schema.get("required") or []:
+        if key not in args:
+            prop = props.get(key, {})
+            args[key] = limit if prop.get("type") in {"integer", "number"} else query
+    return args
+
+
+def _wrap_call_tool_arguments(schema: dict[str, Any], tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    props = schema.get("properties") or {}
+    if not props:
+        return {"tool_name": tool_name, "arguments": arguments}
+    result: dict[str, Any] = {}
+    name_fields = ["tool_name", "name", "tool", "toolId", "tool_id", "id"]
+    args_fields = ["arguments", "args", "input", "params", "parameters"]
+    name_key = next((key for key in name_fields if key in props), None)
+    args_key = next((key for key in args_fields if key in props), None)
+    if name_key:
+        result[name_key] = tool_name
+    if args_key:
+        result[args_key] = arguments
+    # Fill other required fields conservatively.
+    for key in schema.get("required") or []:
+        if key in result:
+            continue
+        lower = key.lower()
+        if "name" in lower or "tool" in lower:
+            result[key] = tool_name
+        elif "arg" in lower or "input" in lower or "param" in lower:
+            result[key] = arguments
+        elif "default" in props.get(key, {}):
+            result[key] = props[key]["default"]
+        elif props.get(key, {}).get("enum"):
+            result[key] = props[key]["enum"][0]
+        else:
+            result[key] = ""
+    if not result:
+        result = {"tool_name": tool_name, "arguments": arguments}
+    return result
+
+
+def _extract_tool_descriptions_from_result(response: dict[str, Any], server: MCPServer) -> list[dict[str, Any]]:
+    candidates: list[Any] = []
+    for content in response.get("content", []):
+        if isinstance(content, dict):
+            if "json" in content:
+                candidates.append(content["json"])
+            text = content.get("text")
+            if isinstance(text, str):
+                try:
+                    candidates.append(json.loads(text))
+                except json.JSONDecodeError:
+                    pass
+    tools: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            for key in ["tools", "items", "results", "data"]:
+                if isinstance(candidate.get(key), list):
+                    candidate = candidate[key]
+                    break
+        if isinstance(candidate, list):
+            for item in candidate:
+                normalized = _normalize_discovered_tool(item, server)
+                if normalized:
+                    tools.append(normalized)
+        else:
+            normalized = _normalize_discovered_tool(candidate, server)
+            if normalized:
+                tools.append(normalized)
+    unique = {}
+    for tool in tools:
+        unique[tool["name"]] = tool
+    return list(unique.values())
+
+
+def _normalize_discovered_tool(item: Any, server: MCPServer) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    name = item.get("name") or item.get("tool_name") or item.get("id") or item.get("qualified_name")
+    if not name:
+        return None
+    schema = item.get("input_schema") or item.get("inputSchema") or item.get("schema") or item.get("parameters") or {}
+    return {
+        "server_name": server.name,
+        "server_url": server.url,
+        "name": str(name),
+        "title": item.get("title") or item.get("label") or str(name),
+        "description": item.get("description") or item.get("summary") or "",
+        "input_schema": schema,
+        "status": "ok",
+        "internal": False,
+        "virtual": True,
+        "via_tool": "call_tool",
+    }
 
 
 def _choose_tool_name(requested_tool_name: str, tools: list[dict[str, Any]], server_name: str = "") -> str:

@@ -39,6 +39,7 @@
 - [x] Внутренний fetch_many_urls для source/citation pipeline.
 - [x] LLM healthcheck endpoint и UI-кнопка проверки.
 - [x] MCP diagnostics endpoint и UI-блок диагностики transport/url attempts.
+- [x] Agent-toolkit/meta MCP support: find_tools discovery, virtual tools, call_tool wrapping.
 - [x] Workspace audit на Python-шаге с сохранением artifacts/workspace_audit.json.
 - [x] Memory retrieval: embeddings, автоматическая индексация, retrieval в prompt, API/UI поиска и ручного добавления памяти.
 - [x] Q&A с агентом во время выполнения и после завершения: API/UI, история вопросов в state, ответы с учетом памяти и артефактов.

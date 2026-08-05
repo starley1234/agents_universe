@@ -7,7 +7,7 @@ from app.agent.summarizer import summarize_state
 from app.config import settings
 from app.llm.providers import LLMProvider, get_llm_provider
 from app.services.guardrails import needs_human_for_action
-from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, list_mcp_tools_sync
+from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, find_relevant_mcp_tools_sync, list_mcp_tools_sync
 from app.services.mcp_registry import load_global_mcp_servers
 from app.tools.code_interpreter import CodeInterpreter
 from app.tools.filesystem import FileSystemTools
@@ -405,10 +405,22 @@ class AgentGraph:
         if tool_config.get("mcp"):
             try:
                 tools = list_mcp_tools_sync(tool_config.get("mcp_servers", []), include_internal=True)
-                ok_tools = [tool for tool in tools if tool.get("status") == "ok"]
+                query = f"{state.get('goal')}\n{step.get('title')}\n{state.get('executive_summary', '')}"
+                tools.extend(find_relevant_mcp_tools_sync(tool_config.get("mcp_servers", []), query=query, limit=30))
+                seen_tools = set()
+                ok_tools = []
+                for tool in tools:
+                    if tool.get("status") != "ok":
+                        continue
+                    key = (tool.get("server_name"), tool.get("name"))
+                    if key in seen_tools:
+                        continue
+                    seen_tools.add(key)
+                    ok_tools.append(tool)
                 mcp_tools_hint = "\n".join(
                     f"- {tool.get('server_name')}.{tool.get('name')}: {tool.get('description', '')} schema={tool.get('input_schema', {})}"
-                    for tool in ok_tools[:12]
+                    + (" [virtual via call_tool]" if tool.get("virtual") else "")
+                    for tool in ok_tools[:25]
                 ) or "MCP включен, но инструменты не найдены"
             except Exception as exc:  # noqa: BLE001
                 mcp_tools_hint = f"Ошибка discovery MCP tools: {exc}"

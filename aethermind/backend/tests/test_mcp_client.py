@@ -162,3 +162,21 @@ def test_mcp_tool_response_marks_validation_text_as_error():
 
     result = _tool_call_response(MCPServer("openscad", "http://x/sse"), "render", {"path": "code/model.scad"}, Response())
     assert result["is_error"] is True
+
+
+def test_wrap_call_tool_arguments_uses_schema_names():
+    from app.services.mcp_client import _wrap_call_tool_arguments
+
+    schema = {"type":"object","properties":{"name":{"type":"string"},"args":{"type":"object"}},"required":["name","args"]}
+    wrapped = _wrap_call_tool_arguments(schema, "openscad.render_2d_png", {"code":"cube();"})
+    assert wrapped == {"name": "openscad.render_2d_png", "args": {"code": "cube();"}}
+
+
+def test_extract_tool_descriptions_from_find_tools_result():
+    from app.services.mcp_client import MCPServer, _extract_tool_descriptions_from_result
+
+    response = {"content": [{"type": "text", "text": '{"tools":[{"name":"x.render","description":"Render","input_schema":{"required":["code"]}}]}' }]}
+    tools = _extract_tool_descriptions_from_result(response, MCPServer("agent-toolkit", "http://x/sse"))
+    assert tools[0]["name"] == "x.render"
+    assert tools[0]["virtual"] is True
+    assert tools[0]["input_schema"]["required"] == ["code"]

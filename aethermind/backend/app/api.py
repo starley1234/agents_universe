@@ -14,7 +14,7 @@ from app.db.session import get_db
 from app.schemas import AgentSettingsRead, AskAgentRequest, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, MemoryCreateRequest, MemorySearchRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
 from app.llm.providers import get_llm_provider
 from app.services.events import add_event
-from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, diagnose_mcp_servers_sync, list_mcp_tools_sync
+from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, diagnose_mcp_servers_sync, find_relevant_mcp_tools_sync, list_mcp_tools_sync
 from app.services.mcp_registry import delete_global_mcp_server, load_global_mcp_servers, upsert_global_mcp_server
 from app.services.memory import create_memory, format_memories_for_prompt, retrieve_memories, store_iteration_memories
 from app.services.workspace import safe_path, task_workspace
@@ -531,6 +531,14 @@ def list_task_mcp_tools(task_id: UUID, db: Session = Depends(get_db)):
     if not config.get("mcp"):
         return {"enabled": False, "tools": [], "message": "MCP выключен в настройках инструментов."}
     tools = list_mcp_tools_sync(config.get("mcp_servers", []), include_internal=True)
+    query = f"{task.goal}\n{state.get('current_step', {})}\n{state.get('executive_summary', '')}"
+    virtual_tools = find_relevant_mcp_tools_sync(config.get("mcp_servers", []), query=query, limit=30)
+    known = {(tool.get("server_name"), tool.get("name")) for tool in tools}
+    for tool in virtual_tools:
+        key = (tool.get("server_name"), tool.get("name"))
+        if key not in known:
+            tools.append(tool)
+            known.add(key)
     return {"enabled": True, "tools": tools}
 
 @router.get("/tasks/{task_id}/mcp/diagnostics")
