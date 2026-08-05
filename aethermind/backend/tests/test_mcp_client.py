@@ -2,6 +2,7 @@ from app.services.mcp_client import (
     INTERNAL_FETCH_TOOL,
     INTERNAL_PYTHON_TOOL,
     INTERNAL_SERVER_NAME,
+    _url_candidates,
     call_mcp_tool_sync,
     list_mcp_tools_sync,
 )
@@ -22,3 +23,9 @@ def test_internal_python_tool_runs(tmp_path):
     )
     assert result["is_error"] is False
     assert "4" in result["content"][0]["json"]["stdout"]
+
+
+def test_mcp_url_candidates_rewrite_localhost_for_docker():
+    candidates = _url_candidates("http://localhost:8090/sse/group/files")
+    assert "http://host.docker.internal:8090/sse/group/files" in candidates
+    assert "http://host.docker.internal:8090/mcp/group/files" in candidates

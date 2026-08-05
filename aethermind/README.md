@@ -128,6 +128,10 @@ curl -X POST http://localhost:8128/api/tasks/{task_id}/mcp/call \
 
 MCP серверы, добавленные через UI/API, сохраняются в глобальный workspace registry `workspace/mcp_servers.json` и автоматически подключаются к новым задачам. При запуске агента registry также сливается с `tool_config` задачи, поэтому ранее добавленные MCP известны агенту без повторного подключения.
 
+Важно про `localhost`: если AetherMind запущен в Docker, то `http://localhost:8090/...` внутри backend-контейнера означает сам контейнер, а не вашу хост-машину. Поэтому Docker Compose добавляет `host.docker.internal`, а MCP runtime автоматически пробует localhost URL как `http://host.docker.internal:8090/...`. Если MCP server запущен в другом контейнере, лучше указывать имя docker-compose сервиса вместо localhost.
+
+Для endpoint `http://localhost:8090/sse/group/files` runtime пробует несколько вариантов: исходный SSE URL, `host.docker.internal`, а также streamable HTTP кандидаты вида `/mcp/group/files`. Это нужно для совместимости с серверами, которые LM Studio обнаруживает автоматически.
+
 В UI у каждого discovered tool есть кнопка **«Подставить JSON»** — она строит шаблон аргументов из `input_schema`. Кнопка **«Выполнить с JSON выше»** вызывает именно выбранный tool с текущим JSON. Если обязательные поля отсутствуют, UI не отправляет некорректный вызов, а подставляет шаблон и показывает, какие поля нужно заполнить.
 
 UI дополнительно поддерживает:

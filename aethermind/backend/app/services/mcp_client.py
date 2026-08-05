@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -116,7 +117,7 @@ async def list_mcp_tools(servers: list[dict[str, Any]], include_internal: bool =
                     "server_name": server.name,
                     "server_url": server.url,
                     "status": "error",
-                    "error": str(exc),
+                    "error": _format_exception(exc),
                 }
             )
     return result
@@ -141,14 +142,49 @@ async def call_mcp_tool(
     return await _call_tool_auto(mcp_server, tool_name, arguments)
 
 
+def _replace_host(url: str, host: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        return url
+    netloc = host
+    if parsed.port:
+        netloc = f"{host}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+
+def _host_rewrite_candidates(url: str) -> list[str]:
+    parsed = urlparse(url)
+    if parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        # Внутри Docker `localhost` указывает на api/worker контейнер, а не на хост,
+        # где обычно запущены LM Studio / MCP toolkit. Поэтому пробуем docker host alias.
+        return [_replace_host(url, "host.docker.internal")]
+    return []
+
+
 def _url_candidates(url: str) -> list[str]:
-    candidates = [url]
-    if url.rstrip('/').endswith('/sse'):
-        base = url.rstrip('/')[:-4]
-        candidates.extend([base, f"{base}/mcp"])
-    elif not url.rstrip('/').endswith('/mcp'):
-        candidates.append(f"{url.rstrip('/')}/mcp")
+    seeds = [url, *_host_rewrite_candidates(url)]
+    candidates: list[str] = []
+    for seed in seeds:
+        clean = seed.rstrip("/")
+        candidates.append(seed)
+        if clean.endswith("/sse"):
+            base = clean[:-4]
+            candidates.extend([base, f"{base}/mcp"])
+        elif "/sse/" in clean:
+            # Для endpoint'ов вида /sse/group/files LM Studio ходит ровно туда.
+            # Дополнительно пробуем соответствующий streamable endpoint /mcp/group/files.
+            candidates.append(clean.replace("/sse/", "/mcp/"))
+        elif not clean.endswith("/mcp"):
+            candidates.append(f"{clean}/mcp")
     return list(dict.fromkeys(candidates))
+
+
+def _format_exception(exc: BaseException) -> str:
+    if isinstance(exc, BaseExceptionGroup):
+        inner = "; ".join(_format_exception(item) for item in exc.exceptions[:3])
+        return f"{exc.__class__.__name__}: {exc.message}: {inner}"
+    message = str(exc) or exc.__class__.__name__
+    return f"{exc.__class__.__name__}: {message}"
 
 
 async def _list_tools_auto(server: MCPServer) -> list[dict[str, Any]]:
@@ -162,7 +198,7 @@ async def _list_tools_auto(server: MCPServer) -> list[dict[str, Any]]:
             try:
                 return await (_list_sse_tools(trial) if transport == "sse" else _list_streamable_tools(trial))
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{transport} {url}: {exc}")
+                errors.append(f"{transport} {url}: {_format_exception(exc)}")
     raise MCPClientError("; ".join(errors[-4:]))
 
 
@@ -177,7 +213,7 @@ async def _call_tool_auto(server: MCPServer, tool_name: str, arguments: dict[str
             try:
                 return await (_call_sse_tool(trial, tool_name, arguments) if transport == "sse" else _call_streamable_tool(trial, tool_name, arguments))
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{transport} {url}: {exc}")
+                errors.append(f"{transport} {url}: {_format_exception(exc)}")
     raise MCPClientError("; ".join(errors[-4:]))
 
 
