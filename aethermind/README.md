@@ -141,6 +141,7 @@ UI дополнительно поддерживает:
 - обновление списка инструментов кнопкой `🔄 tools`;
 - discovery MCP через SSE и fallback на Streamable HTTP endpoint-кандидаты (`/sse`, base URL, `/mcp`);
 - удаление задач из списка задач;
+- наглядную Human-in-the-loop панель: причина критика, confidence, observation, последние проблемные события и быстрые варианты ответа;
 - редактирование цели, budget JSON и state JSON в блоке **Настройки агента и состояние**;
 - сохранение выбранной темы день/ночь в `localStorage` и cookie `aethermind.theme`.
 

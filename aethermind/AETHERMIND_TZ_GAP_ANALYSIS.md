@@ -23,6 +23,7 @@
 - [x] Budget guardrails по итерациям, токенам и стоимости.
 - [x] Human-in-the-loop statuses: pause/resume/intervene/awaiting_user.
 - [x] Human-in-the-loop UI: текст вмешательства, продолжение, сохранение без запуска, rollback.
+- [x] Наглядная обратная связь критика: причина, confidence, observation, problem events, быстрые варианты ответа.
 - [x] Rollback endpoint и базовый UI выбора checkpoint/iteration.
 - [x] Backend SSE endpoint и надежное frontend polling-обновление Live Trace.
 - [x] Mission Control UI на русском.

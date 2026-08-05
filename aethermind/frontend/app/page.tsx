@@ -138,6 +138,76 @@ function markdownToHtml(markdown: string) {
     .replace(/\n/g, '<br />')
 }
 
+type HumanFeedback = {
+  title: string
+  currentStep: string
+  confidence: number | null
+  criticReason: string
+  observation: string
+  recovery: string
+  lastProblems: string[]
+  suggestions: Array<{ label: string; text: string; rollback?: boolean }>
+}
+
+function stringifyShort(value: unknown, max = 1200) {
+  if (value === undefined || value === null) return 'нет данных'
+  const text = typeof value === 'string' ? value : compactJson(value)
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+function buildHumanFeedback(task: Task | null, events: TaskEvent[]): HumanFeedback {
+  const state = task?.current_state_json || {}
+  const reflection = state.reflection || {}
+  const observation = state.observation || {}
+  const humanRequest = state.human_request || {}
+  const currentStep = humanRequest.current_step || state.current_step?.title || state.current_step?.id || 'шаг не определен'
+  const criticReason = humanRequest.reason || reflection.reason || observation.reason || observation.error || 'Критик не передал подробную причину. Посмотрите observation и последние события ниже.'
+  const confidence = typeof humanRequest.confidence === 'number' ? humanRequest.confidence : (typeof state.confidence === 'number' ? state.confidence : null)
+  const problemEvents = events
+    .filter((event) => ['error', 'mcp_error', 'auto_recovery', 'reflection', 'tools'].includes(event.event_type))
+    .slice(0, 5)
+    .map((event) => event.payload_json?.message || event.payload_json?.reason || event.payload_json?.error || stringifyShort(event.payload_json, 300))
+  const recoveryAttempts = state.auto_recovery_attempts || state.current_step?.retry_count || 0
+  const recovery = recoveryAttempts
+    ? `Автовосстановление уже пробовало исправить ситуацию: ${recoveryAttempts} попытк(и).`
+    : 'Автовосстановление еще не исчерпано или не запускалось.'
+
+  const suggestions = [
+    {
+      label: 'Повторить шаг строже',
+      text: `Повтори текущий шаг «${currentStep}». Учти замечание критика: ${criticReason}. Проверь результат через доступные MCP/tools и не завершай шаг, пока не появятся проверяемые артефакты.`,
+    },
+    {
+      label: 'Перепланировать',
+      text: `Перепланируй задачу с учетом проблемы: ${criticReason}. Разбей текущий шаг «${currentStep}» на более мелкие проверяемые действия и продолжай автономно.`,
+    },
+    {
+      label: 'Игнорировать риск и продолжить',
+      text: `Принять текущий риск как допустимый, зафиксировать допущение в scratchpad и продолжить выполнение следующего шага. Причина риска: ${criticReason}.`,
+    },
+    {
+      label: 'Откатиться на шаг назад',
+      rollback: true,
+      text: `Выполни rollback на предыдущую устойчивую итерацию и запусти альтернативный план. Ошибка/сомнение критика: ${criticReason}.`,
+    },
+    {
+      label: 'Проверить инструменты',
+      text: `Проверь доступность инструментов: LLM, filesystem, code_interpreter, MCP discovery и MCP call. Если внешний MCP недоступен, используй внутренние __internal__.fetch_url и __internal__.run_python. Затем повтори шаг «${currentStep}».`,
+    },
+  ]
+
+  return {
+    title: task?.status === 'AWAITING_USER' ? 'Критик просит решение человека' : 'Обратная связь критика',
+    currentStep,
+    confidence,
+    criticReason,
+    observation: stringifyShort(observation),
+    recovery,
+    lastProblems: problemEvents,
+    suggestions,
+  }
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -553,6 +623,7 @@ export default function Home() {
   const llmCalls = selected?.current_state_json?.llm_usage?.calls || budget.llm_calls || 0
   const tokensUsed = selected?.current_state_json?.llm_usage?.tokens_used || budget.tokens_used || 0
   const contextFill = useMemo(() => Math.min(100, ((iter % 5) / 5) * 100), [iter])
+  const humanFeedback = useMemo(() => buildHumanFeedback(selected, events), [selected, events])
 
   return (
     <main className={`min-h-screen overflow-x-hidden p-4 transition-colors sm:p-6 ${theme.page}`}>
@@ -593,7 +664,7 @@ export default function Home() {
         )}
 
         {selected?.status === 'AWAITING_USER' && (
-          <HumanGatePanel theme={theme} intervention={intervention} setIntervention={setIntervention} rollbackIteration={rollbackIteration} setRollbackIteration={setRollbackIteration} busyAction={busyAction} onSend={sendIntervention} onRollback={rollback} />
+          <HumanGatePanel theme={theme} feedback={humanFeedback} intervention={intervention} setIntervention={setIntervention} rollbackIteration={rollbackIteration} setRollbackIteration={setRollbackIteration} busyAction={busyAction} onSend={sendIntervention} onRollback={rollback} />
         )}
 
         <section className={`grid min-w-0 gap-3 rounded-2xl border p-4 md:grid-cols-[minmax(0,1fr)_auto] ${theme.card}`}>
@@ -632,12 +703,92 @@ function Banner({ kind, message, onClose }: { kind: 'error' | 'notice'; message:
   )
 }
 
-function HumanGatePanel({ theme, intervention, setIntervention, rollbackIteration, setRollbackIteration, busyAction, onSend, onRollback }: { theme: Theme; intervention: string; setIntervention: (value: string) => void; rollbackIteration: string; setRollbackIteration: (value: string) => void; busyAction: string | null; onSend: (resume: boolean) => void; onRollback: () => void }) {
+function HumanGatePanel({
+  theme,
+  feedback,
+  intervention,
+  setIntervention,
+  rollbackIteration,
+  setRollbackIteration,
+  busyAction,
+  onSend,
+  onRollback,
+}: {
+  theme: Theme
+  feedback: HumanFeedback
+  intervention: string
+  setIntervention: (value: string) => void
+  rollbackIteration: string
+  setRollbackIteration: (value: string) => void
+  busyAction: string | null
+  onSend: (resume: boolean) => void
+  onRollback: () => void
+}) {
   return (
     <section className="min-w-0 rounded-2xl border border-amber-400/50 bg-amber-400/10 p-4">
-      <h2 className="font-semibold text-amber-500">Требуется вмешательство человека</h2>
-      <p className={`mt-1 text-sm ${theme.text}`}>Агент остановлен из-за низкой уверенности, ошибки LLM/runtime или отключенного инструмента. Дайте инструкцию и продолжите, либо выполните rollback.</p>
-      <textarea value={intervention} onChange={(event) => setIntervention(event.target.value)} placeholder="Например: включи LLM, продолжай с более строгой проверкой источников..." className={`mt-3 h-24 w-full min-w-0 resize-y rounded-xl border p-3 ${theme.input}`} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-amber-500">{feedback.title}</h2>
+          <p className={`mt-1 text-sm ${theme.text}`}>Агент остановился не молча: ниже видно, что именно не понравилось критику и какие действия можно выбрать.</p>
+        </div>
+        <div className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-500">
+          confidence: {feedback.confidence === null ? 'n/a' : `${Math.round(feedback.confidence * 100)}%`}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <div className={`rounded-xl border p-3 text-sm ${theme.soft}`}>
+          <div className="text-xs uppercase opacity-60">Текущий шаг</div>
+          <div className="mt-1 font-medium">{feedback.currentStep}</div>
+        </div>
+        <div className={`rounded-xl border p-3 text-sm ${theme.soft}`}>
+          <div className="text-xs uppercase opacity-60">Автовосстановление</div>
+          <div className="mt-1">{feedback.recovery}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+          <div className="font-semibold text-red-400">Что не понравилось критику</div>
+          <div className="mt-2 whitespace-pre-wrap break-words">{feedback.criticReason}</div>
+        </div>
+        <details className={`rounded-xl border p-3 text-sm ${theme.soft}`}>
+          <summary className="cursor-pointer font-semibold">Observation / технические детали</summary>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs">{feedback.observation}</pre>
+        </details>
+      </div>
+
+      {!!feedback.lastProblems.length && (
+        <div className={`mt-3 rounded-xl border p-3 text-sm ${theme.soft}`}>
+          <div className="mb-2 font-semibold">Последние проблемные события</div>
+          <ul className="grid gap-2">
+            {feedback.lastProblems.map((item, index) => <li key={index} className="break-words text-xs opacity-85">• {item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-4">
+        <div className="mb-2 text-sm font-semibold">Быстрый выбор ответа человеку</div>
+        <div className="flex flex-wrap gap-2">
+          {feedback.suggestions.map((suggestion) => (
+            <button
+              key={suggestion.label}
+              onClick={() => setIntervention(suggestion.text)}
+              className={`rounded-lg border px-3 py-2 text-sm ${suggestion.rollback ? 'border-red-500/40 bg-red-500/10 text-red-400' : 'border-sky-400/40 bg-sky-400/10 text-sky-400'}`}
+              title={suggestion.text}
+            >
+              {suggestion.rollback ? '↩ ' : '✦ '}{suggestion.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <textarea
+        value={intervention}
+        onChange={(event) => setIntervention(event.target.value)}
+        placeholder="Выберите вариант выше или напишите свою инструкцию: что принять, что перепроверить, куда откатиться, какие источники/инструменты использовать..."
+        className={`mt-3 h-32 w-full min-w-0 resize-y rounded-xl border p-3 ${theme.input}`}
+      />
       <div className="mt-3 flex min-w-0 flex-wrap gap-2">
         <button disabled={busyAction === 'intervene' || !intervention.trim()} onClick={() => onSend(true)} className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-slate-950 disabled:opacity-50">Отправить и продолжить</button>
         <button disabled={busyAction === 'intervene' || !intervention.trim()} onClick={() => onSend(false)} className={`rounded-lg border px-4 py-2 disabled:opacity-50 ${theme.soft}`}>Сохранить без запуска</button>

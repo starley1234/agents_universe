@@ -73,6 +73,12 @@ class AgentGraph:
                 )
             else:
                 state["awaiting_user"] = True
+                state["human_request"] = {
+                    "reason": str(exc),
+                    "current_step": state.get("current_step", {}).get("title"),
+                    "suggested_actions": ["retry_step", "replan", "rollback", "check_tools"],
+                    "message": "Автовосстановление исчерпано. Требуется решение человека.",
+                }
                 state["events"].append(
                     {
                         "type": "error",
@@ -202,6 +208,14 @@ class AgentGraph:
                 )
             else:
                 state["awaiting_user"] = state.get("low_confidence_streak", 0) >= settings.low_confidence_streak_limit
+                if state["awaiting_user"]:
+                    state["human_request"] = {
+                        "reason": state["reflection"]["reason"],
+                        "current_step": state.get("current_step", {}).get("title"),
+                        "confidence": state["confidence"],
+                        "suggested_actions": ["retry_step", "replan", "accept_risk", "rollback", "check_tools"],
+                        "message": "Критик отклонил шаг после автоматических повторов.",
+                    }
 
         state["events"].append(
             {
