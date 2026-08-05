@@ -27,6 +27,12 @@ class InterveneRequest(BaseModel):
     message: str = Field(min_length=1)
     resume: bool = True
 
+class AskAgentRequest(BaseModel):
+    question: str = Field(min_length=1)
+    include_artifacts: bool = True
+    include_memory: bool = True
+    save_as_artifact: bool = False
+
 class RollbackRequest(BaseModel):
     snapshot_id: UUID | None = None
     iteration: int | None = None

@@ -11,12 +11,12 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.models import Artifact, MemoryItem, Task, TaskEvent, TaskSnapshot, TaskStatus
 from app.db.session import get_db
-from app.schemas import AgentSettingsRead, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, MemoryCreateRequest, MemorySearchRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
+from app.schemas import AgentSettingsRead, AskAgentRequest, Budget, EventRead, InterveneRequest, MCPServerConfig, MCPToolCallRequest, MemoryCreateRequest, MemorySearchRequest, RollbackRequest, SnapshotRead, TaskCreate, TaskRead, TaskUpdate, ToolConfig
 from app.llm.providers import get_llm_provider
 from app.services.events import add_event
 from app.services.mcp_client import INTERNAL_SERVER_NAME, call_mcp_tool_sync, diagnose_mcp_servers_sync, list_mcp_tools_sync
 from app.services.mcp_registry import delete_global_mcp_server, load_global_mcp_servers, upsert_global_mcp_server
-from app.services.memory import create_memory, retrieve_memories, store_iteration_memories
+from app.services.memory import create_memory, format_memories_for_prompt, retrieve_memories, store_iteration_memories
 from app.services.workspace import safe_path, task_workspace
 from app.worker import run_agent_iteration
 
@@ -215,6 +215,71 @@ def resume_task(task_id: UUID, db: Session = Depends(get_db)):
     db.commit(); db.refresh(task)
     run_agent_iteration.delay(str(task.id))
     return task
+
+@router.post("/tasks/{task_id}/ask")
+def ask_agent(task_id: UUID, payload: AskAgentRequest, db: Session = Depends(get_db)):
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+
+    state = dict(task.current_state_json or {})
+    workspace = Path(task.workspace_path)
+
+    memories_text = ""
+    if payload.include_memory:
+        memories = retrieve_memories(db, payload.question, task_id=task.id, top_k=settings.memory_top_k)
+        memories_text = format_memories_for_prompt(memories)
+
+    artifact_context_parts: list[str] = []
+    if payload.include_artifacts:
+        sync_workspace_artifacts(db, task)
+        artifacts = db.execute(select(Artifact).where(Artifact.task_id == task.id).order_by(desc(Artifact.created_at)).limit(20)).scalars().all()
+        for artifact in artifacts:
+            path = safe_path(workspace, artifact.path)
+            if not path.exists() or not path.is_file() or path.stat().st_size > 60_000:
+                continue
+            if path.suffix.lower() not in {".md", ".txt", ".json", ".csv", ".py", ".scad", ".log"}:
+                continue
+            artifact_context_parts.append(f"## {artifact.path}\n{path.read_text(encoding='utf-8', errors='replace')[:4000]}")
+
+    artifact_context = "\n\n".join(artifact_context_parts)[:12000] or "нет текстовых артефактов"
+    prompt = (
+        "Ты — агент AetherMind, отвечающий на вопрос человека по уже выполненной или выполняющейся задаче. "
+        "Отвечай по-русски, конкретно, с опорой на состояние, память и артефакты. "
+        "Если результат задачи не соответствует ожиданиям, предложи 2-3 конкретных действия: что перезапустить, какие инструменты вызвать, какие файлы исправить.\n\n"
+        f"Цель задачи:\n{task.goal}\n\n"
+        f"Статус: {task.status}\n"
+        f"Текущее состояние JSON:\n{json.dumps(state, ensure_ascii=False, default=str)[:6000]}\n\n"
+        f"Релевантная память:\n{memories_text or 'нет'}\n\n"
+        f"Артефакты/файлы:\n{artifact_context}\n\n"
+        f"Вопрос человека:\n{payload.question}\n"
+    )
+    try:
+        result = get_llm_provider().complete_sync([{"role": "user", "content": prompt}])
+        answer = result.content
+    except Exception as exc:  # noqa: BLE001
+        answer = f"Не удалось получить ответ LLM: {exc}"
+
+    qa = state.setdefault("qa_history", [])
+    qa.append({"question": payload.question, "answer": answer, "created_at": datetime.now(timezone.utc).isoformat()})
+    state["qa_history"] = qa[-50:]
+    task.current_state_json = state
+
+    artifact_payload = None
+    if payload.save_as_artifact:
+        rel = f"artifacts/agent_answer_{len(qa)}.md"
+        path = safe_path(workspace, rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# Вопрос человеку\n\n{payload.question}\n\n# Ответ агента\n\n{answer}\n", encoding="utf-8")
+        artifact = Artifact(task_id=task.id, path=rel, kind="answer", metadata_json={"question": payload.question})
+        db.add(artifact)
+        db.flush()
+        artifact_payload = {"id": str(artifact.id), "path": rel, "kind": "answer"}
+
+    add_event(db, task.id, "user_question", {"message": payload.question})
+    add_event(db, task.id, "agent_answer", {"message": answer[:1500]})
+    db.commit(); db.refresh(task)
+    return {"answer": answer, "artifact": artifact_payload, "qa_history": state["qa_history"]}
 
 @router.post("/tasks/{task_id}/intervene", response_model=TaskRead)
 def intervene(task_id: UUID, payload: InterveneRequest, db: Session = Depends(get_db)):

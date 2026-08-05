@@ -41,6 +41,7 @@
 - [x] MCP diagnostics endpoint и UI-блок диагностики transport/url attempts.
 - [x] Workspace audit на Python-шаге с сохранением artifacts/workspace_audit.json.
 - [x] Memory retrieval: embeddings, автоматическая индексация, retrieval в prompt, API/UI поиска и ручного добавления памяти.
+- [x] Q&A с агентом во время выполнения и после завершения: API/UI, история вопросов в state, ответы с учетом памяти и артефактов.
 - [x] Защита от подвисания memory/worker: timeout/fallback embeddings, capped memory writes, heartbeat, kick/recover stale tasks.
 - [x] UI для просмотра настроек агента.
 - [x] UI/API для регистрации внешних MCP серверов на задачу.

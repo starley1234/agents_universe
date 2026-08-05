@@ -373,6 +373,8 @@ export default function Home() {
   const [memoryQuery, setMemoryQuery] = useState('')
   const [memoryResults, setMemoryResults] = useState<MemorySearchResult[]>([])
   const [manualMemory, setManualMemory] = useState('')
+  const [agentQuestion, setAgentQuestion] = useState('')
+  const [agentAnswer, setAgentAnswer] = useState('')
   const [llmStatus, setLlmStatus] = useState<any>(null)
   const [goalDraft, setGoalDraft] = useState('')
   const [budgetDraft, setBudgetDraft] = useState('{}')
@@ -482,6 +484,24 @@ export default function Home() {
     const response = await fetch(`${API_BASE}/api/tasks/${taskId}/attachments`, { method: 'POST', body: form })
     if (!response.ok) throw new Error(await response.text())
     return response.json()
+  }
+
+  async function askAgent() {
+    if (!selected || !agentQuestion.trim()) return
+    setBusyAction('ask_agent')
+    try {
+      const data = await apiFetch<{ answer: string }>(`/api/tasks/${selected.id}/ask`, {
+        method: 'POST',
+        body: JSON.stringify({ question: agentQuestion, include_artifacts: true, include_memory: true, save_as_artifact: false }),
+      })
+      setAgentAnswer(data.answer)
+      setNotice('Агент ответил на вопрос.')
+      await refreshSelected(selected.id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось спросить агента')
+    } finally {
+      setBusyAction(null)
+    }
   }
 
   async function searchMemory() {
@@ -902,6 +922,7 @@ export default function Home() {
             <StrategyPanel plan={plan} theme={theme} />
             <ArtifactsPanel artifacts={artifacts} artifactContent={artifactContent} selectedArtifact={selectedArtifact} artifactViewMode={artifactViewMode} selected={selected} theme={theme} busyAction={busyAction} onView={viewArtifact} onViewModeChange={setArtifactViewMode} onUploadImage={uploadImageAttachment} />
             <SettingsPanel settings={settings} selected={selected} budget={budget} tools={tools} theme={theme} goalDraft={goalDraft} budgetDraft={budgetDraft} stateDraft={stateDraft} busyAction={busyAction} setGoalDraft={setGoalDraft} setBudgetDraft={setBudgetDraft} setStateDraft={setStateDraft} onSave={saveTaskSettings} />
+            <AskAgentPanel theme={theme} selected={selected} question={agentQuestion} answer={agentAnswer} busyAction={busyAction} setQuestion={setAgentQuestion} onAsk={askAgent} />
             <MemoryPanel theme={theme} selected={selected} query={memoryQuery} results={memoryResults} manualMemory={manualMemory} busyAction={busyAction} setQuery={setMemoryQuery} setManualMemory={setManualMemory} onSearch={searchMemory} onAdd={addManualMemory} onIndex={indexArtifactsToMemory} />
           </section>
           <aside className="grid min-w-0 content-start gap-6">
@@ -1190,6 +1211,50 @@ function SettingsPanel({
         <pre className={`mt-3 max-h-96 min-w-0 overflow-auto rounded-xl border p-4 text-xs ${theme.code}`}><code className="break-words">{compactJson(statePreview)}</code></pre>
       </details>
     </details>
+  )
+}
+
+function AskAgentPanel({
+  theme,
+  selected,
+  question,
+  answer,
+  busyAction,
+  setQuestion,
+  onAsk,
+}: {
+  theme: Theme
+  selected: Task | null
+  question: string
+  answer: string
+  busyAction: string | null
+  setQuestion: (value: string) => void
+  onAsk: () => void
+}) {
+  const history = selected?.current_state_json?.qa_history || []
+  return (
+    <div className={`min-w-0 rounded-2xl border p-4 ${theme.card}`}>
+      <h2 className="mb-3 font-semibold">Спросить агента</h2>
+      <p className={`mb-3 text-xs ${theme.text}`}>Можно задать вопрос во время выполнения или после завершения. Агент ответит с учетом state, памяти и артефактов.</p>
+      <div className="grid gap-2">
+        <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Например: почему результат не похож на изображение? какие файлы надо исправить? что уже сделано?" className={`h-24 rounded-lg border p-3 text-sm ${theme.input}`} disabled={!selected} />
+        <button disabled={!selected || !question.trim() || busyAction === 'ask_agent'} onClick={onAsk} className="w-fit rounded-lg bg-sky-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">Спросить</button>
+      </div>
+      {answer && <div className={`mt-3 rounded-xl border p-3 text-sm ${theme.soft}`}><div className="mb-1 font-semibold">Ответ</div><div className="whitespace-pre-wrap break-words">{answer}</div></div>}
+      {!!history.length && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-sm font-medium">История вопросов ({history.length})</summary>
+          <div className="mt-2 max-h-80 space-y-2 overflow-auto">
+            {[...history].reverse().map((item: any, index: number) => (
+              <div key={index} className={`rounded-lg border p-2 text-xs ${theme.soft}`}>
+                <div className="font-semibold">Q: {item.question}</div>
+                <div className="mt-1 whitespace-pre-wrap break-words">A: {item.answer}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
   )
 }
 
